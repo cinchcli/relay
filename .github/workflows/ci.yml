@@ -26,6 +26,9 @@ on:
       - 'Makefile'
       - '.github/workflows/ci.yml'
 
+env:
+  GONOSUMDB: github.com/cinchcli
+
 jobs:
   test:
     runs-on: ubuntu-latest
