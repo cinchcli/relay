@@ -532,7 +532,7 @@ const file_cinch_v1_devices_proto_rawDesc = "" +
 	"\vListDevices\x12\x1c.cinch.v1.ListDevicesRequest\x1a\x1d.cinch.v1.ListDevicesResponse\x12J\n" +
 	"\vSetNickname\x12\x1c.cinch.v1.SetNicknameRequest\x1a\x1d.cinch.v1.SetNicknameResponse\x12M\n" +
 	"\fSetRetention\x12\x1d.cinch.v1.SetRetentionRequest\x1a\x1e.cinch.v1.SetRetentionResponse\x125\n" +
-	"\x04Pull\x12\x15.cinch.v1.PullRequest\x1a\x16.cinch.v1.PullResponseB6Z4github.com/cinchcli/relay/internal/gen/cinch/v1;cinchv1b\x06proto3"
+	"\x04Pull\x12\x15.cinch.v1.PullRequest\x1a\x16.cinch.v1.PullResponseB9Z7github.com/cinchcli/relay/internal/gen/cinch/v1;cinchv1b\x06proto3"
 
 var (
 	file_cinch_v1_devices_proto_rawDescOnce sync.Once

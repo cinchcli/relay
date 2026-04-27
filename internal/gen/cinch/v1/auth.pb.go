@@ -1122,7 +1122,7 @@ const file_cinch_v1_auth_proto_rawDesc = "" +
 	"\fRevokeDevice\x12\x1d.cinch.v1.RevokeDeviceRequest\x1a\x1e.cinch.v1.RevokeDeviceResponse\x12V\n" +
 	"\x0fRotatePairToken\x12 .cinch.v1.RotatePairTokenRequest\x1a!.cinch.v1.RotatePairTokenResponse\x12M\n" +
 	"\fKeyBundlePut\x12\x1d.cinch.v1.KeyBundlePutRequest\x1a\x1e.cinch.v1.KeyBundlePutResponse\x12M\n" +
-	"\fKeyBundleGet\x12\x1d.cinch.v1.KeyBundleGetRequest\x1a\x1e.cinch.v1.KeyBundleGetResponseB6Z4github.com/cinchcli/relay/internal/gen/cinch/v1;cinchv1b\x06proto3"
+	"\fKeyBundleGet\x12\x1d.cinch.v1.KeyBundleGetRequest\x1a\x1e.cinch.v1.KeyBundleGetResponseB9Z7github.com/cinchcli/relay/internal/gen/cinch/v1;cinchv1b\x06proto3"
 
 var (
 	file_cinch_v1_auth_proto_rawDescOnce sync.Once

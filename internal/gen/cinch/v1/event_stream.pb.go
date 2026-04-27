@@ -569,7 +569,7 @@ const file_cinch_v1_event_stream_proto_rawDesc = "" +
 	"\x02ok\x18\x01 \x01(\bR\x02ok2\xb1\x01\n" +
 	"\x12EventStreamService\x12@\n" +
 	"\tSubscribe\x12\x1a.cinch.v1.SubscribeRequest\x1a\x15.cinch.v1.ServerEvent0\x01\x12Y\n" +
-	"\x10ProvideClipboard\x12!.cinch.v1.ProvideClipboardRequest\x1a\".cinch.v1.ProvideClipboardResponseB6Z4github.com/cinchcli/relay/internal/gen/cinch/v1;cinchv1b\x06proto3"
+	"\x10ProvideClipboard\x12!.cinch.v1.ProvideClipboardRequest\x1a\".cinch.v1.ProvideClipboardResponseB9Z7github.com/cinchcli/relay/internal/gen/cinch/v1;cinchv1b\x06proto3"
 
 var (
 	file_cinch_v1_event_stream_proto_rawDescOnce sync.Once

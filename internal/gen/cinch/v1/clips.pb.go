@@ -667,7 +667,7 @@ const file_cinch_v1_clips_proto_rawDesc = "" +
 	"\tListClips\x12\x1a.cinch.v1.ListClipsRequest\x1a\x1b.cinch.v1.ListClipsResponse\x12P\n" +
 	"\rGetLatestClip\x12\x1e.cinch.v1.GetLatestClipRequest\x1a\x1f.cinch.v1.GetLatestClipResponse\x12G\n" +
 	"\n" +
-	"DeleteClip\x12\x1b.cinch.v1.DeleteClipRequest\x1a\x1c.cinch.v1.DeleteClipResponseB6Z4github.com/cinchcli/relay/internal/gen/cinch/v1;cinchv1b\x06proto3"
+	"DeleteClip\x12\x1b.cinch.v1.DeleteClipRequest\x1a\x1c.cinch.v1.DeleteClipResponseB9Z7github.com/cinchcli/relay/internal/gen/cinch/v1;cinchv1b\x06proto3"
 
 var (
 	file_cinch_v1_clips_proto_rawDescOnce sync.Once
