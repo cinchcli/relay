@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/cinchcli/protocol"
+	"github.com/gorilla/websocket"
 )
 
 // buildRevokeTestServer spins up a fresh in-memory store + hub + handler + http test server.

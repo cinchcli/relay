@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/cinchcli/protocol"
 	relay "github.com/cinchcli/relay/internal/relay"
+	"github.com/gorilla/websocket"
 )
 
 // setupTestServer creates a relay with an in-memory SQLite DB and returns the test server URL.

@@ -19,8 +19,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/cinchcli/protocol"
+	"github.com/gorilla/websocket"
 	"github.com/oklog/ulid/v2"
 )
 

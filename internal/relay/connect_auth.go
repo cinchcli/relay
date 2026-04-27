@@ -13,9 +13,9 @@ import (
 	"github.com/oklog/ulid/v2"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/cinchcli/protocol"
 	cinchv1 "github.com/cinchcli/relay/internal/gen/cinch/v1"
 	"github.com/cinchcli/relay/internal/gen/cinch/v1/cinchv1connect"
-	"github.com/cinchcli/protocol"
 )
 
 // connectAuthServer implements cinchv1connect.AuthServiceHandler.

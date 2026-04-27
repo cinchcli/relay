@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/cinchcli/protocol"
+	"github.com/gorilla/websocket"
 )
 
 // buildLazyMigrationServer is a fresh relay with an in-memory store.

@@ -6,9 +6,9 @@ import (
 
 	"connectrpc.com/connect"
 
+	"github.com/cinchcli/protocol"
 	cinchv1 "github.com/cinchcli/relay/internal/gen/cinch/v1"
 	"github.com/cinchcli/relay/internal/gen/cinch/v1/cinchv1connect"
-	"github.com/cinchcli/protocol"
 )
 
 type connectEventsServer struct {
