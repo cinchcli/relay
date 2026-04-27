@@ -1,0 +1,79 @@
+syntax = "proto3";
+
+package cinch.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/cinchcli/relay/internal/gen/cinch/v1;cinchv1";
+
+// DevicesService manages paired devices and clipboard pull.
+service DevicesService {
+  // ListDevices returns paired devices with online status.
+  // Mirrors GET /devices — auth required.
+  rpc ListDevices(ListDevicesRequest) returns (ListDevicesResponse);
+
+  // SetNickname updates the display name of a device owned by the caller.
+  // Mirrors PUT /devices/{id}/nickname — auth required.
+  rpc SetNickname(SetNicknameRequest) returns (SetNicknameResponse);
+
+  // SetRetention updates remote retention days for the calling device.
+  // Mirrors PUT /devices/self/retention — per-device auth required.
+  rpc SetRetention(SetRetentionRequest) returns (SetRetentionResponse);
+
+  // Pull requests clipboard content from the desktop agent.
+  // Mirrors POST /pull — auth required.
+  rpc Pull(PullRequest) returns (PullResponse);
+}
+
+// ─── Device ──────────────────────────────────────────────────
+
+message Device {
+  string                    id                    = 1;
+  string                    hostname              = 2;
+  string                    source_key            = 3;
+  int32                     clip_count            = 4;
+  google.protobuf.Timestamp paired_at             = 5;
+  optional google.protobuf.Timestamp last_push_at = 6;
+  bool                      online                = 7;
+  string                    nickname              = 8;
+  string                    public_key            = 9;
+  string                    public_key_fingerprint = 10;
+}
+
+// ─── ListDevices ─────────────────────────────────────────────
+
+message ListDevicesRequest {}
+
+message ListDevicesResponse {
+  repeated Device devices = 1;
+}
+
+// ─── SetNickname ─────────────────────────────────────────────
+
+message SetNicknameRequest {
+  string device_id = 1;
+  string nickname  = 2;
+}
+
+message SetNicknameResponse {
+  bool ok = 1;
+}
+
+// ─── SetRetention ────────────────────────────────────────────
+
+message SetRetentionRequest {
+  int32 remote_retention_days = 1;
+}
+
+message SetRetentionResponse {
+  bool ok = 1;
+}
+
+// ─── Pull ────────────────────────────────────────────────────
+
+message PullRequest {}
+
+message PullResponse {
+  string pull_id  = 1;
+  string content  = 2;
+}

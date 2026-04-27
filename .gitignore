@@ -1,0 +1,11 @@
+.planning/
+planning/
+.gstack/
+.claude/
+.omc/
+.omx/
+dist/
+node_modules/
+*.test
+/relay
+cinch.db

@@ -1,0 +1,68 @@
+syntax = "proto3";
+
+package cinch.v1;
+
+import "cinch/v1/clips.proto";
+
+option go_package = "github.com/cinchcli/relay/internal/gen/cinch/v1;cinchv1";
+
+// EventStreamService provides a server-streaming channel for desktop agent events.
+// Intended to replace the WebSocket /ws endpoint; both run in parallel during migration.
+service EventStreamService {
+  // Subscribe opens a server-streaming channel that delivers events to the desktop agent.
+  // The caller authenticates via Authorization: Bearer <per-device-token>.
+  rpc Subscribe(SubscribeRequest) returns (stream ServerEvent);
+
+  // ProvideClipboard delivers clipboard content in response to a SendClipboard event.
+  // Called by the desktop after receiving a send_clipboard event on the stream.
+  rpc ProvideClipboard(ProvideClipboardRequest) returns (ProvideClipboardResponse);
+}
+
+// ─── Subscribe ───────────────────────────────────────────────
+
+message SubscribeRequest {}
+
+message ServerEvent {
+  oneof event {
+    NewClipEvent       new_clip       = 1;
+    SendClipboardEvent send_clipboard = 2;
+    RevokedEvent       revoked        = 3;
+    TokenRotatedEvent  token_rotated  = 4;
+    KeyExchangeEvent   key_exchange   = 5;
+  }
+}
+
+message NewClipEvent {
+  Clip clip = 1;
+}
+
+message SendClipboardEvent {
+  string pull_id = 1;
+}
+
+message RevokedEvent {
+  string reason = 1;
+}
+
+message TokenRotatedEvent {
+  string token     = 1;
+  string device_id = 2;
+  string hostname  = 3;
+}
+
+message KeyExchangeEvent {
+  string device_id              = 1;
+  string hostname               = 2;
+  string device_key_fingerprint = 3;
+}
+
+// ─── ProvideClipboard ────────────────────────────────────────
+
+message ProvideClipboardRequest {
+  string pull_id = 1;
+  string content = 2;
+}
+
+message ProvideClipboardResponse {
+  bool ok = 1;
+}

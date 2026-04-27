@@ -1,0 +1,458 @@
+package relay
+
+import (
+	"log"
+	"sync"
+	"time"
+
+	"github.com/gorilla/websocket"
+	"github.com/cinchcli/protocol"
+)
+
+// Hub manages WebSocket connections keyed by (user_id, device_id).
+type Hub struct {
+	mu    sync.RWMutex
+	conns map[string]map[string]*AgentConn // userID -> deviceID -> conn
+
+	// Pending pull requests waiting for clipboard content.
+	pullMu   sync.Mutex
+	pullReqs map[string]chan string // pull_id → content channel
+
+	// Demo broadcast support — used by /demo/session and /demo/playground.
+	// streamIDs maps a public stream_id (returned to anonymous visitors) to its
+	// owning userID, so /demo/stream/{sid} can resolve subscribers.
+	// demoSubs is the per-userID list of broadcast channels; senders are
+	// non-blocking with default-drop to avoid stalling on slow consumers.
+	demoMu    sync.RWMutex
+	streamIDs map[string]string        // streamID -> userID
+	demoSubs  map[string][]chan string // userID -> subscriber channels
+
+	// eventSubs are Connect-RPC streaming subscribers (parallel to WS conns).
+	// Keyed by userID -> deviceID; fan-out mirrors the WS path.
+	eventSubsMu sync.RWMutex
+	eventSubs   map[string]map[string]chan protocol.WSMessage
+}
+
+// AgentConn wraps a WebSocket connection for one desktop agent.
+type AgentConn struct {
+	UserID   string
+	DeviceID string // Phase 2: required for device-keyed routing
+	Conn     *websocket.Conn
+}
+
+func NewHub() *Hub {
+	return &Hub{
+		conns:     make(map[string]map[string]*AgentConn),
+		pullReqs:  make(map[string]chan string),
+		streamIDs: make(map[string]string),
+		demoSubs:  make(map[string][]chan string),
+		eventSubs: make(map[string]map[string]chan protocol.WSMessage),
+	}
+}
+
+// RegisterStreamID maps a public stream_id to the underlying userID so that
+// anonymous /demo/stream/{sid} subscribers can resolve which broadcast channel
+// to attach to. Idempotent: re-registering an existing streamID rebinds it.
+func (h *Hub) RegisterStreamID(streamID, userID string) {
+	h.demoMu.Lock()
+	h.streamIDs[streamID] = userID
+	h.demoMu.Unlock()
+}
+
+// LookupStreamID returns the userID for a given stream_id, or "" if unknown.
+func (h *Hub) LookupStreamID(streamID string) string {
+	h.demoMu.RLock()
+	defer h.demoMu.RUnlock()
+	return h.streamIDs[streamID]
+}
+
+// SubscribeDemoStream returns a buffered channel that receives every broadcast
+// for this userID until the caller calls UnsubscribeDemoStream. Buffer size 8
+// gives slow consumers headroom; senders drop on full to avoid blocking.
+func (h *Hub) SubscribeDemoStream(userID string) chan string {
+	ch := make(chan string, 8)
+	h.demoMu.Lock()
+	h.demoSubs[userID] = append(h.demoSubs[userID], ch)
+	h.demoMu.Unlock()
+	return ch
+}
+
+// UnsubscribeDemoStream removes a previously-subscribed channel and closes it.
+// Safe to call with a channel that was never registered (no-op).
+func (h *Hub) UnsubscribeDemoStream(userID string, ch chan string) {
+	h.demoMu.Lock()
+	defer h.demoMu.Unlock()
+	subs := h.demoSubs[userID]
+	for i, c := range subs {
+		if c == ch {
+			h.demoSubs[userID] = append(subs[:i], subs[i+1:]...)
+			close(ch)
+			if len(h.demoSubs[userID]) == 0 {
+				delete(h.demoSubs, userID)
+			}
+			return
+		}
+	}
+}
+
+// BroadcastDemoClip fans content out to every subscriber attached to userID's
+// demo stream. Non-blocking: if a subscriber's buffer is full, the message is
+// dropped for that subscriber so a slow client cannot stall the broadcast.
+func (h *Hub) BroadcastDemoClip(userID, content string) {
+	h.demoMu.RLock()
+	subs := h.demoSubs[userID]
+	// Copy slice to avoid holding the lock while sending.
+	snapshot := make([]chan string, len(subs))
+	copy(snapshot, subs)
+	h.demoMu.RUnlock()
+
+	for _, ch := range snapshot {
+		select {
+		case ch <- content:
+		default:
+			// Drop on full — slow consumer cannot stall the fan-out.
+		}
+	}
+}
+
+// RegisterEventSub registers a Connect-RPC streaming subscriber for (userID, deviceID).
+// Returns a receive-only channel that receives WSMessage events until the subscriber
+// calls UnregisterEventSub or the channel is closed on a duplicate registration.
+func (h *Hub) RegisterEventSub(userID, deviceID string) <-chan protocol.WSMessage {
+	ch := make(chan protocol.WSMessage, 64)
+	h.eventSubsMu.Lock()
+	if h.eventSubs[userID] == nil {
+		h.eventSubs[userID] = make(map[string]chan protocol.WSMessage)
+	}
+	if old, ok := h.eventSubs[userID][deviceID]; ok {
+		close(old) // new connection wins; close old channel to unblock its goroutine
+	}
+	h.eventSubs[userID][deviceID] = ch
+	h.eventSubsMu.Unlock()
+	log.Printf("event stream connected: %s device: %s", userID[:8], deviceID[:8])
+	return ch
+}
+
+// UnregisterEventSub removes and closes the event channel for (userID, deviceID).
+func (h *Hub) UnregisterEventSub(userID, deviceID string) {
+	h.eventSubsMu.Lock()
+	if devs, ok := h.eventSubs[userID]; ok {
+		if ch, ok := devs[deviceID]; ok {
+			close(ch)
+			delete(devs, deviceID)
+			log.Printf("event stream disconnected: %s device: %s", userID[:8], deviceID[:8])
+		}
+		if len(devs) == 0 {
+			delete(h.eventSubs, userID)
+		}
+	}
+	h.eventSubsMu.Unlock()
+}
+
+// sendToEventSubs fans a message out to all event stream subscribers for userID.
+// Non-blocking per subscriber; drops on full to avoid stalling.
+func (h *Hub) sendToEventSubs(userID string, msg protocol.WSMessage) {
+	h.eventSubsMu.RLock()
+	devs := h.eventSubs[userID]
+	if len(devs) == 0 {
+		h.eventSubsMu.RUnlock()
+		return
+	}
+	chs := make([]chan protocol.WSMessage, 0, len(devs))
+	for _, ch := range devs {
+		chs = append(chs, ch)
+	}
+	h.eventSubsMu.RUnlock()
+
+	for _, ch := range chs {
+		select {
+		case ch <- msg:
+		default:
+			log.Printf("event sub buffer full for user %s", userID[:8])
+		}
+	}
+}
+
+// sendToEventSub fans a message to a specific (userID, deviceID) event subscriber.
+func (h *Hub) sendToEventSub(userID, deviceID string, msg protocol.WSMessage) {
+	h.eventSubsMu.RLock()
+	var ch chan protocol.WSMessage
+	if devs, ok := h.eventSubs[userID]; ok {
+		ch = devs[deviceID]
+	}
+	h.eventSubsMu.RUnlock()
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- msg:
+	default:
+		log.Printf("event sub buffer full for device %s", deviceID[:8])
+	}
+}
+
+// DeliverClipboard signals a pending pull request with clipboard content.
+// Called by both HandleAgentMessage (WS path) and ProvideClipboard (Connect path).
+func (h *Hub) DeliverClipboard(pullID, content string) {
+	h.pullMu.Lock()
+	ch, ok := h.pullReqs[pullID]
+	h.pullMu.Unlock()
+	if ok {
+		ch <- content
+	}
+}
+
+// Run starts the hub's background tasks (heartbeat cleanup).
+func (h *Hub) Run() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		// Copy conn list while holding read lock to avoid holding across WriteJSON.
+		h.mu.RLock()
+		type connEntry struct {
+			uid string
+			did string
+			ac  *AgentConn
+		}
+		var all []connEntry
+		for uid, devs := range h.conns {
+			for did, ac := range devs {
+				all = append(all, connEntry{uid, did, ac})
+			}
+		}
+		h.mu.RUnlock()
+
+		for _, e := range all {
+			if err := e.ac.Conn.WriteJSON(protocol.WSMessage{Action: protocol.ActionPing}); err != nil {
+				log.Printf("heartbeat failed for %s: %v", e.uid[:8], err)
+				// Guard against reconnect race: only remove if the conn pointer still matches.
+				// A new Register() call between the snapshot and here replaces the pointer;
+				// removing by key alone would evict the newly-registered connection instead.
+				h.mu.Lock()
+				if devs, ok := h.conns[e.uid]; ok {
+					key := e.did
+					if key == "" {
+						key = e.uid
+					}
+					if existing, ok := devs[key]; ok && existing == e.ac {
+						existing.Conn.Close()
+						delete(devs, key)
+					}
+				}
+				h.mu.Unlock()
+			}
+		}
+	}
+}
+
+// Register adds an agent connection keyed by (userID, deviceID).
+// If deviceID is empty (legacy master-token path), use the userID as a fallback key.
+func (h *Hub) Register(userID, deviceID string, conn *websocket.Conn) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.conns[userID] == nil {
+		h.conns[userID] = make(map[string]*AgentConn)
+	}
+	key := deviceID
+	if key == "" {
+		key = userID // legacy fallback key for pre-Phase-2 agents
+	}
+	// If this (user, device) already has a conn, close it — new conn wins.
+	if old, ok := h.conns[userID][key]; ok {
+		old.Conn.Close()
+	}
+	h.conns[userID][key] = &AgentConn{UserID: userID, DeviceID: deviceID, Conn: conn}
+	log.Printf("agent connected: %s device: %s", userID[:8], key[:8])
+}
+
+// Remove disconnects and removes a specific (userID, deviceID) connection.
+func (h *Hub) Remove(userID, deviceID string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if devs, ok := h.conns[userID]; ok {
+		key := deviceID
+		if key == "" {
+			key = userID
+		}
+		if ac, ok := devs[key]; ok {
+			ac.Conn.Close()
+			delete(devs, key)
+			log.Printf("agent disconnected: %s device: %s", userID[:8], key[:8])
+		}
+		if len(devs) == 0 {
+			delete(h.conns, userID)
+		}
+	}
+}
+
+// SendClip broadcasts a new clip to all connected devices of the user (fan-out).
+// Delivers to both WS conns and Connect event stream subscribers.
+func (h *Hub) SendClip(userID string, clip *protocol.Clip) error {
+	h.mu.RLock()
+	devs := h.conns[userID]
+	conns := make([]*AgentConn, 0, len(devs))
+	for _, ac := range devs {
+		conns = append(conns, ac)
+	}
+	h.mu.RUnlock()
+
+	msg := protocol.WSMessage{Action: protocol.ActionNewClip, Clip: clip}
+
+	var firstErr error
+	for _, ac := range conns {
+		if err := ac.Conn.WriteJSON(msg); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+
+	h.sendToEventSubs(userID, msg)
+	return firstErr
+}
+
+// SendToUser sends a message to all connected devices for a user (WS + event stream).
+func (h *Hub) SendToUser(userID string, msg protocol.WSMessage) {
+	h.mu.RLock()
+	devs := h.conns[userID]
+	// Copy to avoid holding the lock during WriteJSON calls.
+	conns := make([]*AgentConn, 0, len(devs))
+	for _, ac := range devs {
+		conns = append(conns, ac)
+	}
+	h.mu.RUnlock()
+
+	for _, ac := range conns {
+		if err := ac.Conn.WriteJSON(msg); err != nil {
+			log.Printf("SendToUser write error for device %s: %v", ac.DeviceID, err)
+		}
+	}
+
+	h.sendToEventSubs(userID, msg)
+}
+
+// SendToDevice pushes msg to the specific (userID, deviceID) connection if present.
+// Checks WS conn first, then event stream subscriber.
+// Returns nil if the device is offline — revoke/rotation is server-authoritative;
+// clients discover state on next HTTP request regardless of delivery.
+func (h *Hub) SendToDevice(userID, deviceID string, msg protocol.WSMessage) error {
+	h.mu.RLock()
+	var ac *AgentConn
+	if devs, ok := h.conns[userID]; ok {
+		ac = devs[deviceID]
+	}
+	h.mu.RUnlock()
+
+	if ac != nil {
+		return ac.Conn.WriteJSON(msg)
+	}
+
+	h.sendToEventSub(userID, deviceID, msg)
+	return nil
+}
+
+// RequestClipboard asks the agent for clipboard content and waits for the response.
+// Tries WS conn first; falls back to event stream subscriber if no WS conn.
+func (h *Hub) RequestClipboard(userID, pullID string) (string, error) {
+	// Pick the first connected WS device for this user.
+	h.mu.RLock()
+	var ac *AgentConn
+	for _, conn := range h.conns[userID] {
+		ac = conn
+		break
+	}
+	h.mu.RUnlock()
+
+	// Fall back to event stream subscriber if no WS conn.
+	var streamCh chan protocol.WSMessage
+	if ac == nil {
+		h.eventSubsMu.RLock()
+		for _, ch := range h.eventSubs[userID] {
+			streamCh = ch
+			break
+		}
+		h.eventSubsMu.RUnlock()
+	}
+
+	if ac == nil && streamCh == nil {
+		return "", ErrAgentOffline
+	}
+
+	// Register a channel for this pull request.
+	ch := make(chan string, 1)
+	h.pullMu.Lock()
+	h.pullReqs[pullID] = ch
+	h.pullMu.Unlock()
+
+	defer func() {
+		h.pullMu.Lock()
+		delete(h.pullReqs, pullID)
+		h.pullMu.Unlock()
+	}()
+
+	msg := protocol.WSMessage{Action: protocol.ActionSendClipboard, PullID: pullID}
+	if ac != nil {
+		if err := ac.Conn.WriteJSON(msg); err != nil {
+			return "", ErrAgentOffline
+		}
+	} else {
+		select {
+		case streamCh <- msg:
+		default:
+			return "", ErrAgentOffline
+		}
+	}
+
+	// Wait for response with timeout.
+	select {
+	case content := <-ch:
+		return content, nil
+	case <-time.After(10 * time.Second):
+		return "", ErrAgentTimeout
+	}
+}
+
+// IsDeviceOnline checks if a specific (userID, deviceID) connection is active (WS or event stream).
+func (h *Hub) IsDeviceOnline(userID, deviceID string) bool {
+	h.mu.RLock()
+	if devs, ok := h.conns[userID]; ok {
+		if _, ok := devs[deviceID]; ok {
+			h.mu.RUnlock()
+			return true
+		}
+	}
+	h.mu.RUnlock()
+
+	h.eventSubsMu.RLock()
+	defer h.eventSubsMu.RUnlock()
+	if devs, ok := h.eventSubs[userID]; ok {
+		_, ok := devs[deviceID]
+		return ok
+	}
+	return false
+}
+
+// IsOnline checks if any device of the user's desktop agent is connected (WS or event stream).
+func (h *Hub) IsOnline(userID string) bool {
+	h.mu.RLock()
+	devs, ok := h.conns[userID]
+	wsOk := ok && len(devs) > 0
+	h.mu.RUnlock()
+	if wsOk {
+		return true
+	}
+	h.eventSubsMu.RLock()
+	defer h.eventSubsMu.RUnlock()
+	devs2, ok2 := h.eventSubs[userID]
+	return ok2 && len(devs2) > 0
+}
+
+// HandleAgentMessage processes messages from the agent's WebSocket.
+func (h *Hub) HandleAgentMessage(msg *protocol.WSMessage) {
+	switch msg.Action {
+	case protocol.ActionClipboardContent:
+		h.DeliverClipboard(msg.PullID, msg.Content)
+	case protocol.ActionPong:
+		// heartbeat response, nothing to do
+	}
+}

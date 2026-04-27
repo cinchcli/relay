@@ -1,0 +1,1008 @@
+package relay_test
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/gorilla/websocket"
+	"github.com/cinchcli/protocol"
+	relay "github.com/cinchcli/relay/internal/relay"
+)
+
+// setupTestServer creates a relay with an in-memory SQLite DB and returns the test server URL.
+func setupTestServer(t *testing.T) (*httptest.Server, *relay.Hub) {
+	t.Helper()
+
+	store, err := relay.NewStore(":memory:")
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	hub := relay.NewHub()
+	go hub.Run()
+
+	handler := relay.NewHandler(store, hub)
+	mux := http.NewServeMux()
+	handler.RegisterRoutes(mux)
+
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	return ts, hub
+}
+
+// login creates a user and returns the auth token and pair token.
+func login(t *testing.T, baseURL string) (token, pairToken, userID string) {
+	t.Helper()
+
+	resp, err := http.Post(baseURL+"/auth/login", "application/json", nil)
+	if err != nil {
+		t.Fatalf("login request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("login returned %d", resp.StatusCode)
+	}
+
+	var loginResp protocol.AuthLoginResponse
+	json.NewDecoder(resp.Body).Decode(&loginResp)
+	return loginResp.Token, loginResp.PairToken, loginResp.UserID
+}
+
+// connectFakeAgent connects a WebSocket client that acts as the desktop agent.
+func connectFakeAgent(t *testing.T, baseURL, token string) *websocket.Conn {
+	t.Helper()
+
+	wsURL := strings.Replace(baseURL, "http://", "ws://", 1) + "/ws?token=" + token
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("ws connect failed: %v", err)
+	}
+	t.Cleanup(func() { conn.Close() })
+
+	return conn
+}
+
+func TestAuthLogin(t *testing.T) {
+	ts, _ := setupTestServer(t)
+
+	token, pairToken, userID := login(t, ts.URL)
+
+	if token == "" {
+		t.Error("token is empty")
+	}
+	if pairToken == "" {
+		t.Error("pair token is empty")
+	}
+	if userID == "" {
+		t.Error("user ID is empty")
+	}
+}
+
+func TestAuthPair(t *testing.T) {
+	ts, _ := setupTestServer(t)
+
+	token, pairToken, _ := login(t, ts.URL)
+	_ = token
+
+	// Pair with the pair token
+	reqBody, _ := json.Marshal(protocol.AuthPairRequest{
+		PairToken: pairToken,
+		Hostname:  "test-server",
+	})
+	resp, err := http.Post(ts.URL+"/auth/pair", "application/json", bytes.NewReader(reqBody))
+	if err != nil {
+		t.Fatalf("pair request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("pair returned %d", resp.StatusCode)
+	}
+
+	var pairResp protocol.AuthPairResponse
+	json.NewDecoder(resp.Body).Decode(&pairResp)
+
+	if pairResp.Token == "" {
+		t.Error("paired token is empty")
+	}
+	if pairResp.UserID == "" {
+		t.Error("paired user ID is empty")
+	}
+}
+
+func TestAuthPairInvalidToken(t *testing.T) {
+	ts, _ := setupTestServer(t)
+
+	reqBody, _ := json.Marshal(protocol.AuthPairRequest{
+		PairToken: "invalid-token",
+	})
+	resp, err := http.Post(ts.URL+"/auth/pair", "application/json", bytes.NewReader(reqBody))
+	if err != nil {
+		t.Fatalf("pair request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", resp.StatusCode)
+	}
+}
+
+func TestPushClip(t *testing.T) {
+	ts, _ := setupTestServer(t)
+	token, _, _ := login(t, ts.URL)
+
+	// Push a clip
+	reqBody, _ := json.Marshal(protocol.PushRequest{
+		Content: "hello from test",
+		Source:  "remote:test-server",
+	})
+	req, _ := http.NewRequest("POST", ts.URL+"/clips", bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("push request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("push returned %d", resp.StatusCode)
+	}
+
+	var pushResp protocol.PushResponse
+	json.NewDecoder(resp.Body).Decode(&pushResp)
+
+	if pushResp.ClipID == "" {
+		t.Error("clip ID is empty")
+	}
+	if pushResp.ByteSize != len("hello from test") {
+		t.Errorf("expected %d bytes, got %d", len("hello from test"), pushResp.ByteSize)
+	}
+}
+
+func TestPushClipUnauthorized(t *testing.T) {
+	ts, _ := setupTestServer(t)
+
+	reqBody, _ := json.Marshal(protocol.PushRequest{Content: "test"})
+	req, _ := http.NewRequest("POST", ts.URL+"/clips", bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer invalid-token")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", resp.StatusCode)
+	}
+}
+
+func TestPushClipEmpty(t *testing.T) {
+	ts, _ := setupTestServer(t)
+	token, _, _ := login(t, ts.URL)
+
+	reqBody, _ := json.Marshal(protocol.PushRequest{Content: ""})
+	req, _ := http.NewRequest("POST", ts.URL+"/clips", bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", resp.StatusCode)
+	}
+}
+
+func TestPushAndReceiveViaWebSocket(t *testing.T) {
+	ts, _ := setupTestServer(t)
+	token, _, _ := login(t, ts.URL)
+
+	// Connect fake agent
+	agent := connectFakeAgent(t, ts.URL, token)
+
+	// Push a clip
+	content := "E2E test: push → WS → agent"
+	reqBody, _ := json.Marshal(protocol.PushRequest{
+		Content: content,
+		Source:  "remote:ci-server",
+	})
+	req, _ := http.NewRequest("POST", ts.URL+"/clips", bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("push failed: %v", err)
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("push returned %d", resp.StatusCode)
+	}
+
+	// Agent should receive the clip via WebSocket
+	agent.SetReadDeadline(time.Now().Add(5 * time.Second))
+	var msg protocol.WSMessage
+	if err := agent.ReadJSON(&msg); err != nil {
+		t.Fatalf("agent did not receive WS message: %v", err)
+	}
+
+	if msg.Action != protocol.ActionNewClip {
+		t.Errorf("expected action %q, got %q", protocol.ActionNewClip, msg.Action)
+	}
+	if msg.Clip == nil {
+		t.Fatal("clip is nil")
+	}
+	if msg.Clip.Content != content {
+		t.Errorf("expected content %q, got %q", content, msg.Clip.Content)
+	}
+	if msg.Clip.Source != "remote:ci-server" {
+		t.Errorf("expected source %q, got %q", "remote:ci-server", msg.Clip.Source)
+	}
+}
+
+func TestPullClipboard(t *testing.T) {
+	ts, _ := setupTestServer(t)
+	token, _, _ := login(t, ts.URL)
+
+	// Connect fake agent
+	agent := connectFakeAgent(t, ts.URL, token)
+
+	// Agent listens for pull requests and responds in a goroutine
+	go func() {
+		for {
+			var msg protocol.WSMessage
+			if err := agent.ReadJSON(&msg); err != nil {
+				return
+			}
+			if msg.Action == protocol.ActionSendClipboard {
+				agent.WriteJSON(protocol.WSMessage{
+					Action:  protocol.ActionClipboardContent,
+					PullID:  msg.PullID,
+					Content: "clipboard content from Mac",
+				})
+			}
+		}
+	}()
+
+	// Give the agent goroutine time to start
+	time.Sleep(100 * time.Millisecond)
+
+	// Pull request
+	req, _ := http.NewRequest("POST", ts.URL+"/pull", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("pull request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("pull returned %d", resp.StatusCode)
+	}
+
+	var pullResp protocol.PullResponse
+	json.NewDecoder(resp.Body).Decode(&pullResp)
+
+	if pullResp.Content != "clipboard content from Mac" {
+		t.Errorf("expected clipboard content, got %q", pullResp.Content)
+	}
+	if pullResp.PullID == "" {
+		t.Error("pull ID is empty")
+	}
+}
+
+func TestPullAgentOffline(t *testing.T) {
+	ts, _ := setupTestServer(t)
+	token, _, _ := login(t, ts.URL)
+
+	// No agent connected — pull should fail with 503
+	req, _ := http.NewRequest("POST", ts.URL+"/pull", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("pull request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("expected 503, got %d", resp.StatusCode)
+	}
+}
+
+func TestListClips(t *testing.T) {
+	ts, _ := setupTestServer(t)
+	token, _, _ := login(t, ts.URL)
+
+	// Push 3 clips
+	for i := 0; i < 3; i++ {
+		reqBody, _ := json.Marshal(protocol.PushRequest{
+			Content: fmt.Sprintf("clip %d", i),
+		})
+		req, _ := http.NewRequest("POST", ts.URL+"/clips", bytes.NewReader(reqBody))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, _ := http.DefaultClient.Do(req)
+		resp.Body.Close()
+	}
+
+	// List
+	req, _ := http.NewRequest("GET", ts.URL+"/clips", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("list request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var clips []*protocol.Clip
+	json.NewDecoder(resp.Body).Decode(&clips)
+
+	if len(clips) != 3 {
+		t.Errorf("expected 3 clips, got %d", len(clips))
+	}
+
+	// Should be ordered by created_at DESC
+	if clips[0].Content != "clip 2" {
+		t.Errorf("expected newest first, got %q", clips[0].Content)
+	}
+}
+
+func TestDeleteClip(t *testing.T) {
+	ts, _ := setupTestServer(t)
+	token, _, _ := login(t, ts.URL)
+
+	// Push a clip
+	reqBody, _ := json.Marshal(protocol.PushRequest{Content: "to delete"})
+	pushReq, _ := http.NewRequest("POST", ts.URL+"/clips", bytes.NewReader(reqBody))
+	pushReq.Header.Set("Content-Type", "application/json")
+	pushReq.Header.Set("Authorization", "Bearer "+token)
+	pushResp, _ := http.DefaultClient.Do(pushReq)
+	var pr protocol.PushResponse
+	json.NewDecoder(pushResp.Body).Decode(&pr)
+	pushResp.Body.Close()
+
+	// Delete it
+	delReq, _ := http.NewRequest("DELETE", ts.URL+"/clips/"+pr.ClipID, nil)
+	delReq.Header.Set("Authorization", "Bearer "+token)
+	delResp, err := http.DefaultClient.Do(delReq)
+	if err != nil {
+		t.Fatalf("delete request failed: %v", err)
+	}
+	delResp.Body.Close()
+
+	if delResp.StatusCode != http.StatusNoContent {
+		t.Errorf("expected 204, got %d", delResp.StatusCode)
+	}
+
+	// List should be empty
+	listReq, _ := http.NewRequest("GET", ts.URL+"/clips", nil)
+	listReq.Header.Set("Authorization", "Bearer "+token)
+	listResp, _ := http.DefaultClient.Do(listReq)
+	var clips []*protocol.Clip
+	json.NewDecoder(listResp.Body).Decode(&clips)
+	listResp.Body.Close()
+
+	if len(clips) != 0 {
+		t.Errorf("expected 0 clips after delete, got %d", len(clips))
+	}
+}
+
+// setupTestServerWithDisk creates a relay with a real disk-backed SQLite DB (needed for media tests).
+func setupTestServerWithDisk(t *testing.T) *httptest.Server {
+	t.Helper()
+
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	store, err := relay.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	hub := relay.NewHub()
+	go hub.Run()
+
+	handler := relay.NewHandler(store, hub)
+	mux := http.NewServeMux()
+	handler.RegisterRoutes(mux)
+
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+// createTestPNG returns a minimal valid 1x1 PNG.
+func createTestPNG() []byte {
+	return []byte{
+		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, // PNG signature
+		0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, // IHDR chunk
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, // 1x1
+		0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
+		0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, // IDAT chunk
+		0x54, 0x78, 0x9c, 0x63, 0xf8, 0x0f, 0x00, 0x00,
+		0x01, 0x01, 0x00, 0x05, 0x18, 0xd8, 0x4e, 0x00,
+		0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, // IEND chunk
+		0x42, 0x60, 0x82,
+	}
+}
+
+func postBinary(t *testing.T, baseURL, token string, fileData []byte, contentType, source string) *http.Response {
+	t.Helper()
+
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	fw, _ := w.CreateFormFile("file", "test.png")
+	fw.Write(fileData)
+	w.WriteField("content_type", contentType)
+	w.WriteField("source", source)
+	w.Close()
+
+	req, _ := http.NewRequest("POST", baseURL+"/clips/binary", &buf)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("binary push failed: %v", err)
+	}
+	return resp
+}
+
+func TestPushBinaryClip(t *testing.T) {
+	ts := setupTestServerWithDisk(t)
+	token, _, _ := login(t, ts.URL)
+
+	png := createTestPNG()
+	resp := postBinary(t, ts.URL, token, png, "image/png", "remote:test")
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("binary push returned %d: %s", resp.StatusCode, body)
+	}
+
+	var pr protocol.PushResponse
+	json.NewDecoder(resp.Body).Decode(&pr)
+
+	if pr.ClipID == "" {
+		t.Error("clip ID is empty")
+	}
+	if pr.ByteSize != len(png) {
+		t.Errorf("expected %d bytes, got %d", len(png), pr.ByteSize)
+	}
+}
+
+func TestGetClipMedia(t *testing.T) {
+	ts := setupTestServerWithDisk(t)
+	token, _, _ := login(t, ts.URL)
+
+	png := createTestPNG()
+	resp := postBinary(t, ts.URL, token, png, "image/png", "remote:test")
+	var pr protocol.PushResponse
+	json.NewDecoder(resp.Body).Decode(&pr)
+	resp.Body.Close()
+
+	// Fetch media
+	req, _ := http.NewRequest("GET", ts.URL+"/clips/"+pr.ClipID+"/media", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	mediaResp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("media fetch failed: %v", err)
+	}
+	defer mediaResp.Body.Close()
+
+	if mediaResp.StatusCode != http.StatusOK {
+		t.Fatalf("media fetch returned %d", mediaResp.StatusCode)
+	}
+
+	ct := mediaResp.Header.Get("Content-Type")
+	if !strings.HasPrefix(ct, "image/png") {
+		t.Errorf("expected image/png content type, got %q", ct)
+	}
+
+	body, _ := io.ReadAll(mediaResp.Body)
+	if len(body) != len(png) {
+		t.Errorf("expected %d bytes, got %d", len(png), len(body))
+	}
+}
+
+func TestGetClipMediaUnauthorized(t *testing.T) {
+	ts := setupTestServerWithDisk(t)
+	token, _, _ := login(t, ts.URL)
+
+	png := createTestPNG()
+	resp := postBinary(t, ts.URL, token, png, "image/png", "remote:test")
+	var pr protocol.PushResponse
+	json.NewDecoder(resp.Body).Decode(&pr)
+	resp.Body.Close()
+
+	// Fetch without auth
+	req, _ := http.NewRequest("GET", ts.URL+"/clips/"+pr.ClipID+"/media", nil)
+	mediaResp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer mediaResp.Body.Close()
+
+	if mediaResp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", mediaResp.StatusCode)
+	}
+}
+
+func TestGetClipMedia404(t *testing.T) {
+	ts := setupTestServerWithDisk(t)
+	token, _, _ := login(t, ts.URL)
+
+	req, _ := http.NewRequest("GET", ts.URL+"/clips/nonexistent/media", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", resp.StatusCode)
+	}
+}
+
+func TestPushBinaryInvalidType(t *testing.T) {
+	ts := setupTestServerWithDisk(t)
+	token, _, _ := login(t, ts.URL)
+
+	resp := postBinary(t, ts.URL, token, []byte("not an image"), "text/plain", "remote:test")
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", resp.StatusCode)
+	}
+}
+
+func TestPushBinaryTooLarge(t *testing.T) {
+	ts := setupTestServerWithDisk(t)
+	token, _, _ := login(t, ts.URL)
+
+	// Create a 21MB payload
+	bigData := make([]byte, 21*1024*1024)
+	copy(bigData[:8], createTestPNG()[:8]) // PNG header to pass content type check
+
+	resp := postBinary(t, ts.URL, token, bigData, "image/png", "remote:test")
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Errorf("expected 413, got %d", resp.StatusCode)
+	}
+}
+
+func TestBinaryClipAppearsInList(t *testing.T) {
+	ts := setupTestServerWithDisk(t)
+	token, _, _ := login(t, ts.URL)
+
+	png := createTestPNG()
+	resp := postBinary(t, ts.URL, token, png, "image/png", "remote:test")
+	resp.Body.Close()
+
+	// List clips
+	req, _ := http.NewRequest("GET", ts.URL+"/clips", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	listResp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("list request failed: %v", err)
+	}
+	defer listResp.Body.Close()
+
+	var clips []*protocol.Clip
+	json.NewDecoder(listResp.Body).Decode(&clips)
+
+	if len(clips) != 1 {
+		t.Fatalf("expected 1 clip, got %d", len(clips))
+	}
+	if clips[0].ContentType != "image" {
+		t.Errorf("expected content_type 'image', got %q", clips[0].ContentType)
+	}
+	if clips[0].MediaPath == "" {
+		t.Error("media_path is empty")
+	}
+	if clips[0].Content != "" {
+		t.Errorf("expected empty content for image, got %q", clips[0].Content)
+	}
+}
+
+func TestBinaryClipBroadcastViaWebSocket(t *testing.T) {
+	ts := setupTestServerWithDisk(t)
+	token, _, _ := login(t, ts.URL)
+
+	agent := connectFakeAgent(t, ts.URL, token)
+
+	png := createTestPNG()
+	resp := postBinary(t, ts.URL, token, png, "image/png", "remote:ws-test")
+	resp.Body.Close()
+
+	// Agent should receive clip via WebSocket
+	agent.SetReadDeadline(time.Now().Add(5 * time.Second))
+	var msg protocol.WSMessage
+	if err := agent.ReadJSON(&msg); err != nil {
+		t.Fatalf("agent did not receive WS message: %v", err)
+	}
+
+	if msg.Action != protocol.ActionNewClip {
+		t.Errorf("expected action %q, got %q", protocol.ActionNewClip, msg.Action)
+	}
+	if msg.Clip == nil {
+		t.Fatal("clip is nil")
+	}
+	if msg.Clip.MediaPath == "" {
+		t.Error("media_path not broadcast via WebSocket")
+	}
+	if string(msg.Clip.ContentType) != "image" {
+		t.Errorf("expected content_type 'image', got %q", msg.Clip.ContentType)
+	}
+}
+
+func TestGetLatestClipBySourceWithImage(t *testing.T) {
+	ts := setupTestServerWithDisk(t)
+	token, _, _ := login(t, ts.URL)
+
+	png := createTestPNG()
+	resp := postBinary(t, ts.URL, token, png, "image/png", "remote:img-server")
+	resp.Body.Close()
+
+	// Get latest from that source
+	req, _ := http.NewRequest("GET", ts.URL+"/clips/latest?source=remote:img-server", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	latestResp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("latest request failed: %v", err)
+	}
+	defer latestResp.Body.Close()
+
+	if latestResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", latestResp.StatusCode)
+	}
+
+	var clip protocol.Clip
+	json.NewDecoder(latestResp.Body).Decode(&clip)
+	if clip.MediaPath == "" {
+		t.Error("media_path missing from GetLatestClipBySource")
+	}
+}
+
+func TestTextPushStillWorksAfterBinary(t *testing.T) {
+	// Regression: ensure text push via POST /clips still works
+	ts := setupTestServerWithDisk(t)
+	token, _, _ := login(t, ts.URL)
+
+	// First push an image
+	png := createTestPNG()
+	imgResp := postBinary(t, ts.URL, token, png, "image/png", "remote:test")
+	imgResp.Body.Close()
+
+	// Then push text (should still work)
+	reqBody, _ := json.Marshal(protocol.PushRequest{
+		Content: "text after image",
+		Source:  "remote:test",
+	})
+	req, _ := http.NewRequest("POST", ts.URL+"/clips", bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("text push failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("text push returned %d", resp.StatusCode)
+	}
+
+	var pr protocol.PushResponse
+	json.NewDecoder(resp.Body).Decode(&pr)
+	if pr.ByteSize != len("text after image") {
+		t.Errorf("expected %d bytes, got %d", len("text after image"), pr.ByteSize)
+	}
+}
+
+func TestMediaRetentionTracking(t *testing.T) {
+	ts := setupTestServerWithDisk(t)
+	token, _, _ := login(t, ts.URL)
+
+	// Push 3 images
+	png := createTestPNG()
+	for i := 0; i < 3; i++ {
+		resp := postBinary(t, ts.URL, token, png, "image/png", "remote:test")
+		resp.Body.Close()
+	}
+
+	// List should show 3 image clips
+	req, _ := http.NewRequest("GET", ts.URL+"/clips", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	listResp, _ := http.DefaultClient.Do(req)
+	var clips []*protocol.Clip
+	json.NewDecoder(listResp.Body).Decode(&clips)
+	listResp.Body.Close()
+
+	imageCount := 0
+	for _, c := range clips {
+		if c.MediaPath != "" {
+			imageCount++
+		}
+	}
+	if imageCount != 3 {
+		t.Errorf("expected 3 image clips, got %d", imageCount)
+	}
+}
+
+func TestMediaReconciliation(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	store, err := relay.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+
+	// Create orphan file
+	os.WriteFile(filepath.Join(store.MediaDir, "orphan.png"), []byte("fake"), 0644)
+
+	// Reconcile should remove it
+	store.ReconcileMedia()
+
+	if _, err := os.Stat(filepath.Join(store.MediaDir, "orphan.png")); !os.IsNotExist(err) {
+		t.Error("orphan file was not removed by ReconcileMedia")
+	}
+
+	store.Close()
+}
+
+// ── Demo session tests ────────────────────────────────────────────
+
+// createDemoSession hits POST /demo/session and returns the response.
+func createDemoSession(t *testing.T, baseURL string) protocol.DemoSessionResponse {
+	t.Helper()
+	req, _ := http.NewRequest("POST", baseURL+"/demo/session", nil)
+	req.Header.Set("Origin", "https://cinchcli.com")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("demo session request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("demo session returned %d", resp.StatusCode)
+	}
+	var out protocol.DemoSessionResponse
+	json.NewDecoder(resp.Body).Decode(&out)
+	return out
+}
+
+func TestDemoSessionCreate(t *testing.T) {
+	ts, _ := setupTestServer(t)
+
+	sess := createDemoSession(t, ts.URL)
+
+	if sess.Token == "" {
+		t.Error("demo session returned empty token")
+	}
+	if sess.MaxClips != 5 {
+		t.Errorf("expected MaxClips=5, got %d", sess.MaxClips)
+	}
+	if sess.MaxBytes != 1024 {
+		t.Errorf("expected MaxBytes=1024, got %d", sess.MaxBytes)
+	}
+	if sess.ExpiresAt.Before(time.Now().UTC()) {
+		t.Error("demo session expires_at is in the past")
+	}
+}
+
+func TestDemoCORSHeaders(t *testing.T) {
+	ts, _ := setupTestServer(t)
+
+	req, _ := http.NewRequest("OPTIONS", ts.URL+"/demo/session", nil)
+	req.Header.Set("Origin", "https://cinchcli.com")
+	req.Header.Set("Access-Control-Request-Method", "POST")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("preflight failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "https://cinchcli.com" {
+		t.Errorf("expected CORS origin to be allowed, got %q", got)
+	}
+}
+
+func TestDemoCORSRejectsUnknownOrigin(t *testing.T) {
+	ts, _ := setupTestServer(t)
+
+	req, _ := http.NewRequest("POST", ts.URL+"/demo/session", nil)
+	req.Header.Set("Origin", "https://evil.example.com")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("expected no CORS header for unknown origin, got %q", got)
+	}
+}
+
+func TestDemoPushAndClipLimit(t *testing.T) {
+	ts, _ := setupTestServer(t)
+	sess := createDemoSession(t, ts.URL)
+
+	push := func(content string) int {
+		body, _ := json.Marshal(protocol.PushRequest{Content: content})
+		req, _ := http.NewRequest("POST", ts.URL+"/clips", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+sess.Token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("push failed: %v", err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	// First 5 pushes should succeed.
+	for i := 0; i < 5; i++ {
+		if code := push(fmt.Sprintf("clip %d", i)); code != http.StatusOK {
+			t.Fatalf("push %d expected 200, got %d", i, code)
+		}
+	}
+	// 6th should be rejected.
+	if code := push("overflow"); code != http.StatusTooManyRequests {
+		t.Errorf("6th push expected 429, got %d", code)
+	}
+}
+
+func TestDemoPushSizeLimit(t *testing.T) {
+	ts, _ := setupTestServer(t)
+	sess := createDemoSession(t, ts.URL)
+
+	// 1KB + 1 byte
+	large := strings.Repeat("a", 1025)
+	body, _ := json.Marshal(protocol.PushRequest{Content: large})
+	req, _ := http.NewRequest("POST", ts.URL+"/clips", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+sess.Token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("push failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Errorf("expected 413, got %d", resp.StatusCode)
+	}
+}
+
+func TestDemoPullForbidden(t *testing.T) {
+	ts, _ := setupTestServer(t)
+	sess := createDemoSession(t, ts.URL)
+
+	req, _ := http.NewRequest("POST", ts.URL+"/pull", nil)
+	req.Header.Set("Authorization", "Bearer "+sess.Token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("pull failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("expected 403 (demo read-only), got %d", resp.StatusCode)
+	}
+}
+
+func TestDemoExpiredToken(t *testing.T) {
+	store, err := relay.NewStore(":memory:")
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	hub := relay.NewHub()
+	go hub.Run()
+	handler := relay.NewHandler(store, hub)
+	mux := http.NewServeMux()
+	handler.RegisterRoutes(mux)
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	// Create a demo user, then backdate created_at to simulate expiry.
+	userID := "01DEMOEXPIREDUSER000000000"
+	token := "expired-demo-token"
+	if err := store.CreateDemoUser(userID, token); err != nil {
+		t.Fatalf("create demo: %v", err)
+	}
+	// Force expiry: bypass store API and update created_at directly via a new store on same file.
+	// Since we're in-memory we can re-open with a PRAGMA-aware path — skip by testing the TTL SQL directly.
+	_ = store.CleanupDemoSessions
+	// Instead: validate that the SQL correctly filters expired users via UserByToken.
+	// We piggyback on the fact that UserByToken rejects >10min old is_demo rows.
+	// So insert a forcibly-aged row.
+	if _, err := store.ExecForTest("UPDATE users SET created_at = datetime('now', '-11 minutes') WHERE id = ?", userID); err != nil {
+		t.Fatalf("backdating failed: %v", err)
+	}
+
+	body, _ := json.Marshal(protocol.PushRequest{Content: "late"})
+	req, _ := http.NewRequest("POST", ts.URL+"/clips", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("push failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("expected 401 for expired demo, got %d", resp.StatusCode)
+	}
+	var errResp protocol.ErrorResponse
+	json.NewDecoder(resp.Body).Decode(&errResp)
+	if errResp.Error != "demo expired" {
+		t.Errorf("expected 'demo expired' error, got %q", errResp.Error)
+	}
+}
+
+func TestDemoCounterIncrement(t *testing.T) {
+	ts, _ := setupTestServer(t)
+	sess := createDemoSession(t, ts.URL)
+
+	// Push once
+	body, _ := json.Marshal(protocol.PushRequest{Content: "hello"})
+	req, _ := http.NewRequest("POST", ts.URL+"/clips", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+sess.Token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("push failed: %v", err)
+	}
+	resp.Body.Close()
+
+	// Check stats
+	statsResp, err := http.Get(ts.URL + "/demo/stats")
+	if err != nil {
+		t.Fatalf("stats request failed: %v", err)
+	}
+	defer statsResp.Body.Close()
+
+	var stats protocol.DemoStatsResponse
+	json.NewDecoder(statsResp.Body).Decode(&stats)
+
+	if stats.PushesToday < 1 {
+		t.Errorf("expected pushes_today >= 1, got %d", stats.PushesToday)
+	}
+}

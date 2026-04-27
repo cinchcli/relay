@@ -1,0 +1,98 @@
+syntax = "proto3";
+
+package cinch.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/cinchcli/relay/internal/gen/cinch/v1;cinchv1";
+
+// ClipsService handles clipboard clip operations.
+service ClipsService {
+  // PushClip saves a text clip and broadcasts it to connected devices.
+  // Mirrors POST /clips — auth required.
+  rpc PushClip(PushClipRequest) returns (PushClipResponse);
+
+  // ListClips returns the 50 most recent clips for the caller.
+  // Mirrors GET /clips — auth required.
+  rpc ListClips(ListClipsRequest) returns (ListClipsResponse);
+
+  // GetLatestClip returns the most recent clip from a specific source.
+  // Mirrors GET /clips/latest?source=<hostname> — auth required.
+  rpc GetLatestClip(GetLatestClipRequest) returns (GetLatestClipResponse);
+
+  // DeleteClip removes a clip owned by the caller.
+  // Mirrors DELETE /clips/{id} — auth required.
+  rpc DeleteClip(DeleteClipRequest) returns (DeleteClipResponse);
+}
+
+// ─── Content Type ────────────────────────────────────────────
+
+enum ContentType {
+  CONTENT_TYPE_UNSPECIFIED = 0;
+  CONTENT_TYPE_TEXT        = 1;
+  CONTENT_TYPE_URL         = 2;
+  CONTENT_TYPE_CODE        = 3;
+  CONTENT_TYPE_IMAGE       = 4;
+}
+
+// ─── Clip ────────────────────────────────────────────────────
+
+message Clip {
+  string                    clip_id      = 1;
+  string                    user_id      = 2;
+  string                    content      = 3;
+  ContentType               content_type = 4;
+  string                    source       = 5;
+  string                    label        = 6;
+  int32                     byte_size    = 7;
+  optional string           media_path   = 8;
+  google.protobuf.Timestamp created_at   = 9;
+  optional int64            ttl          = 10;
+  bool                      encrypted    = 11;
+}
+
+// ─── PushClip ────────────────────────────────────────────────
+
+message PushClipRequest {
+  string      content           = 1;
+  ContentType content_type      = 2;
+  string      label             = 3;
+  string      source            = 4;
+  optional int64  ttl           = 5;
+  int32       byte_size         = 6;
+  bool        encrypted         = 7;
+  optional string target_device_id = 8;
+}
+
+message PushClipResponse {
+  string clip_id   = 1;
+  int32  byte_size = 2;
+}
+
+// ─── ListClips ───────────────────────────────────────────────
+
+message ListClipsRequest {}
+
+message ListClipsResponse {
+  repeated Clip clips = 1;
+}
+
+// ─── GetLatestClip ───────────────────────────────────────────
+
+message GetLatestClipRequest {
+  string source = 1;
+}
+
+message GetLatestClipResponse {
+  Clip clip = 1;
+}
+
+// ─── DeleteClip ──────────────────────────────────────────────
+
+message DeleteClipRequest {
+  string clip_id = 1;
+}
+
+message DeleteClipResponse {
+  bool ok = 1;
+}

@@ -1,0 +1,68 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+# vim: set ts=2 sw=2 tw=0 fo=cnqoj
+
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: relay
+    main: ./cmd/relay
+    binary: cinch-relay
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+
+archives:
+  - id: relay
+    ids: [relay]
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else }}{{ .Arch }}{{ end }}
+
+dockers:
+  - image_templates:
+      - "ghcr.io/cinchcli/relay:{{ .Tag }}-amd64"
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/amd64"
+  - image_templates:
+      - "ghcr.io/cinchcli/relay:{{ .Tag }}-arm64"
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/arm64"
+
+docker_manifests:
+  - name_template: "ghcr.io/cinchcli/relay:{{ .Tag }}"
+    image_templates:
+      - "ghcr.io/cinchcli/relay:{{ .Tag }}-amd64"
+      - "ghcr.io/cinchcli/relay:{{ .Tag }}-arm64"
+  - name_template: "ghcr.io/cinchcli/relay:latest"
+    image_templates:
+      - "ghcr.io/cinchcli/relay:{{ .Tag }}-amd64"
+      - "ghcr.io/cinchcli/relay:{{ .Tag }}-arm64"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+
+release:
+  github:
+    owner: cinchcli
+    name: relay

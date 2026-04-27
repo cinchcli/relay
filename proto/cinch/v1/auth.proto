@@ -1,0 +1,155 @@
+syntax = "proto3";
+
+package cinch.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/cinchcli/relay/internal/gen/cinch/v1;cinchv1";
+
+// AuthService handles account creation and device authentication.
+service AuthService {
+  // Login creates a new anonymous account and returns its credentials.
+  // Mirrors POST /auth/login — no auth required.
+  rpc Login(LoginRequest) returns (LoginResponse);
+
+  // Pair exchanges a pair token for a per-device auth token.
+  // Mirrors POST /auth/pair — no auth required.
+  rpc Pair(PairRequest) returns (PairResponse);
+
+  // DeviceCodeStart initiates the device-code OAuth flow.
+  // Mirrors POST /auth/device-code — no auth required.
+  rpc DeviceCodeStart(DeviceCodeStartRequest) returns (DeviceCodeStartResponse);
+
+  // DeviceCodePoll polls a device code for completion.
+  // Mirrors GET /auth/device-code/poll — no auth required.
+  rpc DeviceCodePoll(DeviceCodePollRequest) returns (DeviceCodePollResponse);
+
+  // DeviceCodeComplete marks a device code as approved.
+  // Mirrors POST /auth/device-code/complete — auth required.
+  rpc DeviceCodeComplete(DeviceCodeCompleteRequest) returns (DeviceCodeCompleteResponse);
+
+  // RevokeDevice revokes a paired device by ID.
+  // Mirrors POST /auth/device/revoke — auth required.
+  rpc RevokeDevice(RevokeDeviceRequest) returns (RevokeDeviceResponse);
+
+  // RotatePairToken issues a new pair token, invalidating the old one.
+  // Mirrors POST /auth/pair-token/new — auth required.
+  rpc RotatePairToken(RotatePairTokenRequest) returns (RotatePairTokenResponse);
+
+  // KeyBundlePut stores an encrypted key bundle for a target device.
+  // Mirrors POST /auth/key-bundle — auth required.
+  rpc KeyBundlePut(KeyBundlePutRequest) returns (KeyBundlePutResponse);
+
+  // KeyBundleGet retrieves the encrypted key bundle for the calling device.
+  // Mirrors GET /auth/key-bundle — auth required.
+  rpc KeyBundleGet(KeyBundleGetRequest) returns (KeyBundleGetResponse);
+}
+
+// ─── Login ──────────────────────────────────────────────────
+
+message LoginRequest {
+  optional string hostname = 1;
+}
+
+message LoginResponse {
+  string token      = 1;
+  string pair_token = 2;
+  string user_id    = 3;
+  string device_id  = 4;
+}
+
+// ─── Pair ───────────────────────────────────────────────────
+
+message PairRequest {
+  string          pair_token            = 1;
+  optional string hostname              = 2;
+  optional string device_public_key     = 3;
+  optional string device_key_fingerprint = 4;
+}
+
+message PairResponse {
+  string token     = 1;
+  string user_id   = 2;
+  string device_id = 3;
+}
+
+// ─── Device Code ────────────────────────────────────────────
+
+enum DeviceCodeStatus {
+  DEVICE_CODE_STATUS_UNSPECIFIED = 0;
+  DEVICE_CODE_STATUS_PENDING     = 1;
+  DEVICE_CODE_STATUS_COMPLETE    = 2;
+}
+
+message DeviceCodeStartRequest {
+  optional string hostname = 1;
+}
+
+message DeviceCodeStartResponse {
+  string device_code       = 1;
+  string user_code         = 2;
+  string verification_uri  = 3;
+  int32  expires_in        = 4;
+  int32  interval          = 5;
+}
+
+message DeviceCodePollRequest {
+  string code = 1;
+}
+
+message DeviceCodePollResponse {
+  DeviceCodeStatus  status    = 1;
+  optional string   token     = 2;
+  optional string   user_id   = 3;
+  optional string   device_id = 4;
+}
+
+message DeviceCodeCompleteRequest {
+  string user_code  = 1;
+  string user_id    = 2;
+  string device_id  = 3;
+  string token      = 4;
+}
+
+message DeviceCodeCompleteResponse {
+  string status = 1;
+}
+
+// ─── Revoke Device ──────────────────────────────────────────
+
+message RevokeDeviceRequest {
+  string device_id = 1;
+}
+
+message RevokeDeviceResponse {
+  bool                       ok         = 1;
+  string                     device_id  = 2;
+  google.protobuf.Timestamp  revoked_at = 3;
+}
+
+// ─── Rotate Pair Token ──────────────────────────────────────
+
+message RotatePairTokenRequest {}
+
+message RotatePairTokenResponse {
+  string pair_token = 1;
+}
+
+// ─── Key Bundle ─────────────────────────────────────────────
+
+message KeyBundlePutRequest {
+  string device_id            = 1;
+  string ephemeral_public_key = 2;
+  string encrypted_bundle     = 3;
+}
+
+message KeyBundlePutResponse {
+  bool ok = 1;
+}
+
+message KeyBundleGetRequest {}
+
+message KeyBundleGetResponse {
+  string ephemeral_public_key = 1;
+  string encrypted_bundle     = 2;
+}

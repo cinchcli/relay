@@ -1,0 +1,23 @@
+# Lefthook config — git hooks for cinch relay (Go + buf)
+# Install: brew install lefthook && lefthook install
+
+pre-commit:
+  parallel: true
+  commands:
+    go-fmt:
+      glob: "*.go"
+      run: gofmt -l {staged_files} && test -z "$(gofmt -l {staged_files})"
+      fail_text: "Run: gofmt -w <file>"
+    go-vet:
+      glob: "*.go"
+      run: go vet ./...
+
+pre-push:
+  parallel: true
+  commands:
+    go-test:
+      glob: "*.go"
+      run: go test ./... -race -count=1
+    go-build:
+      glob: "*.go"
+      run: go build ./cmd/relay

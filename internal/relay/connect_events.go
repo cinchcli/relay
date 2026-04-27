@@ -1,0 +1,167 @@
+package relay
+
+import (
+	"context"
+	"net/http"
+
+	"connectrpc.com/connect"
+
+	cinchv1 "github.com/cinchcli/relay/internal/gen/cinch/v1"
+	"github.com/cinchcli/relay/internal/gen/cinch/v1/cinchv1connect"
+	"github.com/cinchcli/protocol"
+)
+
+type connectEventsServer struct {
+	h *Handler
+}
+
+var _ cinchv1connect.EventStreamServiceHandler = (*connectEventsServer)(nil)
+
+// wsMessageToServerEvent translates a protocol.WSMessage into a typed proto ServerEvent.
+// Messages that don't map to a known server-push event are returned as nil (caller skips).
+func wsMessageToServerEvent(msg protocol.WSMessage) *cinchv1.ServerEvent {
+	switch msg.Action {
+	case protocol.ActionNewClip:
+		if msg.Clip == nil {
+			return nil
+		}
+		return &cinchv1.ServerEvent{
+			Event: &cinchv1.ServerEvent_NewClip{
+				NewClip: &cinchv1.NewClipEvent{Clip: protoClip(msg.Clip)},
+			},
+		}
+	case protocol.ActionSendClipboard:
+		return &cinchv1.ServerEvent{
+			Event: &cinchv1.ServerEvent_SendClipboard{
+				SendClipboard: &cinchv1.SendClipboardEvent{PullId: msg.PullID},
+			},
+		}
+	case protocol.ActionRevoked:
+		return &cinchv1.ServerEvent{
+			Event: &cinchv1.ServerEvent_Revoked{
+				Revoked: &cinchv1.RevokedEvent{Reason: msg.Reason},
+			},
+		}
+	case protocol.ActionTokenRotated:
+		return &cinchv1.ServerEvent{
+			Event: &cinchv1.ServerEvent_TokenRotated{
+				TokenRotated: &cinchv1.TokenRotatedEvent{
+					Token:    msg.Token,
+					DeviceId: msg.DeviceID,
+					Hostname: msg.Hostname,
+				},
+			},
+		}
+	case protocol.ActionKeyExchangeRequested:
+		return &cinchv1.ServerEvent{
+			Event: &cinchv1.ServerEvent_KeyExchange{
+				KeyExchange: &cinchv1.KeyExchangeEvent{
+					DeviceId:             msg.DeviceID,
+					Hostname:             msg.Hostname,
+					DeviceKeyFingerprint: msg.DeviceKeyFingerprint,
+				},
+			},
+		}
+	default:
+		return nil // ping/pong and internal-only actions are not forwarded
+	}
+}
+
+// ─── Subscribe ───────────────────────────────────────────────
+
+func (s *connectEventsServer) Subscribe(
+	ctx context.Context,
+	req *connect.Request[cinchv1.SubscribeRequest],
+	stream *connect.ServerStream[cinchv1.ServerEvent],
+) error {
+	userID := req.Header().Get("X-User-ID")
+	deviceID := req.Header().Get("X-Device-ID")
+	if deviceID == "" {
+		return connect.NewError(connect.CodeUnauthenticated, errMsg("per-device token required for event stream"))
+	}
+
+	ch := s.h.hub.RegisterEventSub(userID, deviceID)
+	defer s.h.hub.UnregisterEventSub(userID, deviceID)
+
+	// Notify pending key exchanges for devices that paired while this device was offline.
+	go func() {
+		pending, err := s.h.store.ListPendingKeyExchanges(userID)
+		if err != nil {
+			return
+		}
+		for _, d := range pending {
+			s.h.hub.sendToEventSub(userID, deviceID, protocol.WSMessage{
+				Action:               protocol.ActionKeyExchangeRequested,
+				DeviceID:             d.ID,
+				Hostname:             d.Hostname,
+				DeviceKeyFingerprint: d.PublicKeyFingerprint,
+			})
+		}
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case msg, ok := <-ch:
+			if !ok {
+				// Channel closed — a new connection for this device replaced this one.
+				return nil
+			}
+			event := wsMessageToServerEvent(msg)
+			if event == nil {
+				continue
+			}
+			if err := stream.Send(event); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+// ─── ProvideClipboard ────────────────────────────────────────
+
+func (s *connectEventsServer) ProvideClipboard(
+	ctx context.Context,
+	req *connect.Request[cinchv1.ProvideClipboardRequest],
+) (*connect.Response[cinchv1.ProvideClipboardResponse], error) {
+	if req.Msg.PullId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errMsg("pull_id is required"))
+	}
+	s.h.hub.DeliverClipboard(req.Msg.PullId, req.Msg.Content)
+	return connect.NewResponse(&cinchv1.ProvideClipboardResponse{Ok: true}), nil
+}
+
+// eventsAuthInterceptor applies auth for both unary calls and server-streaming Subscribe.
+// UnaryInterceptorFunc only covers unary calls, so a full Interceptor is needed here.
+type eventsAuthInterceptor struct{ h *Handler }
+
+func (i *eventsAuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
+	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+		if err := i.h.requireConnectAuth(req); err != nil {
+			return nil, err
+		}
+		return next(ctx, req)
+	}
+}
+
+func (i *eventsAuthInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
+	return next // relay is server-side only
+}
+
+func (i *eventsAuthInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
+	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
+		if err := i.h.requireConnectAuthHeaders(conn.RequestHeader()); err != nil {
+			return err
+		}
+		return next(ctx, conn)
+	}
+}
+
+// newEventsConnectHandler returns the mounted EventStreamService handler.
+func (h *Handler) newEventsConnectHandler() (string, http.Handler) {
+	return cinchv1connect.NewEventStreamServiceHandler(
+		&connectEventsServer{h: h},
+		connect.WithInterceptors(&eventsAuthInterceptor{h: h}),
+	)
+}
