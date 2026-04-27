@@ -1,0 +1,35 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - revive
+    - staticcheck
+    - unconvert
+    - unused
+
+  settings:
+    revive:
+      rules:
+        - name: unused-parameter
+          disabled: true
+    gosec:
+      excludes:
+        - G104  # audited error returns (errcheck covers these)
+
+  exclusions:
+    paths:
+      - internal/gen        # generated protobuf
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
