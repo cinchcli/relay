@@ -5,6 +5,8 @@ services:
       - "8080:8080"
     volumes:
       - relay-data:/data
+    env_file:
+      - /etc/cinch/relay.env   # created on the host; never commit this file
     environment:
       - PORT=8080
       - DB_PATH=/data/cinch.db

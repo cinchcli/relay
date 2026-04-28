@@ -430,6 +430,40 @@ func migrate(db *sql.DB) error {
 		}
 	}
 
+	// OAuth migration: identity_provider and identity_subject on users.
+	var hasIdentityProvider bool
+	oaRows, err := db.Query("PRAGMA table_info(users)")
+	if err != nil {
+		return err
+	}
+	defer oaRows.Close()
+	for oaRows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull int
+		var dfltValue sql.NullString
+		var pk int
+		if err := oaRows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk); err != nil {
+			return err
+		}
+		if name == "identity_provider" {
+			hasIdentityProvider = true
+		}
+	}
+	if !hasIdentityProvider {
+		if _, err = db.Exec("ALTER TABLE users ADD COLUMN identity_provider TEXT"); err != nil {
+			return err
+		}
+		if _, err = db.Exec("ALTER TABLE users ADD COLUMN identity_subject TEXT"); err != nil {
+			return err
+		}
+	}
+	if _, err = db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_identity
+		ON users(identity_provider, identity_subject)
+		WHERE identity_provider IS NOT NULL`); err != nil {
+		return err
+	}
+
 	// Phase 2 migration: remove NOT NULL from users.token so the grace sweeper can NULL it.
 	// SQLite requires a table rebuild to change column constraints.
 	// Detect by reading the CREATE TABLE SQL; rebuild only if NOT NULL is present.
@@ -484,6 +518,57 @@ func (s *Store) CreateUser(id, token, pairToken string) error {
 		id, token, pt,
 	)
 	return err
+}
+
+// UpsertOAuthUser finds or creates a user by OAuth identity and provisions a device token.
+// provider is "github" or "google"; subject is the stable provider-side user ID.
+// Returns (userID, deviceID, deviceToken) ready to pass to CompleteDeviceCode.
+func (s *Store) UpsertOAuthUser(provider, subject, hostname string) (string, string, string, error) {
+	if hostname == "" {
+		hostname = "unknown"
+	}
+
+	// Try to find existing user.
+	var userID string
+	err := s.db.QueryRow(
+		"SELECT id FROM users WHERE identity_provider = ? AND identity_subject = ?",
+		provider, subject,
+	).Scan(&userID)
+
+	if err == sql.ErrNoRows {
+		// New OAuth user — create account.
+		userID = ulid.Make().String()
+		masterToken := generateStoreToken()
+		_, err = s.db.Exec(
+			`INSERT INTO users (id, token, identity_provider, identity_subject) VALUES (?, ?, ?, ?)`,
+			userID, masterToken, provider, subject,
+		)
+		if err != nil {
+			return "", "", "", fmt.Errorf("creating oauth user: %w", err)
+		}
+	} else if err != nil {
+		return "", "", "", fmt.Errorf("looking up oauth user: %w", err)
+	}
+
+	// Mint a per-device token for this sign-in.
+	deviceID := ulid.Make().String()
+	deviceToken := generateStoreToken()
+	sourceKey := "remote:" + hostname
+	_, err = s.db.Exec(
+		`INSERT INTO devices (id, user_id, hostname, source_key, token)
+		 VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(user_id, source_key) DO UPDATE SET token = excluded.token`,
+		deviceID, userID, hostname, sourceKey, deviceToken,
+	)
+	if err != nil {
+		return "", "", "", fmt.Errorf("provisioning device: %w", err)
+	}
+	// On conflict the INSERT doesn't return the existing row id; fetch it.
+	_ = s.db.QueryRow(
+		"SELECT id FROM devices WHERE user_id = ? AND source_key = ?", userID, sourceKey,
+	).Scan(&deviceID)
+
+	return userID, deviceID, deviceToken, nil
 }
 
 // UserByToken returns the user ID for a given auth token.
@@ -1092,6 +1177,16 @@ func (s *Store) PollDeviceCode(deviceCode string) (*protocol.DeviceCodePollRespo
 	}
 
 	return &protocol.DeviceCodePollResponse{Status: "pending"}, nil
+}
+
+// DeviceCodeHostname returns the hostname stored in a device_codes row by user_code.
+// Used by the OAuth callback to pre-populate the device name.
+func (s *Store) DeviceCodeHostname(userCode string) (string, error) {
+	var hostname string
+	err := s.db.QueryRow(
+		"SELECT hostname FROM device_codes WHERE user_code = ?", userCode,
+	).Scan(&hostname)
+	return hostname, err
 }
 
 // CleanupExpiredDeviceCodes removes device codes that expired more than 1 hour ago.
