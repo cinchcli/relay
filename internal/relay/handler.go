@@ -73,9 +73,11 @@ var upgrader = websocket.Upgrader{
 }
 
 type Handler struct {
-	store   *Store
-	hub     *Hub
-	BaseURL string // public base URL of the relay (for verification URIs)
+	store       *Store
+	hub         *Hub
+	BaseURL     string         // public base URL of the relay (for verification URIs)
+	OAuth       *OAuthProviders // nil = OAuth not configured; self-host falls back to username form
+	CORSOrigins []string       // extra allowed origins beyond the hardcoded landing page defaults
 }
 
 func NewHandler(store *Store, hub *Hub) *Handler {
@@ -1096,11 +1098,21 @@ func deriveWSURL(r *http.Request) string {
 	return scheme + "://" + r.Host + "/ws"
 }
 
-// DemoCORS wraps a handler with CORS headers allowing the landing page origin.
+// DemoCORS wraps a handler with CORS headers allowing the landing page origin
+// plus any extra origins configured via h.CORSOrigins (from the CORS_ORIGINS env var).
 func (h *Handler) DemoCORS(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		if origin == demoAllowOrigin || origin == demoAllowOriginL {
+		allowed := origin == demoAllowOrigin || origin == demoAllowOriginL
+		if !allowed {
+			for _, o := range h.CORSOrigins {
+				if o == origin {
+					allowed = true
+					break
+				}
+			}
+		}
+		if allowed {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
@@ -1315,14 +1327,70 @@ button:disabled{opacity:.5;cursor:not-allowed}
 </body>
 </html>`
 
-// AuthBrowser serves a self-contained HTML login page.
-// On success, redirects to cinch://auth/callback with token credentials.
-// If ?device_code=XXXX-XXXX is present, also completes the device-code flow.
+// AuthBrowser serves the sign-in page.
+// When OAuth is configured, shows GitHub/Google buttons.
+// Falls back to the legacy username form for self-hosters who don't set OAuth env vars.
 func (h *Handler) AuthBrowser(w http.ResponseWriter, r *http.Request) {
+	deviceCode := r.URL.Query().Get("device_code")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
+
+	hasGitHub := h.OAuth != nil && h.OAuth.GitHub != nil
+	hasGoogle := h.OAuth != nil && h.OAuth.Google != nil
+
+	if hasGitHub || hasGoogle {
+		// Build OAuth button HTML.
+		var buttons strings.Builder
+		if hasGitHub {
+			fmt.Fprintf(&buttons,
+				`<a class="btn github" href="/auth/oauth/github/start?device_code=%s">
+				  <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+				    <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/>
+				  </svg>
+				  Sign in with GitHub
+				</a>`, deviceCode)
+		}
+		if hasGoogle {
+			fmt.Fprintf(&buttons,
+				`<a class="btn google" href="/auth/oauth/google/start?device_code=%s">
+				  <svg width="20" height="20" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+				  Sign in with Google
+				</a>`, deviceCode)
+		}
+		fmt.Fprintf(w, authOAuthHTML, buttons.String())
+		return
+	}
+
+	// Legacy self-host fallback: username form.
 	w.Write([]byte(authBrowserHTML))
 }
+
+// authOAuthHTML is the OAuth sign-in page. %s is replaced with OAuth button anchor tags.
+const authOAuthHTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in to Cinch</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#07080a;color:#F0EBE0;font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh}
+.card{background:#0f1114;border:1px solid #1a1d23;border-radius:12px;padding:2.5rem;width:100%%;max-width:400px;text-align:center}
+h1{font-size:1.25rem;font-weight:600;margin-bottom:.5rem}
+p{color:#8a8a8a;font-size:.875rem;margin-bottom:1.75rem}
+.btn{display:flex;align-items:center;justify-content:center;gap:.625rem;width:100%%;padding:.75rem;border-radius:6px;font-size:.875rem;font-weight:600;text-decoration:none;margin-bottom:.75rem;transition:opacity .15s}
+.github{background:#f0f0f0;color:#07080a}
+.google{background:#fff;color:#3c4043;border:1px solid #dadce0}
+.btn:hover{opacity:.9}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Sign in to Cinch</h1>
+  <p>Connect your devices with a free account.</p>
+  %s
+</div>
+</body>
+</html>`
 
 // CompleteDeviceCodeHTTP is the HTTP handler for POST /auth/device-code/complete.
 // Called by the browser auth page to bridge device-code flow completion.
@@ -1477,6 +1545,12 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("OPTIONS /demo/playground/push", h.DemoCORS(func(w http.ResponseWriter, r *http.Request) {}))
 	mux.HandleFunc("GET /demo/stream/{sid}", h.DemoCORS(h.DemoStream))
 	mux.HandleFunc("OPTIONS /demo/stream/{sid}", h.DemoCORS(func(w http.ResponseWriter, r *http.Request) {}))
+
+	// OAuth sign-in routes (no-op when OAuth not configured; self-host falls back to username form)
+	mux.HandleFunc("GET /auth/oauth/github/start", h.OAuthStart("github"))
+	mux.HandleFunc("GET /auth/oauth/github/callback", h.OAuthCallback("github"))
+	mux.HandleFunc("GET /auth/oauth/google/start", h.OAuthStart("google"))
+	mux.HandleFunc("GET /auth/oauth/google/callback", h.OAuthCallback("google"))
 
 	// Connect-RPC handlers — mounted in parallel with REST (PR-B1 pilot).
 	// REST endpoints above are kept until all clients migrate.

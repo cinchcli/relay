@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	relay "github.com/cinchcli/relay/internal/relay"
@@ -64,6 +65,29 @@ func main() {
 	go hub.Run()
 
 	handler := relay.NewHandler(store, hub)
+
+	// BASE_URL is the public HTTPS root (e.g. https://api.cinchcli.com).
+	// Required for OAuth redirect URIs and device-code verification URIs.
+	handler.BaseURL = os.Getenv("BASE_URL")
+
+	// CORS_ORIGINS: comma-separated extra allowed origins for self-hosters.
+	if corsEnv := os.Getenv("CORS_ORIGINS"); corsEnv != "" {
+		for _, o := range strings.Split(corsEnv, ",") {
+			if trimmed := strings.TrimSpace(o); trimmed != "" {
+				handler.CORSOrigins = append(handler.CORSOrigins, trimmed)
+			}
+		}
+	}
+
+	// OAuth providers — relay works without these (self-host username form fallback).
+	handler.OAuth = relay.NewOAuthProviders(
+		handler.BaseURL,
+		os.Getenv("GITHUB_CLIENT_ID"),
+		os.Getenv("GITHUB_CLIENT_SECRET"),
+		os.Getenv("GOOGLE_CLIENT_ID"),
+		os.Getenv("GOOGLE_CLIENT_SECRET"),
+	)
+
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
 	handler.StartPlaygroundReset()
