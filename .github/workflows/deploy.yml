@@ -1,0 +1,52 @@
+name: Deploy to api.cinchcli.com
+
+on:
+  workflow_run:
+    workflows: [goreleaser]
+    types: [completed]
+    branches-ignore: ['**']  # only tags trigger goreleaser on push
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag to deploy (default: latest)'
+        default: 'latest'
+        required: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    # On tag push: always run. On workflow_dispatch: always run.
+    # On workflow_run: only if goreleaser succeeded.
+    if: >
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    steps:
+      - name: Roll new image on OCI VM
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.RELAY_SSH_HOST }}
+          username: ${{ secrets.RELAY_SSH_USER }}
+          key: ${{ secrets.RELAY_SSH_KEY }}
+          script: |
+            set -e
+            TAG="${{ inputs.image_tag || 'latest' }}"
+            docker pull ghcr.io/cinchcli/relay:${TAG}
+            docker stop cinch-relay || true
+            docker rm cinch-relay || true
+            docker run -d \
+              --name cinch-relay \
+              --restart always \
+              -p 8080:8080 \
+              -v /data:/data \
+              --env-file /etc/cinch/relay.env \
+              -e PORT=8080 \
+              -e DB_PATH=/data/cinch.db \
+              ghcr.io/cinchcli/relay:${TAG}
+            sleep 3
+            curl -sf http://localhost:8080/health | grep -q ok
+            echo "Deployed ghcr.io/cinchcli/relay:${TAG}"
