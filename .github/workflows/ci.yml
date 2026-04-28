@@ -57,9 +57,7 @@ jobs:
 
       - name: Buf breaking change check
         if: github.event_name == 'pull_request'
-        run: |
-          git fetch origin main --depth=1
-          buf breaking --against '.git#branch=main'
+        run: buf breaking --against "https://github.com/${{ github.repository }}.git#branch=main"
 
       - name: Proto drift check (generated code matches proto)
         run: |
