@@ -21,6 +21,9 @@ import (
 type OAuthProvider struct {
 	clientSecret string
 	cfg          *oauth2.Config
+	// subjectFetcher resolves a stable user identifier from the provider token.
+	// nil falls back to fetchOAuthSubject. Replaceable in tests.
+	subjectFetcher func(providerName string, cfg *oauth2.Config, tok *oauth2.Token) (string, error)
 }
 
 // OAuthProviders bundles the configured providers. A nil entry means that
@@ -163,7 +166,11 @@ func (h *Handler) OAuthCallback(providerName string) http.HandlerFunc {
 		}
 
 		// Fetch the user's stable subject ID from the provider.
-		subject, err := fetchOAuthSubject(providerName, prov.cfg, tok)
+		fetcher := prov.subjectFetcher
+		if fetcher == nil {
+			fetcher = fetchOAuthSubject
+		}
+		subject, err := fetcher(providerName, prov.cfg, tok)
 		if err != nil {
 			log.Printf("oauth callback: profile fetch failed (%s): %v", providerName, err)
 			http.Error(w, "Failed to fetch profile", http.StatusBadGateway)
