@@ -103,6 +103,23 @@ func decodeState(state, clientSecret string) (string, error) {
 	return userCode, nil
 }
 
+// GetProviders returns which OAuth providers are configured on this relay.
+// GET /auth/providers — no auth required; safe to call before sign-in.
+// Response: { "providers": ["github", "google"] }  (empty array if none configured)
+func (h *Handler) GetProviders(w http.ResponseWriter, r *http.Request) {
+	providers := []string{}
+	if h.OAuth != nil {
+		if h.OAuth.GitHub != nil {
+			providers = append(providers, "github")
+		}
+		if h.OAuth.Google != nil {
+			providers = append(providers, "google")
+		}
+	}
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	writeJSON(w, http.StatusOK, map[string][]string{"providers": providers})
+}
+
 // OAuthStart redirects the browser to the OAuth provider for authorization.
 // GET /auth/oauth/{provider}/start?device_code=<user_code>
 func (h *Handler) OAuthStart(providerName string) http.HandlerFunc {
