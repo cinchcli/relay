@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"golang.org/x/oauth2"
@@ -177,6 +178,24 @@ func (h *Handler) OAuthCallback(providerName string) http.HandlerFunc {
 		if err != nil {
 			log.Printf("oauth callback: upsert failed: %v", err)
 			http.Error(w, "Account provisioning failed", http.StatusInternalServerError)
+			return
+		}
+
+		// If userCode is empty, the request came from the desktop app (no device-code
+		// flow). Redirect to cinch://auth/callback so the Tauri deep-link handler
+		// can complete authentication without polling.
+		if userCode == "" {
+			baseURL := h.BaseURL
+			if baseURL == "" {
+				baseURL = deriveRelayURL(r)
+			}
+			callbackURL := fmt.Sprintf("cinch://auth/callback?token=%s&device_id=%s&user_id=%s&relay_url=%s",
+				url.QueryEscape(deviceToken),
+				url.QueryEscape(deviceID),
+				url.QueryEscape(userID),
+				url.QueryEscape(baseURL),
+			)
+			http.Redirect(w, r, callbackURL, http.StatusFound)
 			return
 		}
 
