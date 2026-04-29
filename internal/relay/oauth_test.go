@@ -361,3 +361,55 @@ func TestOAuthStart_OAuthNotConfigured_Returns501(t *testing.T) {
 		t.Errorf("expected 501, got %d", resp.StatusCode)
 	}
 }
+
+// ── GetProviders ─────────────────────────────────────────────────────────────
+
+// TestGetProviders_NoOAuth returns an empty providers list when OAuth is not configured.
+func TestGetProviders_NoOAuth(t *testing.T) {
+	ts, _ := setupTestServer(t)
+
+	resp, err := http.Get(ts.URL + "/auth/providers")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var body struct {
+		Providers []string `json:"providers"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if len(body.Providers) != 0 {
+		t.Errorf("expected empty providers, got %v", body.Providers)
+	}
+}
+
+// TestGetProviders_WithOAuth returns the configured provider names.
+func TestGetProviders_WithOAuth(t *testing.T) {
+	ts, _ := setupOAuthTestServer(t, "any")
+
+	resp, err := http.Get(ts.URL + "/auth/providers")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var body struct {
+		Providers []string `json:"providers"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if len(body.Providers) != 1 || body.Providers[0] != "google" {
+		t.Errorf("expected [google] (only Google wired in setupOAuthTestServer), got %v", body.Providers)
+	}
+}

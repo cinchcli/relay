@@ -1556,6 +1556,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("OPTIONS /demo/stream/{sid}", h.DemoCORS(func(w http.ResponseWriter, r *http.Request) {}))
 
 	// OAuth sign-in routes (no-op when OAuth not configured; self-host falls back to username form)
+	mux.HandleFunc("GET /auth/providers", h.GetProviders)
 	mux.HandleFunc("GET /auth/oauth/github/start", h.OAuthStart("github"))
 	mux.HandleFunc("GET /auth/oauth/github/callback", h.OAuthCallback("github"))
 	mux.HandleFunc("GET /auth/oauth/google/start", h.OAuthStart("google"))
