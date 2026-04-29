@@ -5,11 +5,22 @@ services:
       - "8080:8080"
     volumes:
       - relay-data:/data
-    env_file:
-      - /etc/cinch/relay.env   # created on the host; never commit this file
     environment:
       - PORT=8080
       - DB_PATH=/data/cinch.db
+      # BASE_URL is required for OAuth sign-in (leave unset to use username form)
+      # BASE_URL=https://relay.example.com
+      #
+      # GitHub OAuth (optional — enables "Sign in with GitHub")
+      # GITHUB_CLIENT_ID=
+      # GITHUB_CLIENT_SECRET=
+      #
+      # Google OAuth (optional — enables "Sign in with Google")
+      # GOOGLE_CLIENT_ID=
+      # GOOGLE_CLIENT_SECRET=
+      #
+      # Extra CORS origins, comma-separated (optional)
+      # CORS_ORIGINS=https://your-frontend.example.com
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
       interval: 30s
