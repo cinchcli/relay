@@ -1055,6 +1055,8 @@ func (h *Handler) DemoStream(w http.ResponseWriter, r *http.Request) {
 	ch := h.hub.SubscribeDemoStream(userID)
 	defer h.hub.UnsubscribeDemoStream(userID, ch)
 
+	plain := r.URL.Query().Get("plain") == "1"
+
 	flusher, canFlush := w.(http.Flusher)
 	if canFlush {
 		flusher.Flush()
@@ -1067,11 +1069,15 @@ func (h *Handler) DemoStream(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			data, _ := json.Marshal(map[string]any{
-				"action": "demo_clip",
-				"clip":   map[string]string{"content": content, "clip_id": ulid.Make().String()},
-			})
-			fmt.Fprintf(w, "data: %s\n\n", data)
+			if plain {
+				fmt.Fprintf(w, "%s\n", content)
+			} else {
+				data, _ := json.Marshal(map[string]any{
+					"action": "demo_clip",
+					"clip":   map[string]string{"content": content, "clip_id": ulid.Make().String()},
+				})
+				fmt.Fprintf(w, "data: %s\n\n", data)
+			}
 			if canFlush {
 				flusher.Flush()
 			}
