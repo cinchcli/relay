@@ -88,6 +88,10 @@ func main() {
 		os.Getenv("GOOGLE_CLIENT_SECRET"),
 	)
 
+	// Telemetry proxy — silently disabled when env vars are absent.
+	handler.TelemetryURL = strings.TrimRight(os.Getenv("TELEMETRY_URL"), "/")
+	handler.TelemetryAPIKey = os.Getenv("TELEMETRY_API_KEY")
+
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
 	handler.StartPlaygroundReset()
