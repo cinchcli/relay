@@ -488,14 +488,19 @@ func migrateDropUsersTokenNotNull(db *sql.DB) error {
 
 	_, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS users_new (
-			id                 TEXT PRIMARY KEY,
-			token              TEXT UNIQUE,
-			pair_token         TEXT UNIQUE,
-			created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
-			is_demo            INTEGER DEFAULT 0,
-			token_migrated_at  DATETIME
+			id                  TEXT PRIMARY KEY,
+			token               TEXT UNIQUE,
+			pair_token          TEXT UNIQUE,
+			created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+			is_demo             INTEGER DEFAULT 0,
+			token_migrated_at   DATETIME,
+			identity_provider   TEXT,
+			identity_subject    TEXT
 		);
-		INSERT INTO users_new SELECT id, token, pair_token, created_at, COALESCE(is_demo,0), token_migrated_at FROM users;
+		INSERT INTO users_new
+			SELECT id, token, pair_token, created_at, COALESCE(is_demo,0), token_migrated_at,
+			       NULL, NULL
+			FROM users;
 		DROP TABLE users;
 		ALTER TABLE users_new RENAME TO users;
 	`)
