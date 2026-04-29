@@ -78,10 +78,19 @@ type Handler struct {
 	BaseURL     string          // public base URL of the relay (for verification URIs)
 	OAuth       *OAuthProviders // nil = OAuth not configured; self-host falls back to username form
 	CORSOrigins []string        // extra allowed origins beyond the hardcoded landing page defaults
+
+	TelemetryURL    string // e.g. https://telemetry.jinmu.me
+	TelemetryAPIKey string // X-API-Key sent to telemetry backend
+
+	telemetryLimiter *rateLimiter
 }
 
 func NewHandler(store *Store, hub *Hub) *Handler {
-	return &Handler{store: store, hub: hub}
+	return &Handler{
+		store:            store,
+		hub:              hub,
+		telemetryLimiter: newRateLimiter(5, time.Hour),
+	}
 }
 
 // RequireAuth wraps a handler with token authentication.
@@ -1551,6 +1560,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /auth/oauth/github/callback", h.OAuthCallback("github"))
 	mux.HandleFunc("GET /auth/oauth/google/start", h.OAuthStart("google"))
 	mux.HandleFunc("GET /auth/oauth/google/callback", h.OAuthCallback("google"))
+
+	// Anonymous opt-in telemetry (no auth; always 200 to client; silently dropped if backend not configured)
+	mux.HandleFunc("POST /telemetry", h.HandleTelemetry)
 
 	// Connect-RPC handlers — mounted in parallel with REST (PR-B1 pilot).
 	// REST endpoints above are kept until all clients migrate.
