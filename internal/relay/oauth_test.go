@@ -362,6 +362,101 @@ func TestOAuthStart_OAuthNotConfigured_Returns501(t *testing.T) {
 	}
 }
 
+// TestOAuthCallback_ReauthAfterRevoke_ClearsRevocation verifies that a previously
+// revoked device can re-authenticate via OAuth and get a valid (non-revoked) token.
+// Regression test for: UpsertOAuthUser ON CONFLICT not clearing revoked_at.
+func TestOAuthCallback_ReauthAfterRevoke_ClearsRevocation(t *testing.T) {
+	ts, _ := setupOAuthTestServer(t, "reauth-subject-789")
+
+	// Helper: run the full device-code OAuth flow and return the device token.
+	doOAuthFlow := func() (token, deviceID string) {
+		dcResp, err := http.Post(ts.URL+"/auth/device-code", "application/json",
+			strings.NewReader(`{"hostname":"reauth-host"}`))
+		if err != nil {
+			t.Fatalf("device code request failed: %v", err)
+		}
+		var dc struct {
+			DeviceCode string `json:"device_code"`
+			UserCode   string `json:"user_code"`
+		}
+		json.NewDecoder(dcResp.Body).Decode(&dc)
+		dcResp.Body.Close()
+
+		cbResp, err := http.Get(buildCallbackURL(ts.URL, dc.UserCode, testClientSecret))
+		if err != nil {
+			t.Fatalf("oauth callback failed: %v", err)
+		}
+		cbResp.Body.Close()
+
+		pollResp, err := http.Get(ts.URL + "/auth/device-code/poll?code=" + dc.DeviceCode)
+		if err != nil {
+			t.Fatalf("poll failed: %v", err)
+		}
+		var result struct {
+			Status   string `json:"status"`
+			Token    string `json:"token"`
+			DeviceID string `json:"device_id"`
+		}
+		json.NewDecoder(pollResp.Body).Decode(&result)
+		pollResp.Body.Close()
+
+		if result.Status != "complete" {
+			t.Fatalf("expected complete, got %q", result.Status)
+		}
+		return result.Token, result.DeviceID
+	}
+
+	// First sign-in.
+	token1, deviceID1 := doOAuthFlow()
+	if token1 == "" {
+		t.Fatal("first sign-in: token should not be empty")
+	}
+
+	// Revoke the device via the API.
+	revokeBody := strings.NewReader(`{"device_id":"` + deviceID1 + `"}`)
+	req, _ := http.NewRequest("POST", ts.URL+"/auth/device/revoke", revokeBody)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token1)
+	revokeResp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("revoke request failed: %v", err)
+	}
+	revokeResp.Body.Close()
+	if revokeResp.StatusCode != http.StatusOK {
+		t.Fatalf("revoke: expected 200, got %d", revokeResp.StatusCode)
+	}
+
+	// Confirm the old token is revoked: /devices should return 401.
+	req2, _ := http.NewRequest("GET", ts.URL+"/devices", nil)
+	req2.Header.Set("Authorization", "Bearer "+token1)
+	resp, _ := http.DefaultClient.Do(req2)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("after revoke: expected 401 with old token, got %d", resp.StatusCode)
+	}
+
+	// Re-authenticate via OAuth (same GitHub subject → same user, same device hostname).
+	token2, _ := doOAuthFlow()
+	if token2 == "" {
+		t.Fatal("second sign-in: token should not be empty")
+	}
+	if token2 == token1 {
+		t.Fatal("second sign-in should issue a new token")
+	}
+
+	// New token must NOT be rejected as revoked.
+	req3, _ := http.NewRequest("GET", ts.URL+"/devices", nil)
+	req3.Header.Set("Authorization", "Bearer "+token2)
+	resp3, err := http.DefaultClient.Do(req3)
+	if err != nil {
+		t.Fatalf("devices request failed: %v", err)
+	}
+	resp3.Body.Close()
+	if resp3.StatusCode != http.StatusOK {
+		t.Errorf("after re-auth: expected 200, got %d (re-auth token was rejected as revoked)", resp3.StatusCode)
+	}
+}
+
 // ── GetProviders ─────────────────────────────────────────────────────────────
 
 // TestGetProviders_NoOAuth returns an empty providers list when OAuth is not configured.
