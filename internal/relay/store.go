@@ -562,7 +562,7 @@ func (s *Store) UpsertOAuthUser(provider, subject, hostname string) (string, str
 	_, err = s.db.Exec(
 		`INSERT INTO devices (id, user_id, hostname, source_key, token)
 		 VALUES (?, ?, ?, ?, ?)
-		 ON CONFLICT(user_id, source_key) DO UPDATE SET token = excluded.token`,
+		 ON CONFLICT(user_id, source_key) DO UPDATE SET token = excluded.token, revoked_at = NULL`,
 		deviceID, userID, hostname, sourceKey, deviceToken,
 	)
 	if err != nil {
