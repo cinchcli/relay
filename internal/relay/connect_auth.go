@@ -13,9 +13,9 @@ import (
 	"connectrpc.com/connect"
 	"github.com/oklog/ulid/v2"
 
-	"github.com/cinchcli/relay/internal/protocol"
 	cinchv1 "github.com/cinchcli/relay/internal/gen/cinch/v1"
 	"github.com/cinchcli/relay/internal/gen/cinch/v1/cinchv1connect"
+	"github.com/cinchcli/relay/internal/protocol"
 )
 
 // connectAuthServer implements cinchv1connect.AuthServiceHandler.

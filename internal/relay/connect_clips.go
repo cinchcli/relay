@@ -7,9 +7,9 @@ import (
 
 	"connectrpc.com/connect"
 
-	"github.com/cinchcli/relay/internal/protocol"
 	cinchv1 "github.com/cinchcli/relay/internal/gen/cinch/v1"
 	"github.com/cinchcli/relay/internal/gen/cinch/v1/cinchv1connect"
+	"github.com/cinchcli/relay/internal/protocol"
 )
 
 type connectClipsServer struct {
