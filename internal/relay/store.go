@@ -12,7 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cinchcli/protocol"
+	cinchv1 "github.com/cinchcli/relay/internal/gen/cinch/v1"
+	"github.com/cinchcli/relay/internal/protocol"
 	"github.com/oklog/ulid/v2"
 	_ "modernc.org/sqlite"
 )
@@ -769,8 +770,14 @@ func (s *Store) CloseGraceEarlyIfNeeded(userID string) {
 	)
 }
 
-// SaveClip persists a clip and returns its ID.
-func (s *Store) SaveClip(userID string, req *protocol.PushRequest) (*protocol.Clip, error) {
+// SaveClip persists a clip and returns it.
+//
+// `req.MediaPath` and `req.Ttl` are proto3 `optional` fields and arrive as
+// `*string` / `*int64`; the SQLite columns store the underlying value (or
+// NULL when nil). `created_at` is rendered as RFC 3339 to match the wire
+// shape the proto emits — the column type is TEXT so this round-trips
+// cleanly.
+func (s *Store) SaveClip(userID string, req *cinchv1.PushClipRequest) (*cinchv1.Clip, error) {
 	id := ulid.Make().String()
 	now := time.Now().UTC()
 
@@ -779,30 +786,42 @@ func (s *Store) SaveClip(userID string, req *protocol.PushRequest) (*protocol.Cl
 		contentType = protocol.ContentText
 	}
 
-	byteSize := len(req.Content)
+	byteSize := int64(len(req.Content))
 	if byteSize == 0 && req.ByteSize > 0 {
 		byteSize = req.ByteSize
 	}
 
-	clip := &protocol.Clip{
-		ID:          id,
-		UserID:      userID,
+	mediaPath := ""
+	if req.MediaPath != nil {
+		mediaPath = *req.MediaPath
+	}
+
+	clip := &cinchv1.Clip{
+		ClipId:      id,
+		UserId:      userID,
 		Content:     req.Content,
 		ContentType: contentType,
 		Source:      req.Source,
 		Label:       req.Label,
 		ByteSize:    byteSize,
-		MediaPath:   req.MediaPath,
-		CreatedAt:   now,
+		CreatedAt:   protocol.FormatRFC3339(now),
 		Encrypted:   req.Encrypted,
+	}
+	if mediaPath != "" {
+		clip.MediaPath = &mediaPath
+	}
+
+	var ttl int64
+	if req.Ttl != nil {
+		ttl = *req.Ttl
 	}
 
 	_, err := s.db.Exec(
 		`INSERT INTO clips (id, user_id, content, content_type, source, label, byte_size, media_path, created_at, ttl, encrypted)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		clip.ID, clip.UserID, clip.Content, clip.ContentType,
-		clip.Source, clip.Label, clip.ByteSize, sql.NullString{String: clip.MediaPath, Valid: clip.MediaPath != ""},
-		clip.CreatedAt, req.TTL, clip.Encrypted,
+		clip.ClipId, clip.UserId, clip.Content, clip.ContentType,
+		clip.Source, clip.Label, clip.ByteSize, sql.NullString{String: mediaPath, Valid: mediaPath != ""},
+		now, ttl, clip.Encrypted,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("saving clip: %w", err)
@@ -812,7 +831,7 @@ func (s *Store) SaveClip(userID string, req *protocol.PushRequest) (*protocol.Cl
 }
 
 // ListClips returns recent clips for a user.
-func (s *Store) ListClips(userID string, limit int) ([]*protocol.Clip, error) {
+func (s *Store) ListClips(userID string, limit int) ([]*cinchv1.Clip, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
@@ -827,16 +846,19 @@ func (s *Store) ListClips(userID string, limit int) ([]*protocol.Clip, error) {
 	}
 	defer rows.Close()
 
-	var clips []*protocol.Clip
+	var clips []*cinchv1.Clip
 	for rows.Next() {
-		c := &protocol.Clip{}
+		c := &cinchv1.Clip{}
 		var mediaPath sql.NullString
-		if err := rows.Scan(&c.ID, &c.UserID, &c.Content, &c.ContentType, &c.Source, &c.Label, &c.ByteSize, &mediaPath, &c.CreatedAt, &c.Encrypted); err != nil {
+		var createdAt time.Time
+		if err := rows.Scan(&c.ClipId, &c.UserId, &c.Content, &c.ContentType, &c.Source, &c.Label, &c.ByteSize, &mediaPath, &createdAt, &c.Encrypted); err != nil {
 			return nil, err
 		}
-		if mediaPath.Valid {
-			c.MediaPath = mediaPath.String
+		if mediaPath.Valid && mediaPath.String != "" {
+			s := mediaPath.String
+			c.MediaPath = &s
 		}
+		c.CreatedAt = protocol.FormatRFC3339(createdAt)
 		clips = append(clips, c)
 	}
 	return clips, rows.Err()
@@ -856,17 +878,19 @@ func (s *Store) DeleteClip(userID, clipID string) error {
 }
 
 // GetLatestClipBySource returns the most recent clip from a specific source.
-func (s *Store) GetLatestClipBySource(userID, source string) (*protocol.Clip, error) {
-	c := &protocol.Clip{}
+func (s *Store) GetLatestClipBySource(userID, source string) (*cinchv1.Clip, error) {
+	c := &cinchv1.Clip{}
 	var mediaPath sql.NullString
+	var createdAt time.Time
 	err := s.db.QueryRow(
 		`SELECT id, user_id, content, content_type, source, label, byte_size, media_path, created_at, encrypted
 		 FROM clips WHERE user_id = ? AND source = ?
 		 ORDER BY created_at DESC LIMIT 1`,
 		userID, source,
-	).Scan(&c.ID, &c.UserID, &c.Content, &c.ContentType, &c.Source, &c.Label, &c.ByteSize, &mediaPath, &c.CreatedAt, &c.Encrypted)
-	if mediaPath.Valid {
-		c.MediaPath = mediaPath.String
+	).Scan(&c.ClipId, &c.UserId, &c.Content, &c.ContentType, &c.Source, &c.Label, &c.ByteSize, &mediaPath, &createdAt, &c.Encrypted)
+	if mediaPath.Valid && mediaPath.String != "" {
+		s := mediaPath.String
+		c.MediaPath = &s
 	}
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("no clips from source %s", source)
@@ -874,6 +898,7 @@ func (s *Store) GetLatestClipBySource(userID, source string) (*protocol.Clip, er
 	if err != nil {
 		return nil, err
 	}
+	c.CreatedAt = protocol.FormatRFC3339(createdAt)
 	return c, nil
 }
 
@@ -1017,7 +1042,11 @@ func (s *Store) ReconcileMedia() error {
 }
 
 // ListDevices returns all non-revoked devices for a user.
-func (s *Store) ListDevices(userID string) ([]*protocol.DeviceInfo, error) {
+//
+// Timestamps come out of SQLite as `time.Time` and are converted to RFC
+// 3339 strings to match the proto wire shape. `clip_count` is widened from
+// SQLite's int into the proto's `int32`.
+func (s *Store) ListDevices(userID string) ([]*cinchv1.Device, error) {
 	rows, err := s.db.Query(
 		`SELECT id, hostname, source_key, clip_count, paired_at, last_push_at, COALESCE(public_key, ''), COALESCE(nickname, '')
 		 FROM devices WHERE user_id = ? AND revoked_at IS NULL ORDER BY last_push_at DESC NULLS LAST`,
@@ -1028,15 +1057,19 @@ func (s *Store) ListDevices(userID string) ([]*protocol.DeviceInfo, error) {
 	}
 	defer rows.Close()
 
-	var devices []*protocol.DeviceInfo
+	var devices []*cinchv1.Device
 	for rows.Next() {
-		d := &protocol.DeviceInfo{}
+		d := &cinchv1.Device{}
+		var pairedAt time.Time
 		var lastPush sql.NullTime
-		if err := rows.Scan(&d.ID, &d.Hostname, &d.SourceKey, &d.ClipCount, &d.PairedAt, &lastPush, &d.PublicKey, &d.Nickname); err != nil {
+		var clipCount int
+		if err := rows.Scan(&d.Id, &d.Hostname, &d.SourceKey, &clipCount, &pairedAt, &lastPush, &d.PublicKey, &d.Nickname); err != nil {
 			return nil, err
 		}
+		d.ClipCount = int32(clipCount)
+		d.PairedAt = protocol.FormatRFC3339(pairedAt)
 		if lastPush.Valid {
-			d.LastPushAt = &lastPush.Time
+			d.LastPushAt = protocol.FormatRFC3339Ptr(&lastPush.Time)
 		}
 		devices = append(devices, d)
 	}
@@ -1111,7 +1144,7 @@ func generateUserCode() string {
 
 // CreateDeviceCode generates a device code and user code, inserts into device_codes,
 // and returns the response (without VerificationURI — caller sets that).
-func (s *Store) CreateDeviceCode(hostname string) (*protocol.DeviceCodeResponse, error) {
+func (s *Store) CreateDeviceCode(hostname string) (*cinchv1.DeviceCodeStartResponse, error) {
 	deviceCode := generateStoreToken()
 	userCode := generateUserCode()
 	expiresAt := time.Now().UTC().Add(5 * time.Minute)
@@ -1125,7 +1158,7 @@ func (s *Store) CreateDeviceCode(hostname string) (*protocol.DeviceCodeResponse,
 		return nil, fmt.Errorf("creating device code: %w", err)
 	}
 
-	return &protocol.DeviceCodeResponse{
+	return &cinchv1.DeviceCodeStartResponse{
 		DeviceCode: deviceCode,
 		UserCode:   userCode,
 		ExpiresIn:  300,
@@ -1153,7 +1186,7 @@ func (s *Store) CompleteDeviceCode(userCode, userID, deviceID, token string) err
 
 // PollDeviceCode checks the status of a device code.
 // Returns expired if past expiry, complete with credentials if done, pending otherwise.
-func (s *Store) PollDeviceCode(deviceCode string) (*protocol.DeviceCodePollResponse, error) {
+func (s *Store) PollDeviceCode(deviceCode string) (*cinchv1.DeviceCodePollResponse, error) {
 	var status, userID, deviceID, token sql.NullString
 	var expiresAt time.Time
 
@@ -1169,19 +1202,22 @@ func (s *Store) PollDeviceCode(deviceCode string) (*protocol.DeviceCodePollRespo
 	}
 
 	if time.Now().UTC().After(expiresAt) {
-		return &protocol.DeviceCodePollResponse{Status: "expired"}, nil
+		return &cinchv1.DeviceCodePollResponse{Status: "expired"}, nil
 	}
 
 	if status.String == "complete" {
-		return &protocol.DeviceCodePollResponse{
+		t := token.String
+		u := userID.String
+		d := deviceID.String
+		return &cinchv1.DeviceCodePollResponse{
 			Status:   "complete",
-			Token:    token.String,
-			UserID:   userID.String,
-			DeviceID: deviceID.String,
+			Token:    &t,
+			UserId:   &u,
+			DeviceId: &d,
 		}, nil
 	}
 
-	return &protocol.DeviceCodePollResponse{Status: "pending"}, nil
+	return &cinchv1.DeviceCodePollResponse{Status: "pending"}, nil
 }
 
 // DeviceCodeHostname returns the hostname stored in a device_codes row by user_code.
@@ -1351,7 +1387,7 @@ func (s *Store) GetKeyBundle(deviceID string) (ephPubKeyB64, encryptedBundleB64 
 // ListPendingKeyExchanges returns devices that have a public_key but no encrypted_key_bundle yet.
 // These are devices waiting for the desktop to complete the ECDH key exchange.
 // Each returned DeviceInfo includes PublicKey and PublicKeyFingerprint for relay-to-desktop delivery.
-func (s *Store) ListPendingKeyExchanges(userID string) ([]protocol.DeviceInfo, error) {
+func (s *Store) ListPendingKeyExchanges(userID string) ([]*cinchv1.Device, error) {
 	rows, err := s.db.Query(
 		`SELECT id, hostname, COALESCE(public_key,''), COALESCE(public_key_fingerprint,'') FROM devices
 		 WHERE user_id = ? AND public_key IS NOT NULL AND encrypted_key_bundle IS NULL
@@ -1362,10 +1398,10 @@ func (s *Store) ListPendingKeyExchanges(userID string) ([]protocol.DeviceInfo, e
 		return nil, err
 	}
 	defer rows.Close()
-	var devices []protocol.DeviceInfo
+	var devices []*cinchv1.Device
 	for rows.Next() {
-		var d protocol.DeviceInfo
-		if err := rows.Scan(&d.ID, &d.Hostname, &d.PublicKey, &d.PublicKeyFingerprint); err != nil {
+		d := &cinchv1.Device{}
+		if err := rows.Scan(&d.Id, &d.Hostname, &d.PublicKey, &d.PublicKeyFingerprint); err != nil {
 			return nil, err
 		}
 		devices = append(devices, d)

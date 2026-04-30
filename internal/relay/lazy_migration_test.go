@@ -8,7 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cinchcli/protocol"
+	cinchv1 "github.com/cinchcli/relay/internal/gen/cinch/v1"
+	"github.com/cinchcli/relay/internal/protocol"
 	"github.com/gorilla/websocket"
 )
 
@@ -47,15 +48,15 @@ func TestLazyMigrationWSHandshake(t *testing.T) {
 		t.Fatalf("login: %v", err)
 	}
 	defer resp.Body.Close()
-	var loginResp protocol.AuthLoginResponse
+	var loginResp cinchv1.LoginResponse
 	json.NewDecoder(resp.Body).Decode(&loginResp)
 
 	// Remove any devices rows + reset token_migrated_at to emulate a pre-Phase-2 DB
 	// so the WS-upgrade path sees: valid users.token, DeviceIDByToken(token) == sql.ErrNoRows.
-	if _, err := store.ExecForTest("DELETE FROM devices WHERE user_id = ?", loginResp.UserID); err != nil {
+	if _, err := store.ExecForTest("DELETE FROM devices WHERE user_id = ?", loginResp.UserId); err != nil {
 		t.Fatalf("reset devices: %v", err)
 	}
-	if _, err := store.ExecForTest("UPDATE users SET token_migrated_at = NULL WHERE id = ?", loginResp.UserID); err != nil {
+	if _, err := store.ExecForTest("UPDATE users SET token_migrated_at = NULL WHERE id = ?", loginResp.UserId); err != nil {
 		t.Fatalf("reset token_migrated_at: %v", err)
 	}
 
@@ -92,7 +93,7 @@ func TestLazyMigrationWSHandshake(t *testing.T) {
 	// Verify the devices row was created with the new token.
 	var dbToken string
 	var dbDeviceID string
-	err = store.db.QueryRow(`SELECT id, token FROM devices WHERE user_id = ?`, loginResp.UserID).Scan(&dbDeviceID, &dbToken)
+	err = store.db.QueryRow(`SELECT id, token FROM devices WHERE user_id = ?`, loginResp.UserId).Scan(&dbDeviceID, &dbToken)
 	if err != nil {
 		t.Fatalf("devices row not created: %v", err)
 	}
@@ -105,7 +106,7 @@ func TestLazyMigrationWSHandshake(t *testing.T) {
 
 	// users.token_migrated_at must now be non-null (grace-window bookkeeping).
 	var migratedAt string
-	if err := store.db.QueryRow("SELECT COALESCE(token_migrated_at,'') FROM users WHERE id = ?", loginResp.UserID).Scan(&migratedAt); err != nil {
+	if err := store.db.QueryRow("SELECT COALESCE(token_migrated_at,'') FROM users WHERE id = ?", loginResp.UserId).Scan(&migratedAt); err != nil {
 		t.Fatalf("querying token_migrated_at: %v", err)
 	}
 	if migratedAt == "" {

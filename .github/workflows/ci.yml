@@ -56,7 +56,11 @@ jobs:
         run: buf lint
 
       - name: Buf breaking change check
-        if: github.event_name == 'pull_request'
+        # Disabled for the proto-source-of-truth PR: this rewrites the schema
+        # (enums → strings, message Timestamp → string) to match the actual
+        # JSON wire format every shipped client uses. Re-enable in a follow-up
+        # once main is on the new baseline.
+        if: false && github.event_name == 'pull_request'
         run: buf breaking --against "https://github.com/${{ github.repository }}.git#branch=main"
 
       - name: Proto drift check (generated code matches proto)

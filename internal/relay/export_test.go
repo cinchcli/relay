@@ -2,9 +2,16 @@ package relay
 
 import (
 	"database/sql"
+	"net/http"
 
 	"golang.org/x/oauth2"
 )
+
+// DeriveRelayURLForTest exposes deriveRelayURL for url-derivation unit tests.
+func DeriveRelayURLForTest(r *http.Request) string { return deriveRelayURL(r) }
+
+// DeriveWSURLForTest exposes deriveWSURL for url-derivation unit tests.
+func DeriveWSURLForTest(r *http.Request) string { return deriveWSURL(r) }
 
 // ExecForTest exposes raw SQL execution for tests only. Do not use in production code.
 func (s *Store) ExecForTest(query string, args ...interface{}) (sql.Result, error) {

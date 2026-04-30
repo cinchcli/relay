@@ -5,7 +5,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cinchcli/protocol"
+	cinchv1 "github.com/cinchcli/relay/internal/gen/cinch/v1"
+	"github.com/cinchcli/relay/internal/protocol"
 	"github.com/gorilla/websocket"
 )
 
@@ -289,7 +290,7 @@ func (h *Hub) Remove(userID, deviceID string) {
 
 // SendClip broadcasts a new clip to all connected devices of the user (fan-out).
 // Delivers to both WS conns and Connect event stream subscribers.
-func (h *Hub) SendClip(userID string, clip *protocol.Clip) error {
+func (h *Hub) SendClip(userID string, clip *cinchv1.Clip) error {
 	h.mu.RLock()
 	devs := h.conns[userID]
 	conns := make([]*AgentConn, 0, len(devs))

@@ -9,7 +9,6 @@ package cinchv1
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
-	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -21,55 +20,6 @@ const (
 	// Verify that runtime/protoimpl is sufficiently up-to-date.
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
-
-type DeviceCodeStatus int32
-
-const (
-	DeviceCodeStatus_DEVICE_CODE_STATUS_UNSPECIFIED DeviceCodeStatus = 0
-	DeviceCodeStatus_DEVICE_CODE_STATUS_PENDING     DeviceCodeStatus = 1
-	DeviceCodeStatus_DEVICE_CODE_STATUS_COMPLETE    DeviceCodeStatus = 2
-)
-
-// Enum value maps for DeviceCodeStatus.
-var (
-	DeviceCodeStatus_name = map[int32]string{
-		0: "DEVICE_CODE_STATUS_UNSPECIFIED",
-		1: "DEVICE_CODE_STATUS_PENDING",
-		2: "DEVICE_CODE_STATUS_COMPLETE",
-	}
-	DeviceCodeStatus_value = map[string]int32{
-		"DEVICE_CODE_STATUS_UNSPECIFIED": 0,
-		"DEVICE_CODE_STATUS_PENDING":     1,
-		"DEVICE_CODE_STATUS_COMPLETE":    2,
-	}
-)
-
-func (x DeviceCodeStatus) Enum() *DeviceCodeStatus {
-	p := new(DeviceCodeStatus)
-	*p = x
-	return p
-}
-
-func (x DeviceCodeStatus) String() string {
-	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
-}
-
-func (DeviceCodeStatus) Descriptor() protoreflect.EnumDescriptor {
-	return file_cinch_v1_auth_proto_enumTypes[0].Descriptor()
-}
-
-func (DeviceCodeStatus) Type() protoreflect.EnumType {
-	return &file_cinch_v1_auth_proto_enumTypes[0]
-}
-
-func (x DeviceCodeStatus) Number() protoreflect.EnumNumber {
-	return protoreflect.EnumNumber(x)
-}
-
-// Deprecated: Use DeviceCodeStatus.Descriptor instead.
-func (DeviceCodeStatus) EnumDescriptor() ([]byte, []int) {
-	return file_cinch_v1_auth_proto_rawDescGZIP(), []int{0}
-}
 
 type LoginRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -360,8 +310,8 @@ type DeviceCodeStartResponse struct {
 	DeviceCode      string                 `protobuf:"bytes,1,opt,name=device_code,json=deviceCode,proto3" json:"device_code,omitempty"`
 	UserCode        string                 `protobuf:"bytes,2,opt,name=user_code,json=userCode,proto3" json:"user_code,omitempty"`
 	VerificationUri string                 `protobuf:"bytes,3,opt,name=verification_uri,json=verificationUri,proto3" json:"verification_uri,omitempty"`
-	ExpiresIn       int32                  `protobuf:"varint,4,opt,name=expires_in,json=expiresIn,proto3" json:"expires_in,omitempty"`
-	Interval        int32                  `protobuf:"varint,5,opt,name=interval,proto3" json:"interval,omitempty"`
+	ExpiresIn       int64                  `protobuf:"varint,4,opt,name=expires_in,json=expiresIn,proto3" json:"expires_in,omitempty"`
+	Interval        int64                  `protobuf:"varint,5,opt,name=interval,proto3" json:"interval,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -417,14 +367,14 @@ func (x *DeviceCodeStartResponse) GetVerificationUri() string {
 	return ""
 }
 
-func (x *DeviceCodeStartResponse) GetExpiresIn() int32 {
+func (x *DeviceCodeStartResponse) GetExpiresIn() int64 {
 	if x != nil {
 		return x.ExpiresIn
 	}
 	return 0
 }
 
-func (x *DeviceCodeStartResponse) GetInterval() int32 {
+func (x *DeviceCodeStartResponse) GetInterval() int64 {
 	if x != nil {
 		return x.Interval
 	}
@@ -477,7 +427,7 @@ func (x *DeviceCodePollRequest) GetCode() string {
 
 type DeviceCodePollResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Status        DeviceCodeStatus       `protobuf:"varint,1,opt,name=status,proto3,enum=cinch.v1.DeviceCodeStatus" json:"status,omitempty"`
+	Status        string                 `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
 	Token         *string                `protobuf:"bytes,2,opt,name=token,proto3,oneof" json:"token,omitempty"`
 	UserId        *string                `protobuf:"bytes,3,opt,name=user_id,json=userId,proto3,oneof" json:"user_id,omitempty"`
 	DeviceId      *string                `protobuf:"bytes,4,opt,name=device_id,json=deviceId,proto3,oneof" json:"device_id,omitempty"`
@@ -515,11 +465,11 @@ func (*DeviceCodePollResponse) Descriptor() ([]byte, []int) {
 	return file_cinch_v1_auth_proto_rawDescGZIP(), []int{7}
 }
 
-func (x *DeviceCodePollResponse) GetStatus() DeviceCodeStatus {
+func (x *DeviceCodePollResponse) GetStatus() string {
 	if x != nil {
 		return x.Status
 	}
-	return DeviceCodeStatus_DEVICE_CODE_STATUS_UNSPECIFIED
+	return ""
 }
 
 func (x *DeviceCodePollResponse) GetToken() string {
@@ -703,7 +653,7 @@ type RevokeDeviceResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Ok            bool                   `protobuf:"varint,1,opt,name=ok,proto3" json:"ok,omitempty"`
 	DeviceId      string                 `protobuf:"bytes,2,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
-	RevokedAt     *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=revoked_at,json=revokedAt,proto3" json:"revoked_at,omitempty"`
+	RevokedAt     string                 `protobuf:"bytes,3,opt,name=revoked_at,json=revokedAt,proto3" json:"revoked_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -752,11 +702,11 @@ func (x *RevokeDeviceResponse) GetDeviceId() string {
 	return ""
 }
 
-func (x *RevokeDeviceResponse) GetRevokedAt() *timestamppb.Timestamp {
+func (x *RevokeDeviceResponse) GetRevokedAt() string {
 	if x != nil {
 		return x.RevokedAt
 	}
-	return nil
+	return ""
 }
 
 type RotatePairTokenRequest struct {
@@ -1031,11 +981,71 @@ func (x *KeyBundleGetResponse) GetEncryptedBundle() string {
 	return ""
 }
 
+type ErrorResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Error         string                 `protobuf:"bytes,1,opt,name=error,proto3" json:"error,omitempty"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	Fix           string                 `protobuf:"bytes,3,opt,name=fix,proto3" json:"fix,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ErrorResponse) Reset() {
+	*x = ErrorResponse{}
+	mi := &file_cinch_v1_auth_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ErrorResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ErrorResponse) ProtoMessage() {}
+
+func (x *ErrorResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_cinch_v1_auth_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ErrorResponse.ProtoReflect.Descriptor instead.
+func (*ErrorResponse) Descriptor() ([]byte, []int) {
+	return file_cinch_v1_auth_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *ErrorResponse) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+func (x *ErrorResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *ErrorResponse) GetFix() string {
+	if x != nil {
+		return x.Fix
+	}
+	return ""
+}
+
 var File_cinch_v1_auth_proto protoreflect.FileDescriptor
 
 const file_cinch_v1_auth_proto_rawDesc = "" +
 	"\n" +
-	"\x13cinch/v1/auth.proto\x12\bcinch.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"<\n" +
+	"\x13cinch/v1/auth.proto\x12\bcinch.v1\"<\n" +
 	"\fLoginRequest\x12\x1f\n" +
 	"\bhostname\x18\x01 \x01(\tH\x00R\bhostname\x88\x01\x01B\v\n" +
 	"\t_hostname\"z\n" +
@@ -1067,12 +1077,12 @@ const file_cinch_v1_auth_proto_rawDesc = "" +
 	"\tuser_code\x18\x02 \x01(\tR\buserCode\x12)\n" +
 	"\x10verification_uri\x18\x03 \x01(\tR\x0fverificationUri\x12\x1d\n" +
 	"\n" +
-	"expires_in\x18\x04 \x01(\x05R\texpiresIn\x12\x1a\n" +
-	"\binterval\x18\x05 \x01(\x05R\binterval\"+\n" +
+	"expires_in\x18\x04 \x01(\x03R\texpiresIn\x12\x1a\n" +
+	"\binterval\x18\x05 \x01(\x03R\binterval\"+\n" +
 	"\x15DeviceCodePollRequest\x12\x12\n" +
-	"\x04code\x18\x01 \x01(\tR\x04code\"\xcb\x01\n" +
-	"\x16DeviceCodePollResponse\x122\n" +
-	"\x06status\x18\x01 \x01(\x0e2\x1a.cinch.v1.DeviceCodeStatusR\x06status\x12\x19\n" +
+	"\x04code\x18\x01 \x01(\tR\x04code\"\xaf\x01\n" +
+	"\x16DeviceCodePollResponse\x12\x16\n" +
+	"\x06status\x18\x01 \x01(\tR\x06status\x12\x19\n" +
 	"\x05token\x18\x02 \x01(\tH\x00R\x05token\x88\x01\x01\x12\x1c\n" +
 	"\auser_id\x18\x03 \x01(\tH\x01R\x06userId\x88\x01\x01\x12 \n" +
 	"\tdevice_id\x18\x04 \x01(\tH\x02R\bdeviceId\x88\x01\x01B\b\n" +
@@ -1089,12 +1099,12 @@ const file_cinch_v1_auth_proto_rawDesc = "" +
 	"\x1aDeviceCodeCompleteResponse\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\"2\n" +
 	"\x13RevokeDeviceRequest\x12\x1b\n" +
-	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\"~\n" +
+	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\"b\n" +
 	"\x14RevokeDeviceResponse\x12\x0e\n" +
 	"\x02ok\x18\x01 \x01(\bR\x02ok\x12\x1b\n" +
-	"\tdevice_id\x18\x02 \x01(\tR\bdeviceId\x129\n" +
+	"\tdevice_id\x18\x02 \x01(\tR\bdeviceId\x12\x1d\n" +
 	"\n" +
-	"revoked_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\trevokedAt\"\x18\n" +
+	"revoked_at\x18\x03 \x01(\tR\trevokedAt\"\x18\n" +
 	"\x16RotatePairTokenRequest\"8\n" +
 	"\x17RotatePairTokenResponse\x12\x1d\n" +
 	"\n" +
@@ -1108,11 +1118,11 @@ const file_cinch_v1_auth_proto_rawDesc = "" +
 	"\x13KeyBundleGetRequest\"s\n" +
 	"\x14KeyBundleGetResponse\x120\n" +
 	"\x14ephemeral_public_key\x18\x01 \x01(\tR\x12ephemeralPublicKey\x12)\n" +
-	"\x10encrypted_bundle\x18\x02 \x01(\tR\x0fencryptedBundle*w\n" +
-	"\x10DeviceCodeStatus\x12\"\n" +
-	"\x1eDEVICE_CODE_STATUS_UNSPECIFIED\x10\x00\x12\x1e\n" +
-	"\x1aDEVICE_CODE_STATUS_PENDING\x10\x01\x12\x1f\n" +
-	"\x1bDEVICE_CODE_STATUS_COMPLETE\x10\x022\xd1\x05\n" +
+	"\x10encrypted_bundle\x18\x02 \x01(\tR\x0fencryptedBundle\"Q\n" +
+	"\rErrorResponse\x12\x14\n" +
+	"\x05error\x18\x01 \x01(\tR\x05error\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\x12\x10\n" +
+	"\x03fix\x18\x03 \x01(\tR\x03fix2\xd1\x05\n" +
 	"\vAuthService\x128\n" +
 	"\x05Login\x12\x16.cinch.v1.LoginRequest\x1a\x17.cinch.v1.LoginResponse\x125\n" +
 	"\x04Pair\x12\x15.cinch.v1.PairRequest\x1a\x16.cinch.v1.PairResponse\x12V\n" +
@@ -1136,56 +1146,52 @@ func file_cinch_v1_auth_proto_rawDescGZIP() []byte {
 	return file_cinch_v1_auth_proto_rawDescData
 }
 
-var file_cinch_v1_auth_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_cinch_v1_auth_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
+var file_cinch_v1_auth_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
 var file_cinch_v1_auth_proto_goTypes = []any{
-	(DeviceCodeStatus)(0),              // 0: cinch.v1.DeviceCodeStatus
-	(*LoginRequest)(nil),               // 1: cinch.v1.LoginRequest
-	(*LoginResponse)(nil),              // 2: cinch.v1.LoginResponse
-	(*PairRequest)(nil),                // 3: cinch.v1.PairRequest
-	(*PairResponse)(nil),               // 4: cinch.v1.PairResponse
-	(*DeviceCodeStartRequest)(nil),     // 5: cinch.v1.DeviceCodeStartRequest
-	(*DeviceCodeStartResponse)(nil),    // 6: cinch.v1.DeviceCodeStartResponse
-	(*DeviceCodePollRequest)(nil),      // 7: cinch.v1.DeviceCodePollRequest
-	(*DeviceCodePollResponse)(nil),     // 8: cinch.v1.DeviceCodePollResponse
-	(*DeviceCodeCompleteRequest)(nil),  // 9: cinch.v1.DeviceCodeCompleteRequest
-	(*DeviceCodeCompleteResponse)(nil), // 10: cinch.v1.DeviceCodeCompleteResponse
-	(*RevokeDeviceRequest)(nil),        // 11: cinch.v1.RevokeDeviceRequest
-	(*RevokeDeviceResponse)(nil),       // 12: cinch.v1.RevokeDeviceResponse
-	(*RotatePairTokenRequest)(nil),     // 13: cinch.v1.RotatePairTokenRequest
-	(*RotatePairTokenResponse)(nil),    // 14: cinch.v1.RotatePairTokenResponse
-	(*KeyBundlePutRequest)(nil),        // 15: cinch.v1.KeyBundlePutRequest
-	(*KeyBundlePutResponse)(nil),       // 16: cinch.v1.KeyBundlePutResponse
-	(*KeyBundleGetRequest)(nil),        // 17: cinch.v1.KeyBundleGetRequest
-	(*KeyBundleGetResponse)(nil),       // 18: cinch.v1.KeyBundleGetResponse
-	(*timestamppb.Timestamp)(nil),      // 19: google.protobuf.Timestamp
+	(*LoginRequest)(nil),               // 0: cinch.v1.LoginRequest
+	(*LoginResponse)(nil),              // 1: cinch.v1.LoginResponse
+	(*PairRequest)(nil),                // 2: cinch.v1.PairRequest
+	(*PairResponse)(nil),               // 3: cinch.v1.PairResponse
+	(*DeviceCodeStartRequest)(nil),     // 4: cinch.v1.DeviceCodeStartRequest
+	(*DeviceCodeStartResponse)(nil),    // 5: cinch.v1.DeviceCodeStartResponse
+	(*DeviceCodePollRequest)(nil),      // 6: cinch.v1.DeviceCodePollRequest
+	(*DeviceCodePollResponse)(nil),     // 7: cinch.v1.DeviceCodePollResponse
+	(*DeviceCodeCompleteRequest)(nil),  // 8: cinch.v1.DeviceCodeCompleteRequest
+	(*DeviceCodeCompleteResponse)(nil), // 9: cinch.v1.DeviceCodeCompleteResponse
+	(*RevokeDeviceRequest)(nil),        // 10: cinch.v1.RevokeDeviceRequest
+	(*RevokeDeviceResponse)(nil),       // 11: cinch.v1.RevokeDeviceResponse
+	(*RotatePairTokenRequest)(nil),     // 12: cinch.v1.RotatePairTokenRequest
+	(*RotatePairTokenResponse)(nil),    // 13: cinch.v1.RotatePairTokenResponse
+	(*KeyBundlePutRequest)(nil),        // 14: cinch.v1.KeyBundlePutRequest
+	(*KeyBundlePutResponse)(nil),       // 15: cinch.v1.KeyBundlePutResponse
+	(*KeyBundleGetRequest)(nil),        // 16: cinch.v1.KeyBundleGetRequest
+	(*KeyBundleGetResponse)(nil),       // 17: cinch.v1.KeyBundleGetResponse
+	(*ErrorResponse)(nil),              // 18: cinch.v1.ErrorResponse
 }
 var file_cinch_v1_auth_proto_depIdxs = []int32{
-	0,  // 0: cinch.v1.DeviceCodePollResponse.status:type_name -> cinch.v1.DeviceCodeStatus
-	19, // 1: cinch.v1.RevokeDeviceResponse.revoked_at:type_name -> google.protobuf.Timestamp
-	1,  // 2: cinch.v1.AuthService.Login:input_type -> cinch.v1.LoginRequest
-	3,  // 3: cinch.v1.AuthService.Pair:input_type -> cinch.v1.PairRequest
-	5,  // 4: cinch.v1.AuthService.DeviceCodeStart:input_type -> cinch.v1.DeviceCodeStartRequest
-	7,  // 5: cinch.v1.AuthService.DeviceCodePoll:input_type -> cinch.v1.DeviceCodePollRequest
-	9,  // 6: cinch.v1.AuthService.DeviceCodeComplete:input_type -> cinch.v1.DeviceCodeCompleteRequest
-	11, // 7: cinch.v1.AuthService.RevokeDevice:input_type -> cinch.v1.RevokeDeviceRequest
-	13, // 8: cinch.v1.AuthService.RotatePairToken:input_type -> cinch.v1.RotatePairTokenRequest
-	15, // 9: cinch.v1.AuthService.KeyBundlePut:input_type -> cinch.v1.KeyBundlePutRequest
-	17, // 10: cinch.v1.AuthService.KeyBundleGet:input_type -> cinch.v1.KeyBundleGetRequest
-	2,  // 11: cinch.v1.AuthService.Login:output_type -> cinch.v1.LoginResponse
-	4,  // 12: cinch.v1.AuthService.Pair:output_type -> cinch.v1.PairResponse
-	6,  // 13: cinch.v1.AuthService.DeviceCodeStart:output_type -> cinch.v1.DeviceCodeStartResponse
-	8,  // 14: cinch.v1.AuthService.DeviceCodePoll:output_type -> cinch.v1.DeviceCodePollResponse
-	10, // 15: cinch.v1.AuthService.DeviceCodeComplete:output_type -> cinch.v1.DeviceCodeCompleteResponse
-	12, // 16: cinch.v1.AuthService.RevokeDevice:output_type -> cinch.v1.RevokeDeviceResponse
-	14, // 17: cinch.v1.AuthService.RotatePairToken:output_type -> cinch.v1.RotatePairTokenResponse
-	16, // 18: cinch.v1.AuthService.KeyBundlePut:output_type -> cinch.v1.KeyBundlePutResponse
-	18, // 19: cinch.v1.AuthService.KeyBundleGet:output_type -> cinch.v1.KeyBundleGetResponse
-	11, // [11:20] is the sub-list for method output_type
-	2,  // [2:11] is the sub-list for method input_type
-	2,  // [2:2] is the sub-list for extension type_name
-	2,  // [2:2] is the sub-list for extension extendee
-	0,  // [0:2] is the sub-list for field type_name
+	0,  // 0: cinch.v1.AuthService.Login:input_type -> cinch.v1.LoginRequest
+	2,  // 1: cinch.v1.AuthService.Pair:input_type -> cinch.v1.PairRequest
+	4,  // 2: cinch.v1.AuthService.DeviceCodeStart:input_type -> cinch.v1.DeviceCodeStartRequest
+	6,  // 3: cinch.v1.AuthService.DeviceCodePoll:input_type -> cinch.v1.DeviceCodePollRequest
+	8,  // 4: cinch.v1.AuthService.DeviceCodeComplete:input_type -> cinch.v1.DeviceCodeCompleteRequest
+	10, // 5: cinch.v1.AuthService.RevokeDevice:input_type -> cinch.v1.RevokeDeviceRequest
+	12, // 6: cinch.v1.AuthService.RotatePairToken:input_type -> cinch.v1.RotatePairTokenRequest
+	14, // 7: cinch.v1.AuthService.KeyBundlePut:input_type -> cinch.v1.KeyBundlePutRequest
+	16, // 8: cinch.v1.AuthService.KeyBundleGet:input_type -> cinch.v1.KeyBundleGetRequest
+	1,  // 9: cinch.v1.AuthService.Login:output_type -> cinch.v1.LoginResponse
+	3,  // 10: cinch.v1.AuthService.Pair:output_type -> cinch.v1.PairResponse
+	5,  // 11: cinch.v1.AuthService.DeviceCodeStart:output_type -> cinch.v1.DeviceCodeStartResponse
+	7,  // 12: cinch.v1.AuthService.DeviceCodePoll:output_type -> cinch.v1.DeviceCodePollResponse
+	9,  // 13: cinch.v1.AuthService.DeviceCodeComplete:output_type -> cinch.v1.DeviceCodeCompleteResponse
+	11, // 14: cinch.v1.AuthService.RevokeDevice:output_type -> cinch.v1.RevokeDeviceResponse
+	13, // 15: cinch.v1.AuthService.RotatePairToken:output_type -> cinch.v1.RotatePairTokenResponse
+	15, // 16: cinch.v1.AuthService.KeyBundlePut:output_type -> cinch.v1.KeyBundlePutResponse
+	17, // 17: cinch.v1.AuthService.KeyBundleGet:output_type -> cinch.v1.KeyBundleGetResponse
+	9,  // [9:18] is the sub-list for method output_type
+	0,  // [0:9] is the sub-list for method input_type
+	0,  // [0:0] is the sub-list for extension type_name
+	0,  // [0:0] is the sub-list for extension extendee
+	0,  // [0:0] is the sub-list for field type_name
 }
 
 func init() { file_cinch_v1_auth_proto_init() }
@@ -1202,14 +1208,13 @@ func file_cinch_v1_auth_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_cinch_v1_auth_proto_rawDesc), len(file_cinch_v1_auth_proto_rawDesc)),
-			NumEnums:      1,
-			NumMessages:   18,
+			NumEnums:      0,
+			NumMessages:   19,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_cinch_v1_auth_proto_goTypes,
 		DependencyIndexes: file_cinch_v1_auth_proto_depIdxs,
-		EnumInfos:         file_cinch_v1_auth_proto_enumTypes,
 		MessageInfos:      file_cinch_v1_auth_proto_msgTypes,
 	}.Build()
 	File_cinch_v1_auth_proto = out.File

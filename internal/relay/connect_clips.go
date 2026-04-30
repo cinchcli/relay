@@ -6,11 +6,10 @@ import (
 	"net/http"
 
 	"connectrpc.com/connect"
-	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/cinchcli/protocol"
 	cinchv1 "github.com/cinchcli/relay/internal/gen/cinch/v1"
 	"github.com/cinchcli/relay/internal/gen/cinch/v1/cinchv1connect"
+	"github.com/cinchcli/relay/internal/protocol"
 )
 
 type connectClipsServer struct {
@@ -31,58 +30,6 @@ func (h *Handler) clipsConnectInterceptor() connect.UnaryInterceptorFunc {
 	}
 }
 
-func protoClip(c *protocol.Clip) *cinchv1.Clip {
-	pc := &cinchv1.Clip{
-		ClipId:      c.ID,
-		UserId:      c.UserID,
-		Content:     c.Content,
-		ContentType: protoContentType(c.ContentType),
-		Source:      c.Source,
-		Label:       c.Label,
-		ByteSize:    int32(c.ByteSize),
-		CreatedAt:   timestamppb.New(c.CreatedAt),
-		Encrypted:   c.Encrypted,
-	}
-	if c.MediaPath != "" {
-		pc.MediaPath = &c.MediaPath
-	}
-	if c.TTL != 0 {
-		ttl := c.TTL
-		pc.Ttl = &ttl
-	}
-	return pc
-}
-
-func protoContentType(ct protocol.ContentType) cinchv1.ContentType {
-	switch ct {
-	case protocol.ContentText:
-		return cinchv1.ContentType_CONTENT_TYPE_TEXT
-	case protocol.ContentURL:
-		return cinchv1.ContentType_CONTENT_TYPE_URL
-	case protocol.ContentCode:
-		return cinchv1.ContentType_CONTENT_TYPE_CODE
-	case protocol.ContentImage:
-		return cinchv1.ContentType_CONTENT_TYPE_IMAGE
-	default:
-		return cinchv1.ContentType_CONTENT_TYPE_UNSPECIFIED
-	}
-}
-
-func protocolContentType(ct cinchv1.ContentType) protocol.ContentType {
-	switch ct {
-	case cinchv1.ContentType_CONTENT_TYPE_TEXT:
-		return protocol.ContentText
-	case cinchv1.ContentType_CONTENT_TYPE_URL:
-		return protocol.ContentURL
-	case cinchv1.ContentType_CONTENT_TYPE_CODE:
-		return protocol.ContentCode
-	case cinchv1.ContentType_CONTENT_TYPE_IMAGE:
-		return protocol.ContentImage
-	default:
-		return protocol.ContentText
-	}
-}
-
 // ─── PushClip ────────────────────────────────────────────────
 
 func (s *connectClipsServer) PushClip(ctx context.Context, req *connect.Request[cinchv1.PushClipRequest]) (*connect.Response[cinchv1.PushClipResponse], error) {
@@ -91,49 +38,38 @@ func (s *connectClipsServer) PushClip(ctx context.Context, req *connect.Request[
 		return nil, connect.NewError(connect.CodeInvalidArgument, errMsg("content is required"))
 	}
 
-	pushReq := &protocol.PushRequest{
-		Content:     req.Msg.Content,
-		ContentType: protocolContentType(req.Msg.ContentType),
-		Label:       req.Msg.Label,
-		Source:      req.Msg.Source,
-		ByteSize:    int(req.Msg.ByteSize),
-		Encrypted:   req.Msg.Encrypted,
-	}
+	targetDeviceID := ""
 	if req.Msg.TargetDeviceId != nil {
-		pushReq.TargetDeviceID = *req.Msg.TargetDeviceId
-	}
-	if req.Msg.Ttl != nil {
-		pushReq.TTL = int(*req.Msg.Ttl)
+		targetDeviceID = *req.Msg.TargetDeviceId
 	}
 
 	// Targeted push — check online before saving (D-10).
-	if pushReq.TargetDeviceID != "" {
-		if !s.h.hub.IsDeviceOnline(userID, pushReq.TargetDeviceID) {
+	if targetDeviceID != "" {
+		if !s.h.hub.IsDeviceOnline(userID, targetDeviceID) {
 			return nil, connect.NewError(connect.CodeUnavailable, errMsg("device is not currently online"))
 		}
-		clip, err := s.h.store.SaveClip(userID, pushReq)
+		clip, err := s.h.store.SaveClip(userID, req.Msg)
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
-		if pushReq.Source != "" {
-			s.h.store.UpdateDeviceActivity(userID, pushReq.Source)
+		if req.Msg.Source != "" {
+			s.h.store.UpdateDeviceActivity(userID, req.Msg.Source)
 		}
-		if err := s.h.hub.SendToDevice(userID, pushReq.TargetDeviceID, protocol.WSMessage{
+		if err := s.h.hub.SendToDevice(userID, targetDeviceID, protocol.WSMessage{
 			Action: protocol.ActionNewClip, Clip: clip,
 		}); err != nil {
 			log.Printf("connectClipsServer.PushClip: SendToDevice failed: %v", err)
 		}
 		return connect.NewResponse(&cinchv1.PushClipResponse{
-			ClipId:   clip.ID,
-			ByteSize: int32(clip.ByteSize),
+			ClipId:   clip.ClipId,
+			ByteSize: clip.ByteSize,
 		}), nil
 	}
 
 	// Demo restrictions.
 	isDemo, _ := s.h.store.IsDemoUser(userID)
 	if isDemo {
-		if req.Msg.ContentType != cinchv1.ContentType_CONTENT_TYPE_UNSPECIFIED &&
-			req.Msg.ContentType != cinchv1.ContentType_CONTENT_TYPE_TEXT {
+		if req.Msg.ContentType != "" && req.Msg.ContentType != "text" {
 			return nil, connect.NewError(connect.CodePermissionDenied, errMsg("demo sessions accept text only"))
 		}
 		if len(req.Msg.Content) > demoMaxBytes {
@@ -145,7 +81,7 @@ func (s *connectClipsServer) PushClip(ctx context.Context, req *connect.Request[
 		}
 	}
 
-	clip, err := s.h.store.SaveClip(userID, pushReq)
+	clip, err := s.h.store.SaveClip(userID, req.Msg)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -156,8 +92,8 @@ func (s *connectClipsServer) PushClip(ctx context.Context, req *connect.Request[
 		}
 	}
 
-	if pushReq.Source != "" {
-		if err := s.h.store.UpdateDeviceActivity(userID, pushReq.Source); err != nil {
+	if req.Msg.Source != "" {
+		if err := s.h.store.UpdateDeviceActivity(userID, req.Msg.Source); err != nil {
 			log.Printf("connectClipsServer.PushClip: device activity update failed: %v", err)
 		}
 	}
@@ -167,8 +103,8 @@ func (s *connectClipsServer) PushClip(ctx context.Context, req *connect.Request[
 	}
 
 	return connect.NewResponse(&cinchv1.PushClipResponse{
-		ClipId:   clip.ID,
-		ByteSize: int32(clip.ByteSize),
+		ClipId:   clip.ClipId,
+		ByteSize: clip.ByteSize,
 	}), nil
 }
 
@@ -180,12 +116,7 @@ func (s *connectClipsServer) ListClips(ctx context.Context, req *connect.Request
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-
-	pclips := make([]*cinchv1.Clip, 0, len(clips))
-	for _, c := range clips {
-		pclips = append(pclips, protoClip(c))
-	}
-	return connect.NewResponse(&cinchv1.ListClipsResponse{Clips: pclips}), nil
+	return connect.NewResponse(&cinchv1.ListClipsResponse{Clips: clips}), nil
 }
 
 // ─── GetLatestClip ───────────────────────────────────────────
@@ -200,7 +131,7 @@ func (s *connectClipsServer) GetLatestClip(ctx context.Context, req *connect.Req
 	if err != nil {
 		return nil, connect.NewError(connect.CodeNotFound, err)
 	}
-	return connect.NewResponse(&cinchv1.GetLatestClipResponse{Clip: protoClip(clip)}), nil
+	return connect.NewResponse(&cinchv1.GetLatestClipResponse{Clip: clip}), nil
 }
 
 // ─── DeleteClip ──────────────────────────────────────────────

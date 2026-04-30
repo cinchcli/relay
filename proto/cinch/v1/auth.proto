@@ -2,8 +2,6 @@ syntax = "proto3";
 
 package cinch.v1;
 
-import "google/protobuf/timestamp.proto";
-
 option go_package = "github.com/cinchcli/relay/internal/gen/cinch/v1;cinchv1";
 
 // AuthService handles account creation and device authentication.
@@ -61,9 +59,9 @@ message LoginResponse {
 // ─── Pair ───────────────────────────────────────────────────
 
 message PairRequest {
-  string          pair_token            = 1;
-  optional string hostname              = 2;
-  optional string device_public_key     = 3;
+  string          pair_token             = 1;
+  optional string hostname               = 2;
+  optional string device_public_key      = 3;
   optional string device_key_fingerprint = 4;
 }
 
@@ -74,23 +72,20 @@ message PairResponse {
 }
 
 // ─── Device Code ────────────────────────────────────────────
-
-enum DeviceCodeStatus {
-  DEVICE_CODE_STATUS_UNSPECIFIED = 0;
-  DEVICE_CODE_STATUS_PENDING     = 1;
-  DEVICE_CODE_STATUS_COMPLETE    = 2;
-}
+//
+// `status` is one of: "pending", "complete", "expired" — kept as a string
+// for legacy REST wire compatibility.
 
 message DeviceCodeStartRequest {
   optional string hostname = 1;
 }
 
 message DeviceCodeStartResponse {
-  string device_code       = 1;
-  string user_code         = 2;
-  string verification_uri  = 3;
-  int32  expires_in        = 4;
-  int32  interval          = 5;
+  string device_code      = 1;
+  string user_code        = 2;
+  string verification_uri = 3;
+  int64  expires_in       = 4;
+  int64  interval         = 5;
 }
 
 message DeviceCodePollRequest {
@@ -98,10 +93,10 @@ message DeviceCodePollRequest {
 }
 
 message DeviceCodePollResponse {
-  DeviceCodeStatus  status    = 1;
-  optional string   token     = 2;
-  optional string   user_id   = 3;
-  optional string   device_id = 4;
+  string          status    = 1;
+  optional string token     = 2;
+  optional string user_id   = 3;
+  optional string device_id = 4;
 }
 
 message DeviceCodeCompleteRequest {
@@ -116,15 +111,17 @@ message DeviceCodeCompleteResponse {
 }
 
 // ─── Revoke Device ──────────────────────────────────────────
+//
+// `revoked_at` is RFC3339 — string for the same reason as Clip.created_at.
 
 message RevokeDeviceRequest {
   string device_id = 1;
 }
 
 message RevokeDeviceResponse {
-  bool                       ok         = 1;
-  string                     device_id  = 2;
-  google.protobuf.Timestamp  revoked_at = 3;
+  bool   ok         = 1;
+  string device_id  = 2;
+  string revoked_at = 3;
 }
 
 // ─── Rotate Pair Token ──────────────────────────────────────
@@ -152,4 +149,15 @@ message KeyBundleGetRequest {}
 message KeyBundleGetResponse {
   string ephemeral_public_key = 1;
   string encrypted_bundle     = 2;
+}
+
+// ─── Error ──────────────────────────────────────────────────
+//
+// Standard relay error JSON body, used by every legacy REST handler when
+// returning a non-2xx status. Mirrors `protocol.ErrorResponse`.
+
+message ErrorResponse {
+  string error   = 1;
+  string message = 2;
+  string fix     = 3;
 }

@@ -16,11 +16,15 @@ Cinch Relay is a self-hostable clipboard relay server. It receives clipboard cli
 
 ### Dependencies
 
-- `github.com/cinchcli/protocol` — Shared types: auth tokens, clip encoding, WebSocket message framing. Resolved via `replace` directive pointing to `../protocol`.
 - `connectrpc.com/connect` — Connect-RPC framework.
 - `modernc.org/sqlite` — Pure-Go SQLite driver (CGO_ENABLED=0 compatible).
 - `google.golang.org/protobuf` — Protocol Buffers runtime.
 - `github.com/gorilla/websocket` — WebSocket upgrade for the legacy `/v1/stream` endpoint.
+
+The previously separate `github.com/cinchcli/protocol` Go module has been
+folded in: WSMessage and the demo/auth-status DTOs now live at
+`internal/protocol/`, and every other shared type comes from
+`internal/gen/cinch/v1/` (generated from `proto/cinch/v1/*.proto`).
 
 ### Build & Run
 
@@ -46,11 +50,10 @@ Environment variables: `PORT` (default `8080`), `DB_PATH` (default `cinch.db`), 
 module github.com/cinchcli/relay
 ```
 
-Protocol dependency resolved locally:
-
-```
-replace github.com/cinchcli/protocol => ../protocol
-```
+This module no longer depends on the external `github.com/cinchcli/protocol`
+repo. All formerly-shared types live in-tree: `internal/protocol/` (the WS
+envelope and HTTP-only DTOs) and `internal/gen/cinch/v1/` (everything
+covered by `proto/cinch/v1/*.proto`).
 
 ### URLs
 

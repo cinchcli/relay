@@ -9,7 +9,6 @@ package cinchv1
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
-	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -28,8 +27,8 @@ type Device struct {
 	Hostname             string                 `protobuf:"bytes,2,opt,name=hostname,proto3" json:"hostname,omitempty"`
 	SourceKey            string                 `protobuf:"bytes,3,opt,name=source_key,json=sourceKey,proto3" json:"source_key,omitempty"`
 	ClipCount            int32                  `protobuf:"varint,4,opt,name=clip_count,json=clipCount,proto3" json:"clip_count,omitempty"`
-	PairedAt             *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=paired_at,json=pairedAt,proto3" json:"paired_at,omitempty"`
-	LastPushAt           *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=last_push_at,json=lastPushAt,proto3,oneof" json:"last_push_at,omitempty"`
+	PairedAt             string                 `protobuf:"bytes,5,opt,name=paired_at,json=pairedAt,proto3" json:"paired_at,omitempty"`
+	LastPushAt           *string                `protobuf:"bytes,6,opt,name=last_push_at,json=lastPushAt,proto3,oneof" json:"last_push_at,omitempty"`
 	Online               bool                   `protobuf:"varint,7,opt,name=online,proto3" json:"online,omitempty"`
 	Nickname             string                 `protobuf:"bytes,8,opt,name=nickname,proto3" json:"nickname,omitempty"`
 	PublicKey            string                 `protobuf:"bytes,9,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`
@@ -96,18 +95,18 @@ func (x *Device) GetClipCount() int32 {
 	return 0
 }
 
-func (x *Device) GetPairedAt() *timestamppb.Timestamp {
+func (x *Device) GetPairedAt() string {
 	if x != nil {
 		return x.PairedAt
 	}
-	return nil
+	return ""
 }
 
-func (x *Device) GetLastPushAt() *timestamppb.Timestamp {
-	if x != nil {
-		return x.LastPushAt
+func (x *Device) GetLastPushAt() string {
+	if x != nil && x.LastPushAt != nil {
+		return *x.LastPushAt
 	}
-	return nil
+	return ""
 }
 
 func (x *Device) GetOnline() bool {
@@ -494,16 +493,16 @@ var File_cinch_v1_devices_proto protoreflect.FileDescriptor
 
 const file_cinch_v1_devices_proto_rawDesc = "" +
 	"\n" +
-	"\x16cinch/v1/devices.proto\x12\bcinch.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x88\x03\n" +
+	"\x16cinch/v1/devices.proto\x12\bcinch.v1\"\xd0\x02\n" +
 	"\x06Device\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n" +
 	"\bhostname\x18\x02 \x01(\tR\bhostname\x12\x1d\n" +
 	"\n" +
 	"source_key\x18\x03 \x01(\tR\tsourceKey\x12\x1d\n" +
 	"\n" +
-	"clip_count\x18\x04 \x01(\x05R\tclipCount\x127\n" +
-	"\tpaired_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\bpairedAt\x12A\n" +
-	"\flast_push_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampH\x00R\n" +
+	"clip_count\x18\x04 \x01(\x05R\tclipCount\x12\x1b\n" +
+	"\tpaired_at\x18\x05 \x01(\tR\bpairedAt\x12%\n" +
+	"\flast_push_at\x18\x06 \x01(\tH\x00R\n" +
 	"lastPushAt\x88\x01\x01\x12\x16\n" +
 	"\x06online\x18\a \x01(\bR\x06online\x12\x1a\n" +
 	"\bnickname\x18\b \x01(\tR\bnickname\x12\x1d\n" +
@@ -548,34 +547,31 @@ func file_cinch_v1_devices_proto_rawDescGZIP() []byte {
 
 var file_cinch_v1_devices_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
 var file_cinch_v1_devices_proto_goTypes = []any{
-	(*Device)(nil),                // 0: cinch.v1.Device
-	(*ListDevicesRequest)(nil),    // 1: cinch.v1.ListDevicesRequest
-	(*ListDevicesResponse)(nil),   // 2: cinch.v1.ListDevicesResponse
-	(*SetNicknameRequest)(nil),    // 3: cinch.v1.SetNicknameRequest
-	(*SetNicknameResponse)(nil),   // 4: cinch.v1.SetNicknameResponse
-	(*SetRetentionRequest)(nil),   // 5: cinch.v1.SetRetentionRequest
-	(*SetRetentionResponse)(nil),  // 6: cinch.v1.SetRetentionResponse
-	(*PullRequest)(nil),           // 7: cinch.v1.PullRequest
-	(*PullResponse)(nil),          // 8: cinch.v1.PullResponse
-	(*timestamppb.Timestamp)(nil), // 9: google.protobuf.Timestamp
+	(*Device)(nil),               // 0: cinch.v1.Device
+	(*ListDevicesRequest)(nil),   // 1: cinch.v1.ListDevicesRequest
+	(*ListDevicesResponse)(nil),  // 2: cinch.v1.ListDevicesResponse
+	(*SetNicknameRequest)(nil),   // 3: cinch.v1.SetNicknameRequest
+	(*SetNicknameResponse)(nil),  // 4: cinch.v1.SetNicknameResponse
+	(*SetRetentionRequest)(nil),  // 5: cinch.v1.SetRetentionRequest
+	(*SetRetentionResponse)(nil), // 6: cinch.v1.SetRetentionResponse
+	(*PullRequest)(nil),          // 7: cinch.v1.PullRequest
+	(*PullResponse)(nil),         // 8: cinch.v1.PullResponse
 }
 var file_cinch_v1_devices_proto_depIdxs = []int32{
-	9, // 0: cinch.v1.Device.paired_at:type_name -> google.protobuf.Timestamp
-	9, // 1: cinch.v1.Device.last_push_at:type_name -> google.protobuf.Timestamp
-	0, // 2: cinch.v1.ListDevicesResponse.devices:type_name -> cinch.v1.Device
-	1, // 3: cinch.v1.DevicesService.ListDevices:input_type -> cinch.v1.ListDevicesRequest
-	3, // 4: cinch.v1.DevicesService.SetNickname:input_type -> cinch.v1.SetNicknameRequest
-	5, // 5: cinch.v1.DevicesService.SetRetention:input_type -> cinch.v1.SetRetentionRequest
-	7, // 6: cinch.v1.DevicesService.Pull:input_type -> cinch.v1.PullRequest
-	2, // 7: cinch.v1.DevicesService.ListDevices:output_type -> cinch.v1.ListDevicesResponse
-	4, // 8: cinch.v1.DevicesService.SetNickname:output_type -> cinch.v1.SetNicknameResponse
-	6, // 9: cinch.v1.DevicesService.SetRetention:output_type -> cinch.v1.SetRetentionResponse
-	8, // 10: cinch.v1.DevicesService.Pull:output_type -> cinch.v1.PullResponse
-	7, // [7:11] is the sub-list for method output_type
-	3, // [3:7] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	0, // 0: cinch.v1.ListDevicesResponse.devices:type_name -> cinch.v1.Device
+	1, // 1: cinch.v1.DevicesService.ListDevices:input_type -> cinch.v1.ListDevicesRequest
+	3, // 2: cinch.v1.DevicesService.SetNickname:input_type -> cinch.v1.SetNicknameRequest
+	5, // 3: cinch.v1.DevicesService.SetRetention:input_type -> cinch.v1.SetRetentionRequest
+	7, // 4: cinch.v1.DevicesService.Pull:input_type -> cinch.v1.PullRequest
+	2, // 5: cinch.v1.DevicesService.ListDevices:output_type -> cinch.v1.ListDevicesResponse
+	4, // 6: cinch.v1.DevicesService.SetNickname:output_type -> cinch.v1.SetNicknameResponse
+	6, // 7: cinch.v1.DevicesService.SetRetention:output_type -> cinch.v1.SetRetentionResponse
+	8, // 8: cinch.v1.DevicesService.Pull:output_type -> cinch.v1.PullResponse
+	5, // [5:9] is the sub-list for method output_type
+	1, // [1:5] is the sub-list for method input_type
+	1, // [1:1] is the sub-list for extension type_name
+	1, // [1:1] is the sub-list for extension extendee
+	0, // [0:1] is the sub-list for field type_name
 }
 
 func init() { file_cinch_v1_devices_proto_init() }
