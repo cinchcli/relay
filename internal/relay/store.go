@@ -1387,7 +1387,7 @@ func (s *Store) GetKeyBundle(deviceID string) (ephPubKeyB64, encryptedBundleB64 
 // ListPendingKeyExchanges returns devices that have a public_key but no encrypted_key_bundle yet.
 // These are devices waiting for the desktop to complete the ECDH key exchange.
 // Each returned DeviceInfo includes PublicKey and PublicKeyFingerprint for relay-to-desktop delivery.
-func (s *Store) ListPendingKeyExchanges(userID string) ([]cinchv1.Device, error) {
+func (s *Store) ListPendingKeyExchanges(userID string) ([]*cinchv1.Device, error) {
 	rows, err := s.db.Query(
 		`SELECT id, hostname, COALESCE(public_key,''), COALESCE(public_key_fingerprint,'') FROM devices
 		 WHERE user_id = ? AND public_key IS NOT NULL AND encrypted_key_bundle IS NULL
@@ -1398,9 +1398,9 @@ func (s *Store) ListPendingKeyExchanges(userID string) ([]cinchv1.Device, error)
 		return nil, err
 	}
 	defer rows.Close()
-	var devices []cinchv1.Device
+	var devices []*cinchv1.Device
 	for rows.Next() {
-		var d cinchv1.Device
+		d := &cinchv1.Device{}
 		if err := rows.Scan(&d.Id, &d.Hostname, &d.PublicKey, &d.PublicKeyFingerprint); err != nil {
 			return nil, err
 		}

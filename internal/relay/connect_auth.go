@@ -195,8 +195,8 @@ func (s *connectAuthServer) DeviceCodeStart(ctx context.Context, req *connect.Re
 		DeviceCode:      resp.DeviceCode,
 		UserCode:        resp.UserCode,
 		VerificationUri: verificationURI,
-		ExpiresIn:       int64(resp.ExpiresIn),
-		Interval:        int64(resp.Interval),
+		ExpiresIn:       resp.ExpiresIn,
+		Interval:        resp.Interval,
 	}), nil
 }
 

@@ -666,7 +666,7 @@ func TestBinaryClipBroadcastViaWebSocket(t *testing.T) {
 	if msg.Clip.MediaPath == nil || *msg.Clip.MediaPath == "" {
 		t.Error("media_path not broadcast via WebSocket")
 	}
-	if string(msg.Clip.ContentType) != "image" {
+	if msg.Clip.ContentType != "image" {
 		t.Errorf("expected content_type 'image', got %q", msg.Clip.ContentType)
 	}
 }

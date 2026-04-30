@@ -74,12 +74,12 @@ func loginAndPair(t *testing.T, ts *httptest.Server, hostname string) (deviceTok
 	if pairResp.StatusCode != http.StatusOK {
 		t.Fatalf("pair status %d", pairResp.StatusCode)
 	}
-	var pr cinchv1.PairResponse
-	if err := json.NewDecoder(pairResp.Body).Decode(&pr); err != nil {
+	pr := &cinchv1.PairResponse{}
+	if err := json.NewDecoder(pairResp.Body).Decode(pr); err != nil {
 		t.Fatalf("decode pair: %v", err)
 	}
 	if pr.Token == "" || pr.UserId == "" || pr.DeviceId == "" {
-		t.Fatalf("pair response missing fields: %+v", pr)
+		t.Fatalf("pair response missing fields: token=%q user_id=%q device_id=%q", pr.Token, pr.UserId, pr.DeviceId)
 	}
 	return pr.Token, pr.UserId, pr.DeviceId
 }
