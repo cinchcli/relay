@@ -1095,20 +1095,57 @@ func (h *Handler) DemoStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, protocol.DemoStatsResponse{PushesToday: count})
 }
 
-// deriveRelayURL returns the public HTTPS URL of the relay (for the CLI curl command).
+// requestIsHTTPS reports whether the inbound request reached the public edge
+// over TLS. Direct TLS (r.TLS) and the standard X-Forwarded-Proto header are
+// honored, plus Cloudflare's CF-Visitor JSON ({"scheme":"https"}) which is
+// what the cinchcli.com relay sees in production.
+func requestIsHTTPS(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	if r.Header.Get("X-Forwarded-Proto") == "https" {
+		return true
+	}
+	if cv := r.Header.Get("CF-Visitor"); strings.Contains(cv, `"scheme":"https"`) {
+		return true
+	}
+	return false
+}
+
+// deriveRelayURL returns the public URL of the relay (used in the CLI curl
+// command shown on the playground page). RELAY_PUBLIC_URL takes precedence
+// when set, so deployments can pin the exact origin without relying on
+// proxy-header detection.
 func deriveRelayURL(r *http.Request) string {
-	scheme := "https"
-	if r.TLS == nil && r.Header.Get("X-Forwarded-Proto") != "https" {
-		scheme = "http"
+	if v := os.Getenv("RELAY_PUBLIC_URL"); v != "" {
+		return strings.TrimRight(v, "/")
+	}
+	scheme := "http"
+	if requestIsHTTPS(r) {
+		scheme = "https"
 	}
 	return scheme + "://" + r.Host
 }
 
-// deriveWSURL returns the WebSocket URL for the relay (wss:// in prod).
+// deriveWSURL returns the WebSocket URL for the relay. RELAY_PUBLIC_WS_URL
+// overrides everything; otherwise we derive from RELAY_PUBLIC_URL (https→wss,
+// http→ws) or from the request scheme.
 func deriveWSURL(r *http.Request) string {
-	scheme := "wss"
-	if r.TLS == nil && r.Header.Get("X-Forwarded-Proto") != "https" {
-		scheme = "ws"
+	if v := os.Getenv("RELAY_PUBLIC_WS_URL"); v != "" {
+		return strings.TrimRight(v, "/")
+	}
+	if v := os.Getenv("RELAY_PUBLIC_URL"); v != "" {
+		base := strings.TrimRight(v, "/")
+		if strings.HasPrefix(base, "https://") {
+			return "wss://" + strings.TrimPrefix(base, "https://") + "/ws"
+		}
+		if strings.HasPrefix(base, "http://") {
+			return "ws://" + strings.TrimPrefix(base, "http://") + "/ws"
+		}
+	}
+	scheme := "ws"
+	if requestIsHTTPS(r) {
+		scheme = "wss"
 	}
 	return scheme + "://" + r.Host + "/ws"
 }
