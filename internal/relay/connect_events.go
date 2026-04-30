@@ -6,9 +6,9 @@ import (
 
 	"connectrpc.com/connect"
 
-	"github.com/cinchcli/protocol"
 	cinchv1 "github.com/cinchcli/relay/internal/gen/cinch/v1"
 	"github.com/cinchcli/relay/internal/gen/cinch/v1/cinchv1connect"
+	"github.com/cinchcli/relay/internal/protocol"
 )
 
 type connectEventsServer struct {
@@ -27,7 +27,7 @@ func wsMessageToServerEvent(msg protocol.WSMessage) *cinchv1.ServerEvent {
 		}
 		return &cinchv1.ServerEvent{
 			Event: &cinchv1.ServerEvent_NewClip{
-				NewClip: &cinchv1.NewClipEvent{Clip: protoClip(msg.Clip)},
+				NewClip: &cinchv1.NewClipEvent{Clip: msg.Clip},
 			},
 		}
 	case protocol.ActionSendClipboard:
@@ -92,7 +92,7 @@ func (s *connectEventsServer) Subscribe(
 		for _, d := range pending {
 			s.h.hub.sendToEventSub(userID, deviceID, protocol.WSMessage{
 				Action:               protocol.ActionKeyExchangeRequested,
-				DeviceID:             d.ID,
+				DeviceID:             d.Id,
 				Hostname:             d.Hostname,
 				DeviceKeyFingerprint: d.PublicKeyFingerprint,
 			})

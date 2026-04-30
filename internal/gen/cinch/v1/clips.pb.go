@@ -9,7 +9,6 @@ package cinchv1
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
-	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -22,72 +21,17 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-type ContentType int32
-
-const (
-	ContentType_CONTENT_TYPE_UNSPECIFIED ContentType = 0
-	ContentType_CONTENT_TYPE_TEXT        ContentType = 1
-	ContentType_CONTENT_TYPE_URL         ContentType = 2
-	ContentType_CONTENT_TYPE_CODE        ContentType = 3
-	ContentType_CONTENT_TYPE_IMAGE       ContentType = 4
-)
-
-// Enum value maps for ContentType.
-var (
-	ContentType_name = map[int32]string{
-		0: "CONTENT_TYPE_UNSPECIFIED",
-		1: "CONTENT_TYPE_TEXT",
-		2: "CONTENT_TYPE_URL",
-		3: "CONTENT_TYPE_CODE",
-		4: "CONTENT_TYPE_IMAGE",
-	}
-	ContentType_value = map[string]int32{
-		"CONTENT_TYPE_UNSPECIFIED": 0,
-		"CONTENT_TYPE_TEXT":        1,
-		"CONTENT_TYPE_URL":         2,
-		"CONTENT_TYPE_CODE":        3,
-		"CONTENT_TYPE_IMAGE":       4,
-	}
-)
-
-func (x ContentType) Enum() *ContentType {
-	p := new(ContentType)
-	*p = x
-	return p
-}
-
-func (x ContentType) String() string {
-	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
-}
-
-func (ContentType) Descriptor() protoreflect.EnumDescriptor {
-	return file_cinch_v1_clips_proto_enumTypes[0].Descriptor()
-}
-
-func (ContentType) Type() protoreflect.EnumType {
-	return &file_cinch_v1_clips_proto_enumTypes[0]
-}
-
-func (x ContentType) Number() protoreflect.EnumNumber {
-	return protoreflect.EnumNumber(x)
-}
-
-// Deprecated: Use ContentType.Descriptor instead.
-func (ContentType) EnumDescriptor() ([]byte, []int) {
-	return file_cinch_v1_clips_proto_rawDescGZIP(), []int{0}
-}
-
 type Clip struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ClipId        string                 `protobuf:"bytes,1,opt,name=clip_id,json=clipId,proto3" json:"clip_id,omitempty"`
 	UserId        string                 `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	Content       string                 `protobuf:"bytes,3,opt,name=content,proto3" json:"content,omitempty"`
-	ContentType   ContentType            `protobuf:"varint,4,opt,name=content_type,json=contentType,proto3,enum=cinch.v1.ContentType" json:"content_type,omitempty"`
+	ContentType   string                 `protobuf:"bytes,4,opt,name=content_type,json=contentType,proto3" json:"content_type,omitempty"`
 	Source        string                 `protobuf:"bytes,5,opt,name=source,proto3" json:"source,omitempty"`
 	Label         string                 `protobuf:"bytes,6,opt,name=label,proto3" json:"label,omitempty"`
-	ByteSize      int32                  `protobuf:"varint,7,opt,name=byte_size,json=byteSize,proto3" json:"byte_size,omitempty"`
+	ByteSize      int64                  `protobuf:"varint,7,opt,name=byte_size,json=byteSize,proto3" json:"byte_size,omitempty"`
 	MediaPath     *string                `protobuf:"bytes,8,opt,name=media_path,json=mediaPath,proto3,oneof" json:"media_path,omitempty"`
-	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	CreatedAt     string                 `protobuf:"bytes,9,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	Ttl           *int64                 `protobuf:"varint,10,opt,name=ttl,proto3,oneof" json:"ttl,omitempty"`
 	Encrypted     bool                   `protobuf:"varint,11,opt,name=encrypted,proto3" json:"encrypted,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -145,11 +89,11 @@ func (x *Clip) GetContent() string {
 	return ""
 }
 
-func (x *Clip) GetContentType() ContentType {
+func (x *Clip) GetContentType() string {
 	if x != nil {
 		return x.ContentType
 	}
-	return ContentType_CONTENT_TYPE_UNSPECIFIED
+	return ""
 }
 
 func (x *Clip) GetSource() string {
@@ -166,7 +110,7 @@ func (x *Clip) GetLabel() string {
 	return ""
 }
 
-func (x *Clip) GetByteSize() int32 {
+func (x *Clip) GetByteSize() int64 {
 	if x != nil {
 		return x.ByteSize
 	}
@@ -180,11 +124,11 @@ func (x *Clip) GetMediaPath() string {
 	return ""
 }
 
-func (x *Clip) GetCreatedAt() *timestamppb.Timestamp {
+func (x *Clip) GetCreatedAt() string {
 	if x != nil {
 		return x.CreatedAt
 	}
-	return nil
+	return ""
 }
 
 func (x *Clip) GetTtl() int64 {
@@ -204,13 +148,14 @@ func (x *Clip) GetEncrypted() bool {
 type PushClipRequest struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	Content        string                 `protobuf:"bytes,1,opt,name=content,proto3" json:"content,omitempty"`
-	ContentType    ContentType            `protobuf:"varint,2,opt,name=content_type,json=contentType,proto3,enum=cinch.v1.ContentType" json:"content_type,omitempty"`
+	ContentType    string                 `protobuf:"bytes,2,opt,name=content_type,json=contentType,proto3" json:"content_type,omitempty"`
 	Label          string                 `protobuf:"bytes,3,opt,name=label,proto3" json:"label,omitempty"`
 	Source         string                 `protobuf:"bytes,4,opt,name=source,proto3" json:"source,omitempty"`
 	Ttl            *int64                 `protobuf:"varint,5,opt,name=ttl,proto3,oneof" json:"ttl,omitempty"`
-	ByteSize       int32                  `protobuf:"varint,6,opt,name=byte_size,json=byteSize,proto3" json:"byte_size,omitempty"`
+	ByteSize       int64                  `protobuf:"varint,6,opt,name=byte_size,json=byteSize,proto3" json:"byte_size,omitempty"`
 	Encrypted      bool                   `protobuf:"varint,7,opt,name=encrypted,proto3" json:"encrypted,omitempty"`
 	TargetDeviceId *string                `protobuf:"bytes,8,opt,name=target_device_id,json=targetDeviceId,proto3,oneof" json:"target_device_id,omitempty"`
+	MediaPath      *string                `protobuf:"bytes,9,opt,name=media_path,json=mediaPath,proto3,oneof" json:"media_path,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -252,11 +197,11 @@ func (x *PushClipRequest) GetContent() string {
 	return ""
 }
 
-func (x *PushClipRequest) GetContentType() ContentType {
+func (x *PushClipRequest) GetContentType() string {
 	if x != nil {
 		return x.ContentType
 	}
-	return ContentType_CONTENT_TYPE_UNSPECIFIED
+	return ""
 }
 
 func (x *PushClipRequest) GetLabel() string {
@@ -280,7 +225,7 @@ func (x *PushClipRequest) GetTtl() int64 {
 	return 0
 }
 
-func (x *PushClipRequest) GetByteSize() int32 {
+func (x *PushClipRequest) GetByteSize() int64 {
 	if x != nil {
 		return x.ByteSize
 	}
@@ -301,10 +246,17 @@ func (x *PushClipRequest) GetTargetDeviceId() string {
 	return ""
 }
 
+func (x *PushClipRequest) GetMediaPath() string {
+	if x != nil && x.MediaPath != nil {
+		return *x.MediaPath
+	}
+	return ""
+}
+
 type PushClipResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ClipId        string                 `protobuf:"bytes,1,opt,name=clip_id,json=clipId,proto3" json:"clip_id,omitempty"`
-	ByteSize      int32                  `protobuf:"varint,2,opt,name=byte_size,json=byteSize,proto3" json:"byte_size,omitempty"`
+	ByteSize      int64                  `protobuf:"varint,2,opt,name=byte_size,json=byteSize,proto3" json:"byte_size,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -346,7 +298,7 @@ func (x *PushClipResponse) GetClipId() string {
 	return ""
 }
 
-func (x *PushClipResponse) GetByteSize() int32 {
+func (x *PushClipResponse) GetByteSize() int64 {
 	if x != nil {
 		return x.ByteSize
 	}
@@ -613,38 +565,41 @@ var File_cinch_v1_clips_proto protoreflect.FileDescriptor
 
 const file_cinch_v1_clips_proto_rawDesc = "" +
 	"\n" +
-	"\x14cinch/v1/clips.proto\x12\bcinch.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x82\x03\n" +
+	"\x14cinch/v1/clips.proto\x12\bcinch.v1\"\xcf\x02\n" +
 	"\x04Clip\x12\x17\n" +
 	"\aclip_id\x18\x01 \x01(\tR\x06clipId\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x18\n" +
-	"\acontent\x18\x03 \x01(\tR\acontent\x128\n" +
-	"\fcontent_type\x18\x04 \x01(\x0e2\x15.cinch.v1.ContentTypeR\vcontentType\x12\x16\n" +
+	"\acontent\x18\x03 \x01(\tR\acontent\x12!\n" +
+	"\fcontent_type\x18\x04 \x01(\tR\vcontentType\x12\x16\n" +
 	"\x06source\x18\x05 \x01(\tR\x06source\x12\x14\n" +
 	"\x05label\x18\x06 \x01(\tR\x05label\x12\x1b\n" +
-	"\tbyte_size\x18\a \x01(\x05R\bbyteSize\x12\"\n" +
+	"\tbyte_size\x18\a \x01(\x03R\bbyteSize\x12\"\n" +
 	"\n" +
-	"media_path\x18\b \x01(\tH\x00R\tmediaPath\x88\x01\x01\x129\n" +
+	"media_path\x18\b \x01(\tH\x00R\tmediaPath\x88\x01\x01\x12\x1d\n" +
 	"\n" +
-	"created_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x12\x15\n" +
+	"created_at\x18\t \x01(\tR\tcreatedAt\x12\x15\n" +
 	"\x03ttl\x18\n" +
 	" \x01(\x03H\x01R\x03ttl\x88\x01\x01\x12\x1c\n" +
 	"\tencrypted\x18\v \x01(\bR\tencryptedB\r\n" +
 	"\v_media_pathB\x06\n" +
-	"\x04_ttl\"\xb1\x02\n" +
+	"\x04_ttl\"\xcd\x02\n" +
 	"\x0fPushClipRequest\x12\x18\n" +
-	"\acontent\x18\x01 \x01(\tR\acontent\x128\n" +
-	"\fcontent_type\x18\x02 \x01(\x0e2\x15.cinch.v1.ContentTypeR\vcontentType\x12\x14\n" +
+	"\acontent\x18\x01 \x01(\tR\acontent\x12!\n" +
+	"\fcontent_type\x18\x02 \x01(\tR\vcontentType\x12\x14\n" +
 	"\x05label\x18\x03 \x01(\tR\x05label\x12\x16\n" +
 	"\x06source\x18\x04 \x01(\tR\x06source\x12\x15\n" +
 	"\x03ttl\x18\x05 \x01(\x03H\x00R\x03ttl\x88\x01\x01\x12\x1b\n" +
-	"\tbyte_size\x18\x06 \x01(\x05R\bbyteSize\x12\x1c\n" +
+	"\tbyte_size\x18\x06 \x01(\x03R\bbyteSize\x12\x1c\n" +
 	"\tencrypted\x18\a \x01(\bR\tencrypted\x12-\n" +
-	"\x10target_device_id\x18\b \x01(\tH\x01R\x0etargetDeviceId\x88\x01\x01B\x06\n" +
+	"\x10target_device_id\x18\b \x01(\tH\x01R\x0etargetDeviceId\x88\x01\x01\x12\"\n" +
+	"\n" +
+	"media_path\x18\t \x01(\tH\x02R\tmediaPath\x88\x01\x01B\x06\n" +
 	"\x04_ttlB\x13\n" +
-	"\x11_target_device_id\"H\n" +
+	"\x11_target_device_idB\r\n" +
+	"\v_media_path\"H\n" +
 	"\x10PushClipResponse\x12\x17\n" +
 	"\aclip_id\x18\x01 \x01(\tR\x06clipId\x12\x1b\n" +
-	"\tbyte_size\x18\x02 \x01(\x05R\bbyteSize\"\x12\n" +
+	"\tbyte_size\x18\x02 \x01(\x03R\bbyteSize\"\x12\n" +
 	"\x10ListClipsRequest\"9\n" +
 	"\x11ListClipsResponse\x12$\n" +
 	"\x05clips\x18\x01 \x03(\v2\x0e.cinch.v1.ClipR\x05clips\".\n" +
@@ -655,13 +610,7 @@ const file_cinch_v1_clips_proto_rawDesc = "" +
 	"\x11DeleteClipRequest\x12\x17\n" +
 	"\aclip_id\x18\x01 \x01(\tR\x06clipId\"$\n" +
 	"\x12DeleteClipResponse\x12\x0e\n" +
-	"\x02ok\x18\x01 \x01(\bR\x02ok*\x87\x01\n" +
-	"\vContentType\x12\x1c\n" +
-	"\x18CONTENT_TYPE_UNSPECIFIED\x10\x00\x12\x15\n" +
-	"\x11CONTENT_TYPE_TEXT\x10\x01\x12\x14\n" +
-	"\x10CONTENT_TYPE_URL\x10\x02\x12\x15\n" +
-	"\x11CONTENT_TYPE_CODE\x10\x03\x12\x16\n" +
-	"\x12CONTENT_TYPE_IMAGE\x10\x042\xb2\x02\n" +
+	"\x02ok\x18\x01 \x01(\bR\x02ok2\xb2\x02\n" +
 	"\fClipsService\x12A\n" +
 	"\bPushClip\x12\x19.cinch.v1.PushClipRequest\x1a\x1a.cinch.v1.PushClipResponse\x12D\n" +
 	"\tListClips\x12\x1a.cinch.v1.ListClipsRequest\x1a\x1b.cinch.v1.ListClipsResponse\x12P\n" +
@@ -681,40 +630,34 @@ func file_cinch_v1_clips_proto_rawDescGZIP() []byte {
 	return file_cinch_v1_clips_proto_rawDescData
 }
 
-var file_cinch_v1_clips_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
 var file_cinch_v1_clips_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
 var file_cinch_v1_clips_proto_goTypes = []any{
-	(ContentType)(0),              // 0: cinch.v1.ContentType
-	(*Clip)(nil),                  // 1: cinch.v1.Clip
-	(*PushClipRequest)(nil),       // 2: cinch.v1.PushClipRequest
-	(*PushClipResponse)(nil),      // 3: cinch.v1.PushClipResponse
-	(*ListClipsRequest)(nil),      // 4: cinch.v1.ListClipsRequest
-	(*ListClipsResponse)(nil),     // 5: cinch.v1.ListClipsResponse
-	(*GetLatestClipRequest)(nil),  // 6: cinch.v1.GetLatestClipRequest
-	(*GetLatestClipResponse)(nil), // 7: cinch.v1.GetLatestClipResponse
-	(*DeleteClipRequest)(nil),     // 8: cinch.v1.DeleteClipRequest
-	(*DeleteClipResponse)(nil),    // 9: cinch.v1.DeleteClipResponse
-	(*timestamppb.Timestamp)(nil), // 10: google.protobuf.Timestamp
+	(*Clip)(nil),                  // 0: cinch.v1.Clip
+	(*PushClipRequest)(nil),       // 1: cinch.v1.PushClipRequest
+	(*PushClipResponse)(nil),      // 2: cinch.v1.PushClipResponse
+	(*ListClipsRequest)(nil),      // 3: cinch.v1.ListClipsRequest
+	(*ListClipsResponse)(nil),     // 4: cinch.v1.ListClipsResponse
+	(*GetLatestClipRequest)(nil),  // 5: cinch.v1.GetLatestClipRequest
+	(*GetLatestClipResponse)(nil), // 6: cinch.v1.GetLatestClipResponse
+	(*DeleteClipRequest)(nil),     // 7: cinch.v1.DeleteClipRequest
+	(*DeleteClipResponse)(nil),    // 8: cinch.v1.DeleteClipResponse
 }
 var file_cinch_v1_clips_proto_depIdxs = []int32{
-	0,  // 0: cinch.v1.Clip.content_type:type_name -> cinch.v1.ContentType
-	10, // 1: cinch.v1.Clip.created_at:type_name -> google.protobuf.Timestamp
-	0,  // 2: cinch.v1.PushClipRequest.content_type:type_name -> cinch.v1.ContentType
-	1,  // 3: cinch.v1.ListClipsResponse.clips:type_name -> cinch.v1.Clip
-	1,  // 4: cinch.v1.GetLatestClipResponse.clip:type_name -> cinch.v1.Clip
-	2,  // 5: cinch.v1.ClipsService.PushClip:input_type -> cinch.v1.PushClipRequest
-	4,  // 6: cinch.v1.ClipsService.ListClips:input_type -> cinch.v1.ListClipsRequest
-	6,  // 7: cinch.v1.ClipsService.GetLatestClip:input_type -> cinch.v1.GetLatestClipRequest
-	8,  // 8: cinch.v1.ClipsService.DeleteClip:input_type -> cinch.v1.DeleteClipRequest
-	3,  // 9: cinch.v1.ClipsService.PushClip:output_type -> cinch.v1.PushClipResponse
-	5,  // 10: cinch.v1.ClipsService.ListClips:output_type -> cinch.v1.ListClipsResponse
-	7,  // 11: cinch.v1.ClipsService.GetLatestClip:output_type -> cinch.v1.GetLatestClipResponse
-	9,  // 12: cinch.v1.ClipsService.DeleteClip:output_type -> cinch.v1.DeleteClipResponse
-	9,  // [9:13] is the sub-list for method output_type
-	5,  // [5:9] is the sub-list for method input_type
-	5,  // [5:5] is the sub-list for extension type_name
-	5,  // [5:5] is the sub-list for extension extendee
-	0,  // [0:5] is the sub-list for field type_name
+	0, // 0: cinch.v1.ListClipsResponse.clips:type_name -> cinch.v1.Clip
+	0, // 1: cinch.v1.GetLatestClipResponse.clip:type_name -> cinch.v1.Clip
+	1, // 2: cinch.v1.ClipsService.PushClip:input_type -> cinch.v1.PushClipRequest
+	3, // 3: cinch.v1.ClipsService.ListClips:input_type -> cinch.v1.ListClipsRequest
+	5, // 4: cinch.v1.ClipsService.GetLatestClip:input_type -> cinch.v1.GetLatestClipRequest
+	7, // 5: cinch.v1.ClipsService.DeleteClip:input_type -> cinch.v1.DeleteClipRequest
+	2, // 6: cinch.v1.ClipsService.PushClip:output_type -> cinch.v1.PushClipResponse
+	4, // 7: cinch.v1.ClipsService.ListClips:output_type -> cinch.v1.ListClipsResponse
+	6, // 8: cinch.v1.ClipsService.GetLatestClip:output_type -> cinch.v1.GetLatestClipResponse
+	8, // 9: cinch.v1.ClipsService.DeleteClip:output_type -> cinch.v1.DeleteClipResponse
+	6, // [6:10] is the sub-list for method output_type
+	2, // [2:6] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_cinch_v1_clips_proto_init() }
@@ -729,14 +672,13 @@ func file_cinch_v1_clips_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_cinch_v1_clips_proto_rawDesc), len(file_cinch_v1_clips_proto_rawDesc)),
-			NumEnums:      1,
+			NumEnums:      0,
 			NumMessages:   9,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_cinch_v1_clips_proto_goTypes,
 		DependencyIndexes: file_cinch_v1_clips_proto_depIdxs,
-		EnumInfos:         file_cinch_v1_clips_proto_enumTypes,
 		MessageInfos:      file_cinch_v1_clips_proto_msgTypes,
 	}.Build()
 	File_cinch_v1_clips_proto = out.File

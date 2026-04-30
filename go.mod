@@ -4,7 +4,6 @@ go 1.26.2
 
 require (
 	connectrpc.com/connect v1.19.2
-	github.com/cinchcli/protocol v0.1.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/oklog/ulid/v2 v2.1.1
 	golang.org/x/oauth2 v0.36.0

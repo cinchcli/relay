@@ -2,8 +2,6 @@ syntax = "proto3";
 
 package cinch.v1;
 
-import "google/protobuf/timestamp.proto";
-
 option go_package = "github.com/cinchcli/relay/internal/gen/cinch/v1;cinchv1";
 
 // DevicesService manages paired devices and clipboard pull.
@@ -26,18 +24,22 @@ service DevicesService {
 }
 
 // ─── Device ──────────────────────────────────────────────────
+//
+// `paired_at` and `last_push_at` are RFC3339 strings (matching the legacy
+// REST wire). Per-language Timestamp types do not round-trip cleanly under
+// encoding/json which the relay still uses for the legacy /devices endpoint.
 
 message Device {
-  string                    id                    = 1;
-  string                    hostname              = 2;
-  string                    source_key            = 3;
-  int32                     clip_count            = 4;
-  google.protobuf.Timestamp paired_at             = 5;
-  optional google.protobuf.Timestamp last_push_at = 6;
-  bool                      online                = 7;
-  string                    nickname              = 8;
-  string                    public_key            = 9;
-  string                    public_key_fingerprint = 10;
+  string          id                     = 1;
+  string          hostname               = 2;
+  string          source_key             = 3;
+  int32           clip_count             = 4;
+  string          paired_at              = 5;
+  optional string last_push_at           = 6;
+  bool            online                 = 7;
+  string          nickname               = 8;
+  string          public_key             = 9;
+  string          public_key_fingerprint = 10;
 }
 
 // ─── ListDevices ─────────────────────────────────────────────
@@ -74,6 +76,6 @@ message SetRetentionResponse {
 message PullRequest {}
 
 message PullResponse {
-  string pull_id  = 1;
-  string content  = 2;
+  string pull_id = 1;
+  string content = 2;
 }

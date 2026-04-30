@@ -126,8 +126,12 @@ Full docs at [cinchcli.com/docs](https://cinchcli.com/docs).
 ## Related Repos
 
 - [cinchcli/cinch](https://github.com/cinchcli/cinch) — CLI client (`cinch push` / `pull` / `auth`)
-- [cinchcli/protocol](https://github.com/cinchcli/protocol) — Shared Go types (auth tokens, clip encoding, WebSocket framing)
 - [cinchcli/desktop](https://github.com/cinchcli/desktop) — Tauri v2 desktop app (macOS)
+
+The wire-format DTOs (`Clip`, `Device`, push/pull/auth requests, etc.) are
+defined in `proto/cinch/v1/*.proto` here; the Rust CLI and desktop generate
+their types from this same schema via the `proto-cinch` crate in
+[cinchcli/cinch](https://github.com/cinchcli/cinch).
 
 ## License
 
