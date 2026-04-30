@@ -14,10 +14,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cinchcli/protocol"
+	cinchv1 "github.com/cinchcli/relay/internal/gen/cinch/v1"
+	"github.com/cinchcli/relay/internal/protocol"
 	relay "github.com/cinchcli/relay/internal/relay"
 	"github.com/gorilla/websocket"
 )
+
+// stringPtr returns a pointer to the given string. Used for proto3 optional
+// fields (e.g. cinchv1.PairRequest.Hostname) in test struct literals.
+func stringPtr(s string) *string { return &s }
 
 // setupTestServer creates a relay with an in-memory SQLite DB and returns the test server URL.
 func setupTestServer(t *testing.T) (*httptest.Server, *relay.Hub) {
@@ -56,9 +61,9 @@ func login(t *testing.T, baseURL string) (token, pairToken, userID string) {
 		t.Fatalf("login returned %d", resp.StatusCode)
 	}
 
-	var loginResp protocol.AuthLoginResponse
+	var loginResp cinchv1.LoginResponse
 	json.NewDecoder(resp.Body).Decode(&loginResp)
-	return loginResp.Token, loginResp.PairToken, loginResp.UserID
+	return loginResp.Token, loginResp.PairToken, loginResp.UserId
 }
 
 // connectFakeAgent connects a WebSocket client that acts as the desktop agent.
@@ -98,9 +103,9 @@ func TestAuthPair(t *testing.T) {
 	_ = token
 
 	// Pair with the pair token
-	reqBody, _ := json.Marshal(protocol.AuthPairRequest{
+	reqBody, _ := json.Marshal(cinchv1.PairRequest{
 		PairToken: pairToken,
-		Hostname:  "test-server",
+		Hostname:  stringPtr("test-server"),
 	})
 	resp, err := http.Post(ts.URL+"/auth/pair", "application/json", bytes.NewReader(reqBody))
 	if err != nil {
@@ -112,13 +117,13 @@ func TestAuthPair(t *testing.T) {
 		t.Fatalf("pair returned %d", resp.StatusCode)
 	}
 
-	var pairResp protocol.AuthPairResponse
+	var pairResp cinchv1.PairResponse
 	json.NewDecoder(resp.Body).Decode(&pairResp)
 
 	if pairResp.Token == "" {
 		t.Error("paired token is empty")
 	}
-	if pairResp.UserID == "" {
+	if pairResp.UserId == "" {
 		t.Error("paired user ID is empty")
 	}
 }
@@ -126,7 +131,7 @@ func TestAuthPair(t *testing.T) {
 func TestAuthPairInvalidToken(t *testing.T) {
 	ts, _ := setupTestServer(t)
 
-	reqBody, _ := json.Marshal(protocol.AuthPairRequest{
+	reqBody, _ := json.Marshal(cinchv1.PairRequest{
 		PairToken: "invalid-token",
 	})
 	resp, err := http.Post(ts.URL+"/auth/pair", "application/json", bytes.NewReader(reqBody))
@@ -145,7 +150,7 @@ func TestPushClip(t *testing.T) {
 	token, _, _ := login(t, ts.URL)
 
 	// Push a clip
-	reqBody, _ := json.Marshal(protocol.PushRequest{
+	reqBody, _ := json.Marshal(cinchv1.PushClipRequest{
 		Content: "hello from test",
 		Source:  "remote:test-server",
 	})
@@ -163,13 +168,13 @@ func TestPushClip(t *testing.T) {
 		t.Fatalf("push returned %d", resp.StatusCode)
 	}
 
-	var pushResp protocol.PushResponse
+	var pushResp cinchv1.PushClipResponse
 	json.NewDecoder(resp.Body).Decode(&pushResp)
 
-	if pushResp.ClipID == "" {
+	if pushResp.ClipId == "" {
 		t.Error("clip ID is empty")
 	}
-	if pushResp.ByteSize != len("hello from test") {
+	if pushResp.ByteSize != int64(len("hello from test")) {
 		t.Errorf("expected %d bytes, got %d", len("hello from test"), pushResp.ByteSize)
 	}
 }
@@ -177,7 +182,7 @@ func TestPushClip(t *testing.T) {
 func TestPushClipUnauthorized(t *testing.T) {
 	ts, _ := setupTestServer(t)
 
-	reqBody, _ := json.Marshal(protocol.PushRequest{Content: "test"})
+	reqBody, _ := json.Marshal(cinchv1.PushClipRequest{Content: "test"})
 	req, _ := http.NewRequest("POST", ts.URL+"/clips", bytes.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer invalid-token")
@@ -197,7 +202,7 @@ func TestPushClipEmpty(t *testing.T) {
 	ts, _ := setupTestServer(t)
 	token, _, _ := login(t, ts.URL)
 
-	reqBody, _ := json.Marshal(protocol.PushRequest{Content: ""})
+	reqBody, _ := json.Marshal(cinchv1.PushClipRequest{Content: ""})
 	req, _ := http.NewRequest("POST", ts.URL+"/clips", bytes.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -222,7 +227,7 @@ func TestPushAndReceiveViaWebSocket(t *testing.T) {
 
 	// Push a clip
 	content := "E2E test: push → WS → agent"
-	reqBody, _ := json.Marshal(protocol.PushRequest{
+	reqBody, _ := json.Marshal(cinchv1.PushClipRequest{
 		Content: content,
 		Source:  "remote:ci-server",
 	})
@@ -302,13 +307,13 @@ func TestPullClipboard(t *testing.T) {
 		t.Fatalf("pull returned %d", resp.StatusCode)
 	}
 
-	var pullResp protocol.PullResponse
+	var pullResp cinchv1.PullResponse
 	json.NewDecoder(resp.Body).Decode(&pullResp)
 
 	if pullResp.Content != "clipboard content from Mac" {
 		t.Errorf("expected clipboard content, got %q", pullResp.Content)
 	}
-	if pullResp.PullID == "" {
+	if pullResp.PullId == "" {
 		t.Error("pull ID is empty")
 	}
 }
@@ -338,7 +343,7 @@ func TestListClips(t *testing.T) {
 
 	// Push 3 clips
 	for i := 0; i < 3; i++ {
-		reqBody, _ := json.Marshal(protocol.PushRequest{
+		reqBody, _ := json.Marshal(cinchv1.PushClipRequest{
 			Content: fmt.Sprintf("clip %d", i),
 		})
 		req, _ := http.NewRequest("POST", ts.URL+"/clips", bytes.NewReader(reqBody))
@@ -358,7 +363,7 @@ func TestListClips(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	var clips []*protocol.Clip
+	var clips []*cinchv1.Clip
 	json.NewDecoder(resp.Body).Decode(&clips)
 
 	if len(clips) != 3 {
@@ -376,17 +381,17 @@ func TestDeleteClip(t *testing.T) {
 	token, _, _ := login(t, ts.URL)
 
 	// Push a clip
-	reqBody, _ := json.Marshal(protocol.PushRequest{Content: "to delete"})
+	reqBody, _ := json.Marshal(cinchv1.PushClipRequest{Content: "to delete"})
 	pushReq, _ := http.NewRequest("POST", ts.URL+"/clips", bytes.NewReader(reqBody))
 	pushReq.Header.Set("Content-Type", "application/json")
 	pushReq.Header.Set("Authorization", "Bearer "+token)
 	pushResp, _ := http.DefaultClient.Do(pushReq)
-	var pr protocol.PushResponse
+	var pr cinchv1.PushClipResponse
 	json.NewDecoder(pushResp.Body).Decode(&pr)
 	pushResp.Body.Close()
 
 	// Delete it
-	delReq, _ := http.NewRequest("DELETE", ts.URL+"/clips/"+pr.ClipID, nil)
+	delReq, _ := http.NewRequest("DELETE", ts.URL+"/clips/"+pr.ClipId, nil)
 	delReq.Header.Set("Authorization", "Bearer "+token)
 	delResp, err := http.DefaultClient.Do(delReq)
 	if err != nil {
@@ -402,7 +407,7 @@ func TestDeleteClip(t *testing.T) {
 	listReq, _ := http.NewRequest("GET", ts.URL+"/clips", nil)
 	listReq.Header.Set("Authorization", "Bearer "+token)
 	listResp, _ := http.DefaultClient.Do(listReq)
-	var clips []*protocol.Clip
+	var clips []*cinchv1.Clip
 	json.NewDecoder(listResp.Body).Decode(&clips)
 	listResp.Body.Close()
 
@@ -486,13 +491,13 @@ func TestPushBinaryClip(t *testing.T) {
 		t.Fatalf("binary push returned %d: %s", resp.StatusCode, body)
 	}
 
-	var pr protocol.PushResponse
+	var pr cinchv1.PushClipResponse
 	json.NewDecoder(resp.Body).Decode(&pr)
 
-	if pr.ClipID == "" {
+	if pr.ClipId == "" {
 		t.Error("clip ID is empty")
 	}
-	if pr.ByteSize != len(png) {
+	if pr.ByteSize != int64(len(png)) {
 		t.Errorf("expected %d bytes, got %d", len(png), pr.ByteSize)
 	}
 }
@@ -503,12 +508,12 @@ func TestGetClipMedia(t *testing.T) {
 
 	png := createTestPNG()
 	resp := postBinary(t, ts.URL, token, png, "image/png", "remote:test")
-	var pr protocol.PushResponse
+	var pr cinchv1.PushClipResponse
 	json.NewDecoder(resp.Body).Decode(&pr)
 	resp.Body.Close()
 
 	// Fetch media
-	req, _ := http.NewRequest("GET", ts.URL+"/clips/"+pr.ClipID+"/media", nil)
+	req, _ := http.NewRequest("GET", ts.URL+"/clips/"+pr.ClipId+"/media", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 
 	mediaResp, err := http.DefaultClient.Do(req)
@@ -538,12 +543,12 @@ func TestGetClipMediaUnauthorized(t *testing.T) {
 
 	png := createTestPNG()
 	resp := postBinary(t, ts.URL, token, png, "image/png", "remote:test")
-	var pr protocol.PushResponse
+	var pr cinchv1.PushClipResponse
 	json.NewDecoder(resp.Body).Decode(&pr)
 	resp.Body.Close()
 
 	// Fetch without auth
-	req, _ := http.NewRequest("GET", ts.URL+"/clips/"+pr.ClipID+"/media", nil)
+	req, _ := http.NewRequest("GET", ts.URL+"/clips/"+pr.ClipId+"/media", nil)
 	mediaResp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
@@ -618,7 +623,7 @@ func TestBinaryClipAppearsInList(t *testing.T) {
 	}
 	defer listResp.Body.Close()
 
-	var clips []*protocol.Clip
+	var clips []*cinchv1.Clip
 	json.NewDecoder(listResp.Body).Decode(&clips)
 
 	if len(clips) != 1 {
@@ -627,7 +632,7 @@ func TestBinaryClipAppearsInList(t *testing.T) {
 	if clips[0].ContentType != "image" {
 		t.Errorf("expected content_type 'image', got %q", clips[0].ContentType)
 	}
-	if clips[0].MediaPath == "" {
+	if clips[0].MediaPath == nil || *clips[0].MediaPath == "" {
 		t.Error("media_path is empty")
 	}
 	if clips[0].Content != "" {
@@ -658,7 +663,7 @@ func TestBinaryClipBroadcastViaWebSocket(t *testing.T) {
 	if msg.Clip == nil {
 		t.Fatal("clip is nil")
 	}
-	if msg.Clip.MediaPath == "" {
+	if msg.Clip.MediaPath == nil || *msg.Clip.MediaPath == "" {
 		t.Error("media_path not broadcast via WebSocket")
 	}
 	if string(msg.Clip.ContentType) != "image" {
@@ -687,9 +692,9 @@ func TestGetLatestClipBySourceWithImage(t *testing.T) {
 		t.Fatalf("expected 200, got %d", latestResp.StatusCode)
 	}
 
-	var clip protocol.Clip
+	var clip cinchv1.Clip
 	json.NewDecoder(latestResp.Body).Decode(&clip)
-	if clip.MediaPath == "" {
+	if clip.MediaPath == nil || *clip.MediaPath == "" {
 		t.Error("media_path missing from GetLatestClipBySource")
 	}
 }
@@ -705,7 +710,7 @@ func TestTextPushStillWorksAfterBinary(t *testing.T) {
 	imgResp.Body.Close()
 
 	// Then push text (should still work)
-	reqBody, _ := json.Marshal(protocol.PushRequest{
+	reqBody, _ := json.Marshal(cinchv1.PushClipRequest{
 		Content: "text after image",
 		Source:  "remote:test",
 	})
@@ -723,9 +728,9 @@ func TestTextPushStillWorksAfterBinary(t *testing.T) {
 		t.Fatalf("text push returned %d", resp.StatusCode)
 	}
 
-	var pr protocol.PushResponse
+	var pr cinchv1.PushClipResponse
 	json.NewDecoder(resp.Body).Decode(&pr)
-	if pr.ByteSize != len("text after image") {
+	if pr.ByteSize != int64(len("text after image")) {
 		t.Errorf("expected %d bytes, got %d", len("text after image"), pr.ByteSize)
 	}
 }
@@ -745,13 +750,13 @@ func TestMediaRetentionTracking(t *testing.T) {
 	req, _ := http.NewRequest("GET", ts.URL+"/clips", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	listResp, _ := http.DefaultClient.Do(req)
-	var clips []*protocol.Clip
+	var clips []*cinchv1.Clip
 	json.NewDecoder(listResp.Body).Decode(&clips)
 	listResp.Body.Close()
 
 	imageCount := 0
 	for _, c := range clips {
-		if c.MediaPath != "" {
+		if c.MediaPath != nil && *c.MediaPath != "" {
 			imageCount++
 		}
 	}
@@ -861,7 +866,7 @@ func TestDemoPushAndClipLimit(t *testing.T) {
 	sess := createDemoSession(t, ts.URL)
 
 	push := func(content string) int {
-		body, _ := json.Marshal(protocol.PushRequest{Content: content})
+		body, _ := json.Marshal(cinchv1.PushClipRequest{Content: content})
 		req, _ := http.NewRequest("POST", ts.URL+"/clips", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+sess.Token)
@@ -891,7 +896,7 @@ func TestDemoPushSizeLimit(t *testing.T) {
 
 	// 1KB + 1 byte
 	large := strings.Repeat("a", 1025)
-	body, _ := json.Marshal(protocol.PushRequest{Content: large})
+	body, _ := json.Marshal(cinchv1.PushClipRequest{Content: large})
 	req, _ := http.NewRequest("POST", ts.URL+"/clips", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+sess.Token)
@@ -956,7 +961,7 @@ func TestDemoExpiredToken(t *testing.T) {
 		t.Fatalf("backdating failed: %v", err)
 	}
 
-	body, _ := json.Marshal(protocol.PushRequest{Content: "late"})
+	body, _ := json.Marshal(cinchv1.PushClipRequest{Content: "late"})
 	req, _ := http.NewRequest("POST", ts.URL+"/clips", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -970,7 +975,7 @@ func TestDemoExpiredToken(t *testing.T) {
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("expected 401 for expired demo, got %d", resp.StatusCode)
 	}
-	var errResp protocol.ErrorResponse
+	var errResp cinchv1.ErrorResponse
 	json.NewDecoder(resp.Body).Decode(&errResp)
 	if errResp.Error != "demo expired" {
 		t.Errorf("expected 'demo expired' error, got %q", errResp.Error)
@@ -982,7 +987,7 @@ func TestDemoCounterIncrement(t *testing.T) {
 	sess := createDemoSession(t, ts.URL)
 
 	// Push once
-	body, _ := json.Marshal(protocol.PushRequest{Content: "hello"})
+	body, _ := json.Marshal(cinchv1.PushClipRequest{Content: "hello"})
 	req, _ := http.NewRequest("POST", ts.URL+"/clips", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+sess.Token)

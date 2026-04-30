@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cinchcli/protocol"
+	cinchv1 "github.com/cinchcli/relay/internal/gen/cinch/v1"
 	relay "github.com/cinchcli/relay/internal/relay"
 )
 
@@ -26,7 +26,7 @@ func TestIssueDeviceCode_Success(t *testing.T) {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 
-	var dcResp protocol.DeviceCodeResponse
+	var dcResp cinchv1.DeviceCodeStartResponse
 	if err := json.NewDecoder(resp.Body).Decode(&dcResp); err != nil {
 		t.Fatalf("decode failed: %v", err)
 	}
@@ -41,11 +41,11 @@ func TestIssueDeviceCode_Success(t *testing.T) {
 	if len(dcResp.UserCode) != 9 || dcResp.UserCode[4] != '-' {
 		t.Errorf("user_code format invalid: %q", dcResp.UserCode)
 	}
-	if dcResp.VerificationURI == "" {
+	if dcResp.VerificationUri == "" {
 		t.Error("verification_uri is empty")
 	}
-	if !strings.Contains(dcResp.VerificationURI, "/auth/browser?device_code=") {
-		t.Errorf("verification_uri missing expected path: %s", dcResp.VerificationURI)
+	if !strings.Contains(dcResp.VerificationUri, "/auth/browser?device_code=") {
+		t.Errorf("verification_uri missing expected path: %s", dcResp.VerificationUri)
 	}
 	if dcResp.ExpiresIn != 300 {
 		t.Errorf("expected expires_in=300, got %d", dcResp.ExpiresIn)
@@ -66,7 +66,7 @@ func TestPollDeviceCode_Pending(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	var dcResp protocol.DeviceCodeResponse
+	var dcResp cinchv1.DeviceCodeStartResponse
 	json.NewDecoder(resp.Body).Decode(&dcResp)
 
 	// Poll immediately — should be pending
@@ -80,7 +80,7 @@ func TestPollDeviceCode_Pending(t *testing.T) {
 		t.Fatalf("expected 200, got %d", pollResp.StatusCode)
 	}
 
-	var pollResult protocol.DeviceCodePollResponse
+	var pollResult cinchv1.DeviceCodePollResponse
 	json.NewDecoder(pollResp.Body).Decode(&pollResult)
 
 	if pollResult.Status != "pending" {
@@ -99,7 +99,7 @@ func TestPollDeviceCode_Complete(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	var dcResp protocol.DeviceCodeResponse
+	var dcResp cinchv1.DeviceCodeStartResponse
 	json.NewDecoder(resp.Body).Decode(&dcResp)
 
 	// Login to get credentials
@@ -131,19 +131,19 @@ func TestPollDeviceCode_Complete(t *testing.T) {
 	}
 	defer pollResp.Body.Close()
 
-	var pollResult protocol.DeviceCodePollResponse
+	var pollResult cinchv1.DeviceCodePollResponse
 	json.NewDecoder(pollResp.Body).Decode(&pollResult)
 
 	if pollResult.Status != "complete" {
 		t.Errorf("expected status=complete, got %q", pollResult.Status)
 	}
-	if pollResult.Token == "" {
+	if pollResult.Token == nil || *pollResult.Token == "" {
 		t.Error("expected token in complete response")
 	}
-	if pollResult.UserID == "" {
+	if pollResult.UserId == nil || *pollResult.UserId == "" {
 		t.Error("expected user_id in complete response")
 	}
-	if pollResult.DeviceID == "" {
+	if pollResult.DeviceId == nil || *pollResult.DeviceId == "" {
 		t.Error("expected device_id in complete response")
 	}
 }

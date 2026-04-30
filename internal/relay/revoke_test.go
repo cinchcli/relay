@@ -9,9 +9,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cinchcli/protocol"
+	cinchv1 "github.com/cinchcli/relay/internal/gen/cinch/v1"
+	"github.com/cinchcli/relay/internal/protocol"
 	"github.com/gorilla/websocket"
 )
+
+// stringPtr returns a pointer to the given string. Used for proto3 optional
+// fields (cinchv1.PairRequest.Hostname etc.) in test struct literals.
+func stringPtr(s string) *string { return &s }
 
 // buildRevokeTestServer spins up a fresh in-memory store + hub + handler + http test server.
 // Returns the test server, store, and hub for direct-access assertions.
@@ -51,15 +56,15 @@ func loginAndPair(t *testing.T, ts *httptest.Server, hostname string) (deviceTok
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("login status %d", resp.StatusCode)
 	}
-	var loginResp protocol.AuthLoginResponse
+	var loginResp cinchv1.LoginResponse
 	if err := json.NewDecoder(resp.Body).Decode(&loginResp); err != nil {
 		t.Fatalf("decode login: %v", err)
 	}
 
 	// Pair to get a per-device token.
-	reqBody, _ := json.Marshal(protocol.AuthPairRequest{
+	reqBody, _ := json.Marshal(cinchv1.PairRequest{
 		PairToken: loginResp.PairToken,
-		Hostname:  hostname,
+		Hostname:  &hostname,
 	})
 	pairResp, err := http.Post(ts.URL+"/auth/pair", "application/json", bytes.NewReader(reqBody))
 	if err != nil {
@@ -69,14 +74,14 @@ func loginAndPair(t *testing.T, ts *httptest.Server, hostname string) (deviceTok
 	if pairResp.StatusCode != http.StatusOK {
 		t.Fatalf("pair status %d", pairResp.StatusCode)
 	}
-	var pr protocol.AuthPairResponse
+	var pr cinchv1.PairResponse
 	if err := json.NewDecoder(pairResp.Body).Decode(&pr); err != nil {
 		t.Fatalf("decode pair: %v", err)
 	}
-	if pr.Token == "" || pr.UserID == "" || pr.DeviceID == "" {
+	if pr.Token == "" || pr.UserId == "" || pr.DeviceId == "" {
 		t.Fatalf("pair response missing fields: %+v", pr)
 	}
-	return pr.Token, pr.UserID, pr.DeviceID
+	return pr.Token, pr.UserId, pr.DeviceId
 }
 
 // TestRevokeDeviceAuthz — cross-user revoke returns 404 "device_not_found"
@@ -90,7 +95,7 @@ func TestRevokeDeviceAuthz(t *testing.T) {
 	// User B (different account) tries to revoke A's device.
 	tokenB, _, _ := loginAndPair(t, ts, "host-b")
 
-	reqBody, _ := json.Marshal(protocol.DeviceRevokeRequest{DeviceID: deviceA})
+	reqBody, _ := json.Marshal(cinchv1.RevokeDeviceRequest{DeviceId: deviceA})
 	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/auth/device/revoke", bytes.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+tokenB)
@@ -103,7 +108,7 @@ func TestRevokeDeviceAuthz(t *testing.T) {
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("expected 404 for cross-user revoke (no existence oracle), got %d", resp.StatusCode)
 	}
-	var errResp protocol.ErrorResponse
+	var errResp cinchv1.ErrorResponse
 	json.NewDecoder(resp.Body).Decode(&errResp)
 	if errResp.Error != "device_not_found" {
 		t.Errorf("expected error=device_not_found, got %q", errResp.Error)
@@ -118,7 +123,7 @@ func TestRevokedTokenResponse(t *testing.T) {
 	token, _, deviceID := loginAndPair(t, ts, "host-victim")
 
 	// Revoke self.
-	reqBody, _ := json.Marshal(protocol.DeviceRevokeRequest{DeviceID: deviceID})
+	reqBody, _ := json.Marshal(cinchv1.RevokeDeviceRequest{DeviceId: deviceID})
 	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/auth/device/revoke", bytes.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -143,7 +148,7 @@ func TestRevokedTokenResponse(t *testing.T) {
 	if listResp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", listResp.StatusCode)
 	}
-	var errResp protocol.ErrorResponse
+	var errResp cinchv1.ErrorResponse
 	if err := json.NewDecoder(listResp.Body).Decode(&errResp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -171,7 +176,7 @@ func TestRevokeWSPush(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Trigger revoke.
-	reqBody, _ := json.Marshal(protocol.DeviceRevokeRequest{DeviceID: deviceID})
+	reqBody, _ := json.Marshal(cinchv1.RevokeDeviceRequest{DeviceId: deviceID})
 	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/auth/device/revoke", bytes.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -206,17 +211,17 @@ func TestRevokeDevice_OtherDeviceUnaffected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("login: %v", err)
 	}
-	var loginA protocol.AuthLoginResponse
+	var loginA cinchv1.LoginResponse
 	json.NewDecoder(resp.Body).Decode(&loginA)
 	resp.Body.Close()
 
 	// Pair device A using the pair token.
-	pairBodyA, _ := json.Marshal(protocol.AuthPairRequest{PairToken: loginA.PairToken, Hostname: "host-a"})
+	pairBodyA, _ := json.Marshal(cinchv1.PairRequest{PairToken: loginA.PairToken, Hostname: stringPtr("host-a")})
 	pairRespA, err := http.Post(ts.URL+"/auth/pair", "application/json", bytes.NewReader(pairBodyA))
 	if err != nil {
 		t.Fatalf("pair A: %v", err)
 	}
-	var prA protocol.AuthPairResponse
+	var prA cinchv1.PairResponse
 	json.NewDecoder(pairRespA.Body).Decode(&prA)
 	pairRespA.Body.Close()
 
@@ -230,29 +235,29 @@ func TestRevokeDevice_OtherDeviceUnaffected(t *testing.T) {
 	if regResp.StatusCode != http.StatusOK {
 		t.Fatalf("regen status %d", regResp.StatusCode)
 	}
-	var regOut protocol.PairTokenRegenerateResponse
+	var regOut cinchv1.RotatePairTokenResponse
 	json.NewDecoder(regResp.Body).Decode(&regOut)
 	regResp.Body.Close()
 
 	// Pair device B with the new pair token.
-	pairBodyB, _ := json.Marshal(protocol.AuthPairRequest{PairToken: regOut.PairToken, Hostname: "host-b"})
+	pairBodyB, _ := json.Marshal(cinchv1.PairRequest{PairToken: regOut.PairToken, Hostname: stringPtr("host-b")})
 	pairRespB, err := http.Post(ts.URL+"/auth/pair", "application/json", bytes.NewReader(pairBodyB))
 	if err != nil {
 		t.Fatalf("pair B: %v", err)
 	}
-	var prB protocol.AuthPairResponse
+	var prB cinchv1.PairResponse
 	json.NewDecoder(pairRespB.Body).Decode(&prB)
 	pairRespB.Body.Close()
 
-	if prA.DeviceID == prB.DeviceID {
-		t.Fatalf("two pairings returned the same device_id: %s", prA.DeviceID)
+	if prA.DeviceId == prB.DeviceId {
+		t.Fatalf("two pairings returned the same device_id: %s", prA.DeviceId)
 	}
 	if prA.Token == prB.Token {
 		t.Fatalf("two pairings returned the same token (AUTH-01 violation)")
 	}
 
 	// Revoke B.
-	revokeBody, _ := json.Marshal(protocol.DeviceRevokeRequest{DeviceID: prB.DeviceID})
+	revokeBody, _ := json.Marshal(cinchv1.RevokeDeviceRequest{DeviceId: prB.DeviceId})
 	revokeReq, _ := http.NewRequest(http.MethodPost, ts.URL+"/auth/device/revoke", bytes.NewReader(revokeBody))
 	revokeReq.Header.Set("Content-Type", "application/json")
 	revokeReq.Header.Set("Authorization", "Bearer "+prB.Token)
@@ -288,7 +293,7 @@ func TestRevokeDevice_OtherDeviceUnaffected(t *testing.T) {
 	if listRespB.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("device B expected 401 after revoke, got %d", listRespB.StatusCode)
 	}
-	var errResp protocol.ErrorResponse
+	var errResp cinchv1.ErrorResponse
 	json.NewDecoder(listRespB.Body).Decode(&errResp)
 	if errResp.Error != "device_revoked" {
 		t.Errorf("expected device_revoked, got %q", errResp.Error)

@@ -8,12 +8,12 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/oklog/ulid/v2"
-	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/cinchcli/protocol"
+	"github.com/cinchcli/relay/internal/protocol"
 	cinchv1 "github.com/cinchcli/relay/internal/gen/cinch/v1"
 	"github.com/cinchcli/relay/internal/gen/cinch/v1/cinchv1connect"
 )
@@ -195,8 +195,8 @@ func (s *connectAuthServer) DeviceCodeStart(ctx context.Context, req *connect.Re
 		DeviceCode:      resp.DeviceCode,
 		UserCode:        resp.UserCode,
 		VerificationUri: verificationURI,
-		ExpiresIn:       int32(resp.ExpiresIn),
-		Interval:        int32(resp.Interval),
+		ExpiresIn:       int64(resp.ExpiresIn),
+		Interval:        int64(resp.Interval),
 	}), nil
 }
 
@@ -217,16 +217,12 @@ func (s *connectAuthServer) DeviceCodePoll(ctx context.Context, req *connect.Req
 	}
 
 	if resp.Status == "complete" {
-		return connect.NewResponse(&cinchv1.DeviceCodePollResponse{
-			Status:   cinchv1.DeviceCodeStatus_DEVICE_CODE_STATUS_COMPLETE,
-			Token:    &resp.Token,
-			UserId:   &resp.UserID,
-			DeviceId: &resp.DeviceID,
-		}), nil
+		// Store now returns the proto type natively, so we can pass through.
+		return connect.NewResponse(resp), nil
 	}
 
 	return connect.NewResponse(&cinchv1.DeviceCodePollResponse{
-		Status: cinchv1.DeviceCodeStatus_DEVICE_CODE_STATUS_PENDING,
+		Status: "pending",
 	}), nil
 }
 
@@ -272,7 +268,7 @@ func (s *connectAuthServer) RevokeDevice(ctx context.Context, req *connect.Reque
 	return connect.NewResponse(&cinchv1.RevokeDeviceResponse{
 		Ok:        true,
 		DeviceId:  req.Msg.DeviceId,
-		RevokedAt: timestamppb.New(revokedAt),
+		RevokedAt: revokedAt.Format(time.RFC3339),
 	}), nil
 }
 

@@ -21,7 +21,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cinchcli/protocol"
+	cinchv1 "github.com/cinchcli/relay/internal/gen/cinch/v1"
+	"github.com/cinchcli/relay/internal/protocol"
 	"github.com/gorilla/websocket"
 	"github.com/oklog/ulid/v2"
 )
@@ -153,11 +154,14 @@ func (h *Handler) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 // AuthLogin creates a new user account and returns tokens.
 func (h *Handler) AuthLogin(w http.ResponseWriter, r *http.Request) {
 	// Parse optional body — backward-compatible: empty body still works.
-	var req protocol.AuthLoginRequest
+	var req cinchv1.LoginRequest
 	if r.Body != nil && r.ContentLength > 0 {
 		_ = json.NewDecoder(r.Body).Decode(&req)
 	}
-	hostname := req.Hostname
+	hostname := ""
+	if req.Hostname != nil {
+		hostname = *req.Hostname
+	}
 	if hostname == "" {
 		hostname = "unknown"
 	}
@@ -186,17 +190,17 @@ func (h *Handler) AuthLogin(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
-	writeJSON(w, http.StatusOK, protocol.AuthLoginResponse{
+	writeJSON(w, http.StatusOK, cinchv1.LoginResponse{
 		Token:     token,
 		PairToken: pairToken,
-		UserID:    userID,
-		DeviceID:  deviceID,
+		UserId:    userID,
+		DeviceId:  deviceID,
 	})
 }
 
 // AuthPair exchanges a pair token for a per-device auth token.
 func (h *Handler) AuthPair(w http.ResponseWriter, r *http.Request) {
-	var req protocol.AuthPairRequest
+	var req cinchv1.PairRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request", "Could not parse request body", "")
 		return
@@ -207,9 +211,20 @@ func (h *Handler) AuthPair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hostname := req.Hostname
+	hostname := ""
+	if req.Hostname != nil {
+		hostname = *req.Hostname
+	}
 	if hostname == "" {
 		hostname = "unknown"
+	}
+	devicePublicKey := ""
+	if req.DevicePublicKey != nil {
+		devicePublicKey = *req.DevicePublicKey
+	}
+	deviceKeyFingerprint := ""
+	if req.DeviceKeyFingerprint != nil {
+		deviceKeyFingerprint = *req.DeviceKeyFingerprint
 	}
 
 	userID, deviceID, deviceToken, err := h.store.ConsumePairTokenMintDevice(req.PairToken, hostname)
@@ -220,18 +235,18 @@ func (h *Handler) AuthPair(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Phase 4.5: store device public key for E2EE key exchange if provided.
-	if req.DevicePublicKey != "" {
+	if devicePublicKey != "" {
 		// Compute fingerprint: SHA-256 of the raw public key bytes, first 8 bytes as hex.
-		// Prefer the fingerprint sent by the CLI (req.DeviceKeyFingerprint); if absent,
-		// compute it here from the base64url-decoded public key bytes.
-		fingerprint := req.DeviceKeyFingerprint
+		// Prefer the fingerprint sent by the CLI; if absent, compute it here
+		// from the base64url-decoded public key bytes.
+		fingerprint := deviceKeyFingerprint
 		if fingerprint == "" {
-			if rawPub, err := base64.RawURLEncoding.DecodeString(req.DevicePublicKey); err == nil {
+			if rawPub, err := base64.RawURLEncoding.DecodeString(devicePublicKey); err == nil {
 				digest := sha256.Sum256(rawPub)
 				fingerprint = hex.EncodeToString(digest[:8])
 			}
 		}
-		if err := h.store.SetDevicePublicKey(deviceID, req.DevicePublicKey, fingerprint); err != nil {
+		if err := h.store.SetDevicePublicKey(deviceID, devicePublicKey, fingerprint); err != nil {
 			log.Printf("failed to store device public key: %v", err)
 			// non-fatal — pairing still succeeds; key exchange will happen later
 		}
@@ -245,10 +260,10 @@ func (h *Handler) AuthPair(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	writeJSON(w, http.StatusOK, protocol.AuthPairResponse{
+	writeJSON(w, http.StatusOK, cinchv1.PairResponse{
 		Token:    deviceToken,
-		UserID:   userID,
-		DeviceID: deviceID,
+		UserId:   userID,
+		DeviceId: deviceID,
 	})
 }
 
@@ -323,7 +338,7 @@ func (h *Handler) GetKeyBundle(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) PushClip(w http.ResponseWriter, r *http.Request) {
 	userID := r.Header.Get("X-User-ID")
 
-	var req protocol.PushRequest
+	var req cinchv1.PushClipRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request", "Could not parse request body", "")
 		return
@@ -334,9 +349,14 @@ func (h *Handler) PushClip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	targetDeviceID := ""
+	if req.TargetDeviceId != nil {
+		targetDeviceID = *req.TargetDeviceId
+	}
+
 	// Targeted push — check online BEFORE SaveClip (per D-10: no clip saved if device offline)
-	if req.TargetDeviceID != "" {
-		if !h.hub.IsDeviceOnline(userID, req.TargetDeviceID) {
+	if targetDeviceID != "" {
+		if !h.hub.IsDeviceOnline(userID, targetDeviceID) {
 			writeError(w, http.StatusNotFound, "device_offline",
 				"Device is not currently online. Push was not delivered.",
 				"Wait for the device to come online and retry.")
@@ -350,13 +370,13 @@ func (h *Handler) PushClip(w http.ResponseWriter, r *http.Request) {
 		if req.Source != "" {
 			h.store.UpdateDeviceActivity(userID, req.Source)
 		}
-		if err := h.hub.SendToDevice(userID, req.TargetDeviceID, protocol.WSMessage{
+		if err := h.hub.SendToDevice(userID, targetDeviceID, protocol.WSMessage{
 			Action: protocol.ActionNewClip, Clip: clip,
 		}); err != nil {
 			log.Printf("SendToDevice failed after online check: %v", err)
 		}
-		writeJSON(w, http.StatusOK, protocol.PushResponse{
-			ClipID: clip.ID, ByteSize: clip.ByteSize,
+		writeJSON(w, http.StatusOK, cinchv1.PushClipResponse{
+			ClipId: clip.ClipId, ByteSize: clip.ByteSize,
 		})
 		return
 	}
@@ -402,8 +422,8 @@ func (h *Handler) PushClip(w http.ResponseWriter, r *http.Request) {
 		log.Printf("ws broadcast failed for %s: %v", userID, err)
 	}
 
-	writeJSON(w, http.StatusOK, protocol.PushResponse{
-		ClipID:   clip.ID,
+	writeJSON(w, http.StatusOK, cinchv1.PushClipResponse{
+		ClipId:   clip.ClipId,
 		ByteSize: clip.ByteSize,
 	})
 }
@@ -455,8 +475,8 @@ func (h *Handler) PullClipboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, protocol.PullResponse{
-		PullID:  pullID,
+	writeJSON(w, http.StatusOK, cinchv1.PullResponse{
+		PullId:  pullID,
 		Content: content,
 	})
 }
@@ -490,11 +510,11 @@ func (h *Handler) ListDevices(w http.ResponseWriter, r *http.Request) {
 
 	// Enrich with online status from hub
 	for _, d := range devices {
-		d.Online = h.hub.IsDeviceOnline(userID, d.ID)
+		d.Online = h.hub.IsDeviceOnline(userID, d.Id)
 	}
 
 	if devices == nil {
-		devices = []*protocol.DeviceInfo{}
+		devices = []*cinchv1.Device{}
 	}
 	writeJSON(w, http.StatusOK, devices)
 }
@@ -660,7 +680,7 @@ func (h *Handler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		for _, d := range pending {
 			conn.WriteJSON(protocol.WSMessage{ //nolint:errcheck
 				Action:   protocol.ActionKeyExchangeRequested,
-				DeviceID: d.ID,
+				DeviceID: d.Id,
 				Hostname: d.Hostname,
 			})
 		}
@@ -748,13 +768,13 @@ func (h *Handler) PushBinaryClip(w http.ResponseWriter, r *http.Request) {
 	source := r.FormValue("source")
 	label := r.FormValue("label")
 
-	req := &protocol.PushRequest{
+	req := &cinchv1.PushClipRequest{
 		Content:     "",
 		ContentType: protocol.ContentImage,
 		Source:      source,
 		Label:       label,
-		MediaPath:   mediaPath,
-		ByteSize:    int(n),
+		MediaPath:   &mediaPath,
+		ByteSize:    n,
 	}
 
 	clip, err := h.store.SaveClip(userID, req)
@@ -781,8 +801,8 @@ func (h *Handler) PushBinaryClip(w http.ResponseWriter, r *http.Request) {
 		log.Printf("ws broadcast failed for %s: %v", userID, err)
 	}
 
-	writeJSON(w, http.StatusOK, protocol.PushResponse{
-		ClipID:   clip.ID,
+	writeJSON(w, http.StatusOK, cinchv1.PushClipResponse{
+		ClipId:   clip.ClipId,
 		ByteSize: clip.ByteSize,
 	})
 }
@@ -830,7 +850,7 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 func writeError(w http.ResponseWriter, status int, errType, message, fix string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(protocol.ErrorResponse{
+	json.NewEncoder(w).Encode(cinchv1.ErrorResponse{
 		Error:   errType,
 		Message: message,
 		Fix:     fix,
@@ -1184,17 +1204,17 @@ func (h *Handler) DemoCORS(next http.HandlerFunc) http.HandlerFunc {
 func (h *Handler) RevokeDevice(w http.ResponseWriter, r *http.Request) {
 	callerUserID := r.Header.Get("X-User-ID")
 
-	var req protocol.DeviceRevokeRequest
+	var req cinchv1.RevokeDeviceRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request", "Could not parse request body", "")
 		return
 	}
-	if req.DeviceID == "" {
+	if req.DeviceId == "" {
 		writeError(w, http.StatusBadRequest, "missing_device_id", "device_id is required", "")
 		return
 	}
 
-	ownerID, err := h.store.DeviceOwner(req.DeviceID)
+	ownerID, err := h.store.DeviceOwner(req.DeviceId)
 	if err == sql.ErrNoRows || ownerID != callerUserID {
 		// Treat cross-user as "not found" — no existence oracle.
 		writeError(w, http.StatusNotFound, "device_not_found", "Device not found", "")
@@ -1205,7 +1225,7 @@ func (h *Handler) RevokeDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	revokedAt, err := h.store.RevokeDevice(req.DeviceID)
+	revokedAt, err := h.store.RevokeDevice(req.DeviceId)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "revoke_failed", err.Error(), "")
 		return
@@ -1213,15 +1233,15 @@ func (h *Handler) RevokeDevice(w http.ResponseWriter, r *http.Request) {
 
 	// Best-effort WS push to victim device. Do not block or surface errors —
 	// the client-side 401 (device_revoked) is the authoritative signal.
-	h.hub.SendToDevice(ownerID, req.DeviceID, protocol.WSMessage{
+	h.hub.SendToDevice(ownerID, req.DeviceId, protocol.WSMessage{
 		Action: protocol.ActionRevoked,
 		Reason: "revoked_by_user",
 	})
 
-	writeJSON(w, http.StatusOK, protocol.DeviceRevokeResponse{
-		OK:        true,
-		DeviceID:  req.DeviceID,
-		RevokedAt: revokedAt,
+	writeJSON(w, http.StatusOK, cinchv1.RevokeDeviceResponse{
+		Ok:        true,
+		DeviceId:  req.DeviceId,
+		RevokedAt: protocol.FormatRFC3339(revokedAt),
 	})
 }
 
@@ -1276,7 +1296,7 @@ func (h *Handler) RegeneratePairToken(w http.ResponseWriter, r *http.Request) {
 			"pair_token_regenerate_failed", err.Error(), "")
 		return
 	}
-	writeJSON(w, http.StatusOK, protocol.PairTokenRegenerateResponse{
+	writeJSON(w, http.StatusOK, cinchv1.RotatePairTokenResponse{
 		PairToken: newPairToken,
 	})
 }
@@ -1471,11 +1491,14 @@ func (h *Handler) CompleteDeviceCodeHTTP(w http.ResponseWriter, r *http.Request)
 // IssueDeviceCode creates a new device code for CLI auth.
 // POST /auth/device-code — no auth required (this IS the auth entry point).
 func (h *Handler) IssueDeviceCode(w http.ResponseWriter, r *http.Request) {
-	var req protocol.DeviceCodeRequest
+	var req cinchv1.DeviceCodeStartRequest
 	if r.Body != nil && r.ContentLength > 0 {
 		_ = json.NewDecoder(r.Body).Decode(&req)
 	}
-	hostname := req.Hostname
+	hostname := ""
+	if req.Hostname != nil {
+		hostname = *req.Hostname
+	}
 	if hostname == "" {
 		hostname = "unknown"
 	}
@@ -1491,7 +1514,7 @@ func (h *Handler) IssueDeviceCode(w http.ResponseWriter, r *http.Request) {
 	if baseURL == "" {
 		baseURL = deriveRelayURL(r)
 	}
-	resp.VerificationURI = baseURL + "/auth/browser?device_code=" + resp.UserCode
+	resp.VerificationUri = baseURL + "/auth/browser?device_code=" + resp.UserCode
 
 	writeJSON(w, http.StatusOK, resp)
 }

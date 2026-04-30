@@ -8,9 +8,7 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/oklog/ulid/v2"
-	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/cinchcli/protocol"
 	cinchv1 "github.com/cinchcli/relay/internal/gen/cinch/v1"
 	"github.com/cinchcli/relay/internal/gen/cinch/v1/cinchv1connect"
 )
@@ -21,24 +19,6 @@ type connectDevicesServer struct {
 
 var _ cinchv1connect.DevicesServiceHandler = (*connectDevicesServer)(nil)
 
-func protoDevice(d *protocol.DeviceInfo, userID string, hub *Hub) *cinchv1.Device {
-	pd := &cinchv1.Device{
-		Id:                   d.ID,
-		Hostname:             d.Hostname,
-		SourceKey:            d.SourceKey,
-		ClipCount:            int32(d.ClipCount),
-		PairedAt:             timestamppb.New(d.PairedAt),
-		Online:               hub.IsDeviceOnline(userID, d.ID),
-		Nickname:             d.Nickname,
-		PublicKey:            d.PublicKey,
-		PublicKeyFingerprint: d.PublicKeyFingerprint,
-	}
-	if d.LastPushAt != nil {
-		pd.LastPushAt = timestamppb.New(*d.LastPushAt)
-	}
-	return pd
-}
-
 // ─── ListDevices ─────────────────────────────────────────────
 
 func (s *connectDevicesServer) ListDevices(ctx context.Context, req *connect.Request[cinchv1.ListDevicesRequest]) (*connect.Response[cinchv1.ListDevicesResponse], error) {
@@ -48,11 +28,12 @@ func (s *connectDevicesServer) ListDevices(ctx context.Context, req *connect.Req
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	pdevices := make([]*cinchv1.Device, 0, len(devices))
+	// `online` isn't a stored column — it's a runtime hub query — so the
+	// store leaves it false and we fill it in here per device.
 	for _, d := range devices {
-		pdevices = append(pdevices, protoDevice(d, userID, s.h.hub))
+		d.Online = s.h.hub.IsDeviceOnline(userID, d.Id)
 	}
-	return connect.NewResponse(&cinchv1.ListDevicesResponse{Devices: pdevices}), nil
+	return connect.NewResponse(&cinchv1.ListDevicesResponse{Devices: devices}), nil
 }
 
 // ─── SetNickname ─────────────────────────────────────────────
