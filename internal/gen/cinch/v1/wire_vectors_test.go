@@ -1,9 +1,9 @@
 // Cross-language wire-format gate.
 //
-// Loads the shared testdata/wire-vectors.json (sibling-checkout) and
-// round-trips every named vector through the protoc-gen-go types. The Rust
-// CLI runs an equivalent test against the same fixture. If both pass on
-// the same file, the wire format is shape-equivalent across languages.
+// Loads relay/testdata/wire-vectors.json and round-trips every named vector
+// through the protoc-gen-go types. The Rust CLI runs an equivalent test
+// against an identical fixture in the cinch repo. If both pass, the wire
+// format is shape-equivalent across languages.
 //
 // Round-trip: input JSON -> typed unmarshal -> re-marshal -> compare both
 // sides parsed as map[string]any so JSON object key ordering is irrelevant.
@@ -19,7 +19,7 @@ import (
 	"testing"
 )
 
-const fixtureRel = "../../../../../testdata/wire-vectors.json"
+const fixtureRel = "../../../../testdata/wire-vectors.json"
 
 func loadVectors(t *testing.T) map[string]any {
 	t.Helper()
