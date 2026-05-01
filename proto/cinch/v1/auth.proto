@@ -78,6 +78,10 @@ message PairResponse {
 
 message DeviceCodeStartRequest {
   optional string hostname = 1;
+  // Stable per-machine identifier (opaque hash). When set, the relay reuses
+  // an existing device row for the same (user_id, machine_id) instead of
+  // creating a duplicate when the same Mac signs in via CLI and desktop.
+  optional string machine_id = 2;
 }
 
 message DeviceCodeStartResponse {
@@ -86,6 +90,10 @@ message DeviceCodeStartResponse {
   string verification_uri = 3;
   int64  expires_in       = 4;
   int64  interval         = 5;
+  // Suggested polling interval in milliseconds. When non-zero, clients use
+  // this in place of `interval` (seconds) for tighter UX. Older clients
+  // ignore the field and fall back to `interval`.
+  optional int64 interval_ms = 6;
 }
 
 message DeviceCodePollRequest {

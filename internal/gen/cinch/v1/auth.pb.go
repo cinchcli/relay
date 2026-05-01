@@ -262,8 +262,12 @@ func (x *PairResponse) GetDeviceId() string {
 }
 
 type DeviceCodeStartRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Hostname      *string                `protobuf:"bytes,1,opt,name=hostname,proto3,oneof" json:"hostname,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Hostname *string                `protobuf:"bytes,1,opt,name=hostname,proto3,oneof" json:"hostname,omitempty"`
+	// Stable per-machine identifier (opaque hash). When set, the relay reuses
+	// an existing device row for the same (user_id, machine_id) instead of
+	// creating a duplicate when the same Mac signs in via CLI and desktop.
+	MachineId     *string `protobuf:"bytes,2,opt,name=machine_id,json=machineId,proto3,oneof" json:"machine_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -305,6 +309,13 @@ func (x *DeviceCodeStartRequest) GetHostname() string {
 	return ""
 }
 
+func (x *DeviceCodeStartRequest) GetMachineId() string {
+	if x != nil && x.MachineId != nil {
+		return *x.MachineId
+	}
+	return ""
+}
+
 type DeviceCodeStartResponse struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	DeviceCode      string                 `protobuf:"bytes,1,opt,name=device_code,json=deviceCode,proto3" json:"device_code,omitempty"`
@@ -312,8 +323,12 @@ type DeviceCodeStartResponse struct {
 	VerificationUri string                 `protobuf:"bytes,3,opt,name=verification_uri,json=verificationUri,proto3" json:"verification_uri,omitempty"`
 	ExpiresIn       int64                  `protobuf:"varint,4,opt,name=expires_in,json=expiresIn,proto3" json:"expires_in,omitempty"`
 	Interval        int64                  `protobuf:"varint,5,opt,name=interval,proto3" json:"interval,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Suggested polling interval in milliseconds. When non-zero, clients use
+	// this in place of `interval` (seconds) for tighter UX. Older clients
+	// ignore the field and fall back to `interval`.
+	IntervalMs    *int64 `protobuf:"varint,6,opt,name=interval_ms,json=intervalMs,proto3,oneof" json:"interval_ms,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *DeviceCodeStartResponse) Reset() {
@@ -377,6 +392,13 @@ func (x *DeviceCodeStartResponse) GetExpiresIn() int64 {
 func (x *DeviceCodeStartResponse) GetInterval() int64 {
 	if x != nil {
 		return x.Interval
+	}
+	return 0
+}
+
+func (x *DeviceCodeStartResponse) GetIntervalMs() int64 {
+	if x != nil && x.IntervalMs != nil {
+		return *x.IntervalMs
 	}
 	return 0
 }
@@ -1067,10 +1089,13 @@ const file_cinch_v1_auth_proto_rawDesc = "" +
 	"\fPairResponse\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x1b\n" +
-	"\tdevice_id\x18\x03 \x01(\tR\bdeviceId\"F\n" +
+	"\tdevice_id\x18\x03 \x01(\tR\bdeviceId\"y\n" +
 	"\x16DeviceCodeStartRequest\x12\x1f\n" +
-	"\bhostname\x18\x01 \x01(\tH\x00R\bhostname\x88\x01\x01B\v\n" +
-	"\t_hostname\"\xbd\x01\n" +
+	"\bhostname\x18\x01 \x01(\tH\x00R\bhostname\x88\x01\x01\x12\"\n" +
+	"\n" +
+	"machine_id\x18\x02 \x01(\tH\x01R\tmachineId\x88\x01\x01B\v\n" +
+	"\t_hostnameB\r\n" +
+	"\v_machine_id\"\xf3\x01\n" +
 	"\x17DeviceCodeStartResponse\x12\x1f\n" +
 	"\vdevice_code\x18\x01 \x01(\tR\n" +
 	"deviceCode\x12\x1b\n" +
@@ -1078,7 +1103,10 @@ const file_cinch_v1_auth_proto_rawDesc = "" +
 	"\x10verification_uri\x18\x03 \x01(\tR\x0fverificationUri\x12\x1d\n" +
 	"\n" +
 	"expires_in\x18\x04 \x01(\x03R\texpiresIn\x12\x1a\n" +
-	"\binterval\x18\x05 \x01(\x03R\binterval\"+\n" +
+	"\binterval\x18\x05 \x01(\x03R\binterval\x12$\n" +
+	"\vinterval_ms\x18\x06 \x01(\x03H\x00R\n" +
+	"intervalMs\x88\x01\x01B\x0e\n" +
+	"\f_interval_ms\"+\n" +
 	"\x15DeviceCodePollRequest\x12\x12\n" +
 	"\x04code\x18\x01 \x01(\tR\x04code\"\xaf\x01\n" +
 	"\x16DeviceCodePollResponse\x12\x16\n" +
@@ -1202,6 +1230,7 @@ func file_cinch_v1_auth_proto_init() {
 	file_cinch_v1_auth_proto_msgTypes[0].OneofWrappers = []any{}
 	file_cinch_v1_auth_proto_msgTypes[2].OneofWrappers = []any{}
 	file_cinch_v1_auth_proto_msgTypes[4].OneofWrappers = []any{}
+	file_cinch_v1_auth_proto_msgTypes[5].OneofWrappers = []any{}
 	file_cinch_v1_auth_proto_msgTypes[7].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{

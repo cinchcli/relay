@@ -182,8 +182,12 @@ func (s *connectAuthServer) DeviceCodeStart(ctx context.Context, req *connect.Re
 	if req.Msg.Hostname != nil && *req.Msg.Hostname != "" {
 		hostname = *req.Msg.Hostname
 	}
+	machineID := ""
+	if req.Msg.MachineId != nil {
+		machineID = *req.Msg.MachineId
+	}
 
-	resp, err := s.h.store.CreateDeviceCode(hostname)
+	resp, err := s.h.store.CreateDeviceCode(hostname, machineID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -197,6 +201,7 @@ func (s *connectAuthServer) DeviceCodeStart(ctx context.Context, req *connect.Re
 		VerificationUri: verificationURI,
 		ExpiresIn:       resp.ExpiresIn,
 		Interval:        resp.Interval,
+		IntervalMs:      resp.IntervalMs,
 	}), nil
 }
 

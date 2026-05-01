@@ -477,7 +477,47 @@ func migrate(db *sql.DB) error {
 		}
 	}
 
+	// Login unification migration: machine_id on devices and device_codes.
+	// Same Mac signing in via CLI and desktop should reuse one device row;
+	// the dedup key is (user_id, machine_id) when machine_id is non-empty.
+	if err := addColumnIfMissing(db, "devices", "machine_id", "TEXT"); err != nil {
+		return err
+	}
+	if err := addColumnIfMissing(db, "device_codes", "machine_id", "TEXT"); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_devices_user_machine
+		ON devices(user_id, machine_id)
+		WHERE machine_id IS NOT NULL AND revoked_at IS NULL`); err != nil {
+		return err
+	}
+
 	return nil
+}
+
+// addColumnIfMissing inspects PRAGMA table_info(table) and runs ALTER TABLE
+// only when `column` is absent. Used for idempotent forward migrations.
+func addColumnIfMissing(db *sql.DB, table, column, columnType string) error {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull int
+		var dflt sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	_, err = db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, columnType))
+	return err
 }
 
 // migrateDropUsersTokenNotNull rebuilds the users table without NOT NULL on token.
@@ -528,8 +568,10 @@ func (s *Store) CreateUser(id, token, pairToken string) error {
 
 // UpsertOAuthUser finds or creates a user by OAuth identity and provisions a device token.
 // provider is "github" or "google"; subject is the stable provider-side user ID.
+// machineID, when non-empty, deduplicates same-machine sign-ins (CLI + desktop on
+// the same Mac) onto a single device row, rotating its token on each sign-in.
 // Returns (userID, deviceID, deviceToken) ready to pass to CompleteDeviceCode.
-func (s *Store) UpsertOAuthUser(provider, subject, hostname string) (string, string, string, error) {
+func (s *Store) UpsertOAuthUser(provider, subject, hostname, machineID string) (string, string, string, error) {
 	if hostname == "" {
 		hostname = "unknown"
 	}
@@ -556,15 +598,61 @@ func (s *Store) UpsertOAuthUser(provider, subject, hostname string) (string, str
 		return "", "", "", fmt.Errorf("looking up oauth user: %w", err)
 	}
 
-	// Mint a per-device token for this sign-in.
-	deviceID := ulid.Make().String()
+	// Reuse an existing device row when this machine has signed in before
+	// (CLI + desktop on the same Mac). Falls back to source_key matching
+	// for backward compatibility with rows that pre-date the machine_id
+	// migration. New rows get the current machine_id backfilled.
 	deviceToken := generateStoreToken()
 	sourceKey := "remote:" + hostname
+
+	var existingID string
+	if machineID != "" {
+		_ = s.db.QueryRow(
+			`SELECT id FROM devices WHERE user_id = ? AND machine_id = ? AND revoked_at IS NULL
+			 ORDER BY paired_at DESC LIMIT 1`,
+			userID, machineID,
+		).Scan(&existingID)
+	}
+	if existingID == "" {
+		// Legacy path: dedup on (user_id, source_key) and backfill machine_id
+		// onto the matched row so future sign-ins prefer the new key.
+		_ = s.db.QueryRow(
+			`SELECT id FROM devices WHERE user_id = ? AND source_key = ? AND revoked_at IS NULL
+			 ORDER BY paired_at DESC LIMIT 1`,
+			userID, sourceKey,
+		).Scan(&existingID)
+	}
+
+	if existingID != "" {
+		var args []interface{}
+		query := `UPDATE devices SET token = ?, hostname = ?`
+		args = append(args, deviceToken, hostname)
+		if machineID != "" {
+			query += `, machine_id = ?`
+			args = append(args, machineID)
+		}
+		query += ` WHERE id = ?`
+		args = append(args, existingID)
+		if _, err := s.db.Exec(query, args...); err != nil {
+			return "", "", "", fmt.Errorf("rotating device token: %w", err)
+		}
+		return userID, existingID, deviceToken, nil
+	}
+
+	// Fresh device row.
+	deviceID := ulid.Make().String()
+	var insertMachineID interface{}
+	if machineID != "" {
+		insertMachineID = machineID
+	}
 	_, err = s.db.Exec(
-		`INSERT INTO devices (id, user_id, hostname, source_key, token)
-		 VALUES (?, ?, ?, ?, ?)
-		 ON CONFLICT(user_id, source_key) DO UPDATE SET token = excluded.token, revoked_at = NULL`,
-		deviceID, userID, hostname, sourceKey, deviceToken,
+		`INSERT INTO devices (id, user_id, hostname, source_key, token, machine_id)
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(user_id, source_key) DO UPDATE SET
+		   token = excluded.token,
+		   machine_id = COALESCE(excluded.machine_id, devices.machine_id),
+		   revoked_at = NULL`,
+		deviceID, userID, hostname, sourceKey, deviceToken, insertMachineID,
 	)
 	if err != nil {
 		return "", "", "", fmt.Errorf("provisioning device: %w", err)
@@ -1144,25 +1232,35 @@ func generateUserCode() string {
 
 // CreateDeviceCode generates a device code and user code, inserts into device_codes,
 // and returns the response (without VerificationURI — caller sets that).
-func (s *Store) CreateDeviceCode(hostname string) (*cinchv1.DeviceCodeStartResponse, error) {
+// machineID is opaque and optional; the OAuth callback reads it back via
+// DeviceCodeContext when upserting the device row so the same Mac signing
+// in via CLI and desktop reuses one row.
+func (s *Store) CreateDeviceCode(hostname, machineID string) (*cinchv1.DeviceCodeStartResponse, error) {
 	deviceCode := generateStoreToken()
 	userCode := generateUserCode()
 	expiresAt := time.Now().UTC().Add(5 * time.Minute)
 
+	var mi interface{}
+	if machineID != "" {
+		mi = machineID
+	}
+
 	_, err := s.db.Exec(
-		`INSERT INTO device_codes (device_code, user_code, hostname, expires_at)
-		 VALUES (?, ?, ?, ?)`,
-		deviceCode, userCode, hostname, expiresAt,
+		`INSERT INTO device_codes (device_code, user_code, hostname, machine_id, expires_at)
+		 VALUES (?, ?, ?, ?, ?)`,
+		deviceCode, userCode, hostname, mi, expiresAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("creating device code: %w", err)
 	}
 
+	intervalMs := int64(1000)
 	return &cinchv1.DeviceCodeStartResponse{
 		DeviceCode: deviceCode,
 		UserCode:   userCode,
 		ExpiresIn:  300,
 		Interval:   3,
+		IntervalMs: &intervalMs,
 	}, nil
 }
 
@@ -1222,12 +1320,25 @@ func (s *Store) PollDeviceCode(deviceCode string) (*cinchv1.DeviceCodePollRespon
 
 // DeviceCodeHostname returns the hostname stored in a device_codes row by user_code.
 // Used by the OAuth callback to pre-populate the device name.
+// Kept for backward compatibility — prefer DeviceCodeContext for new code paths.
 func (s *Store) DeviceCodeHostname(userCode string) (string, error) {
-	var hostname string
-	err := s.db.QueryRow(
-		"SELECT hostname FROM device_codes WHERE user_code = ?", userCode,
-	).Scan(&hostname)
+	hostname, _, err := s.DeviceCodeContext(userCode)
 	return hostname, err
+}
+
+// DeviceCodeContext returns the hostname and machine_id stored when the
+// device code was issued. The OAuth callback uses both: hostname for the
+// device row label, machine_id for cross-app dedup on the same Mac.
+func (s *Store) DeviceCodeContext(userCode string) (string, string, error) {
+	var hostname string
+	var machineID sql.NullString
+	err := s.db.QueryRow(
+		"SELECT hostname, machine_id FROM device_codes WHERE user_code = ?", userCode,
+	).Scan(&hostname, &machineID)
+	if err != nil {
+		return "", "", err
+	}
+	return hostname, machineID.String, nil
 }
 
 // CleanupExpiredDeviceCodes removes device codes that expired more than 1 hour ago.

@@ -1401,13 +1401,31 @@ button:disabled{opacity:.5;cursor:not-allowed}
 
 // AuthBrowser serves the sign-in page.
 // When OAuth is configured, shows GitHub/Google buttons.
+// When exactly one OAuth provider is configured AND ?device_code= is present,
+// skips the picker and 302s straight to the provider start URL — eliminates a
+// click on the common "single GitHub provider" deployment.
 // Falls back to the legacy username form for self-hosters who don't set OAuth env vars.
 func (h *Handler) AuthBrowser(w http.ResponseWriter, r *http.Request) {
 	deviceCode := r.URL.Query().Get("device_code")
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
 	hasGitHub := h.OAuth != nil && h.OAuth.GitHub != nil
 	hasGoogle := h.OAuth != nil && h.OAuth.Google != nil
+
+	// Auto-redirect: one provider + a device_code in scope = no picker needed.
+	// Without device_code, we still render the picker so a user navigating in
+	// directly knows what they're about to sign in to.
+	if deviceCode != "" {
+		switch {
+		case hasGitHub && !hasGoogle:
+			http.Redirect(w, r, "/auth/oauth/github/start?device_code="+deviceCode, http.StatusFound)
+			return
+		case hasGoogle && !hasGitHub:
+			http.Redirect(w, r, "/auth/oauth/google/start?device_code="+deviceCode, http.StatusFound)
+			return
+		}
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
 	if hasGitHub || hasGoogle {
 		// Build OAuth button HTML.
@@ -1502,8 +1520,12 @@ func (h *Handler) IssueDeviceCode(w http.ResponseWriter, r *http.Request) {
 	if hostname == "" {
 		hostname = "unknown"
 	}
+	machineID := ""
+	if req.MachineId != nil {
+		machineID = *req.MachineId
+	}
 
-	resp, err := h.store.CreateDeviceCode(hostname)
+	resp, err := h.store.CreateDeviceCode(hostname, machineID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "device_code_failed", err.Error(), "")
 		return
