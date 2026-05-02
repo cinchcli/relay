@@ -51,9 +51,9 @@ func migrate(db *sql.DB) error {
 	_, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS users (
 			id          TEXT PRIMARY KEY,
-			token       TEXT UNIQUE NOT NULL,
-			pair_token  TEXT UNIQUE,
-			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+			is_demo     INTEGER DEFAULT 0
+			-- pair_token, token, token_migrated_at intentionally absent (OAuth-only)
 		);
 
 		CREATE TABLE IF NOT EXISTS clips (
@@ -492,7 +492,46 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 
+	// Phase 6: OAuth-only — drop legacy auth columns.
+	// Idempotent: each DROP is wrapped in a column-existence check so
+	// re-running the migration is a no-op.
+	for _, col := range []string{"pair_token", "token", "token_migrated_at"} {
+		exists, err := userColumnExists(db, col)
+		if err != nil {
+			return fmt.Errorf("check users.%s: %w", col, err)
+		}
+		if !exists {
+			continue
+		}
+		if _, err := db.Exec("ALTER TABLE users DROP COLUMN " + col); err != nil {
+			return fmt.Errorf("drop users.%s: %w", col, err)
+		}
+	}
+
 	return nil
+}
+
+// userColumnExists returns true when the named column is present on the users table.
+// Used by the Phase 6 column-drop migration to keep DROP COLUMN idempotent.
+func userColumnExists(db *sql.DB, col string) (bool, error) {
+	rows, err := db.Query(`PRAGMA table_info(users)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if name == col {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 // addColumnIfMissing inspects PRAGMA table_info(table) and runs ALTER TABLE
@@ -530,17 +569,13 @@ func migrateDropUsersTokenNotNull(db *sql.DB) error {
 	_, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS users_new (
 			id                  TEXT PRIMARY KEY,
-			token               TEXT UNIQUE,
-			pair_token          TEXT UNIQUE,
 			created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
 			is_demo             INTEGER DEFAULT 0,
-			token_migrated_at   DATETIME,
 			identity_provider   TEXT,
 			identity_subject    TEXT
 		);
-		INSERT INTO users_new
-			SELECT id, token, pair_token, created_at, COALESCE(is_demo,0), token_migrated_at,
-			       NULL, NULL
+		INSERT INTO users_new (id, created_at, is_demo, identity_provider, identity_subject)
+			SELECT id, created_at, COALESCE(is_demo,0), NULL, NULL
 			FROM users;
 		DROP TABLE users;
 		ALTER TABLE users_new RENAME TO users;
@@ -552,17 +587,17 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// CreateUser creates a new user with a token and pair token.
-// pairToken may be empty — stored as NULL to satisfy the UNIQUE constraint across users.
-func (s *Store) CreateUser(id, token, pairToken string) error {
-	var pt interface{}
-	if pairToken != "" {
-		pt = pairToken
-	}
-	_, err := s.db.Exec(
-		"INSERT INTO users (id, token, pair_token) VALUES (?, ?, ?)",
-		id, token, pt,
-	)
+// Migrate runs all schema migration steps against the underlying database.
+// NewStore already invokes this; it is exposed so tests can verify
+// idempotence by re-running migrations against an open Store.
+func (s *Store) Migrate() error {
+	return migrate(s.db)
+}
+
+// CreateUser inserts a new user row. Tokens live on the devices table
+// after the OAuth-only migration; users carries identity columns only.
+func (s *Store) CreateUser(id string) error {
+	_, err := s.db.Exec("INSERT INTO users (id) VALUES (?)", id)
 	return err
 }
 
@@ -690,32 +725,6 @@ func (s *Store) IsDemoUser(userID string) (bool, error) {
 	return isDemo == 1, nil
 }
 
-// UserByPairToken returns the user ID and consumes the pair token, issuing a new auth token.
-// DEPRECATED: use ConsumePairTokenMintDevice for Phase 2+
-func (s *Store) UserByPairToken(pairToken string) (userID string, newToken string, err error) {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return "", "", err
-	}
-	defer tx.Rollback()
-
-	err = tx.QueryRow("SELECT id FROM users WHERE pair_token = ?", pairToken).Scan(&userID)
-	if err == sql.ErrNoRows {
-		return "", "", fmt.Errorf("invalid or expired pair token")
-	}
-	if err != nil {
-		return "", "", err
-	}
-
-	newToken = generateToken()
-	_, err = tx.Exec("UPDATE users SET pair_token = NULL WHERE id = ?", userID)
-	if err != nil {
-		return "", "", err
-	}
-
-	return userID, newToken, tx.Commit()
-}
-
 // ── Phase 2: per-device token methods ──────────────────────────────────────
 
 // DeviceIDByToken returns the device_id for an active or revoked per-device token.
@@ -729,72 +738,6 @@ func (s *Store) DeviceIDByToken(token string) (deviceID string, revoked bool, er
 		return "", false, err
 	}
 	return deviceID, revokedAt.Valid, nil
-}
-
-// ConsumePairTokenMintDevice atomically:
-//  1. SELECT users.id WHERE pair_token = ?
-//  2. UPDATE users SET pair_token = NULL, stamp token_migrated_at if not set
-//  3. INSERT devices row with fresh token
-//
-// Returns (userID, deviceID, deviceToken, err). Rolls back on any failure.
-func (s *Store) ConsumePairTokenMintDevice(pairToken, hostname string) (string, string, string, error) {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return "", "", "", err
-	}
-	defer tx.Rollback()
-
-	var userID string
-	err = tx.QueryRow("SELECT id FROM users WHERE pair_token = ?", pairToken).Scan(&userID)
-	if err == sql.ErrNoRows {
-		return "", "", "", fmt.Errorf("invalid or expired pair token")
-	}
-	if err != nil {
-		return "", "", "", err
-	}
-
-	deviceID := ulid.Make().String()
-	deviceToken := generateToken()
-	if hostname == "" {
-		hostname = "unknown"
-	}
-	sourceKey := "remote:" + hostname
-
-	// Re-pair: if a non-revoked device with the same (user_id, source_key) already
-	// exists (e.g. client lost credentials), reuse its device_id and rotate its token.
-	var existingID string
-	if scanErr := tx.QueryRow(
-		`SELECT id FROM devices WHERE user_id = ? AND source_key = ? AND revoked_at IS NULL`,
-		userID, sourceKey,
-	).Scan(&existingID); scanErr == nil {
-		deviceID = existingID
-		_, err = tx.Exec(
-			`UPDATE devices SET token = ?, hostname = ?, paired_at = CURRENT_TIMESTAMP WHERE id = ?`,
-			deviceToken, hostname, deviceID,
-		)
-	} else {
-		_, err = tx.Exec(
-			`INSERT INTO devices (id, user_id, hostname, source_key, token, paired_at)
-			 VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
-			deviceID, userID, hostname, sourceKey, deviceToken,
-		)
-	}
-	if err != nil {
-		return "", "", "", fmt.Errorf("inserting device: %w", err)
-	}
-
-	_, err = tx.Exec(
-		`UPDATE users SET pair_token = NULL,
-		  token_migrated_at = COALESCE(token_migrated_at, CURRENT_TIMESTAMP)
-		 WHERE id = ?`, userID)
-	if err != nil {
-		return "", "", "", err
-	}
-
-	if err := tx.Commit(); err != nil {
-		return "", "", "", err
-	}
-	return userID, deviceID, deviceToken, nil
 }
 
 // DeviceOwner returns the user_id owning a device.
@@ -831,20 +774,6 @@ func (s *Store) RegisterDeviceWithToken(userID, deviceID, hostname, token string
 		deviceID, userID, hostname, sourceKey, token,
 	)
 	return err
-}
-
-// SweepMigratedMasterTokens NULLs users.token for rows where token_migrated_at < cutoff.
-// Returns count of rows updated. Idempotent. Called hourly by the grace sweeper.
-func (s *Store) SweepMigratedMasterTokens(cutoff time.Time) (count int, err error) {
-	res, err := s.db.Exec(
-		`UPDATE users SET token = NULL WHERE token_migrated_at IS NOT NULL AND token_migrated_at < ? AND token IS NOT NULL`,
-		cutoff,
-	)
-	if err != nil {
-		return 0, err
-	}
-	n, _ := res.RowsAffected()
-	return int(n), nil
 }
 
 // CloseGraceEarlyIfNeeded NULLs users.token on the first per-device-token use, only if
