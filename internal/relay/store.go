@@ -869,12 +869,6 @@ func (s *Store) RegisterDeviceWithToken(userID, deviceID, hostname, token string
 	return err
 }
 
-// CloseGraceEarlyIfNeeded is a no-op kept for compatibility with callers
-// that haven't been cleaned up yet. The 7-day token-migration grace
-// window was retired alongside the OAuth-only schema migration; Task 5
-// removes the helper and its callers entirely.
-func (s *Store) CloseGraceEarlyIfNeeded(userID string) {}
-
 // SaveClip persists a clip and returns it.
 //
 // `req.MediaPath` and `req.Ttl` are proto3 `optional` fields and arrive as
