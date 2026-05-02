@@ -493,22 +493,111 @@ func migrate(db *sql.DB) error {
 	}
 
 	// Phase 6: OAuth-only — drop legacy auth columns.
-	// Idempotent: each DROP is wrapped in a column-existence check so
-	// re-running the migration is a no-op.
+	// SQLite refuses ALTER TABLE DROP COLUMN on a column referenced by a
+	// UNIQUE / non-partial index (e.g. the inline `pair_token TEXT UNIQUE`
+	// from the legacy schema produces an `sqlite_autoindex_*` index). The
+	// only portable workaround is a full table rebuild. This branch runs
+	// only when at least one legacy column is still present, so it is a
+	// no-op on fresh DBs.
+	hasLegacy := false
 	for _, col := range []string{"pair_token", "token", "token_migrated_at"} {
 		exists, err := userColumnExists(db, col)
 		if err != nil {
 			return fmt.Errorf("check users.%s: %w", col, err)
 		}
-		if !exists {
-			continue
+		if exists {
+			hasLegacy = true
+			break
 		}
-		if _, err := db.Exec("ALTER TABLE users DROP COLUMN " + col); err != nil {
-			return fmt.Errorf("drop users.%s: %w", col, err)
+	}
+	if hasLegacy {
+		if err := migrateDropLegacyUserColumns(db); err != nil {
+			return fmt.Errorf("dropping legacy user columns: %w", err)
 		}
 	}
 
 	return nil
+}
+
+// migrateDropLegacyUserColumns rebuilds the users table with only the
+// post-OAuth schema (id, created_at, is_demo, identity_provider,
+// identity_subject), preserving rows. Used by the Phase 6 migration when
+// any of the legacy auth columns (pair_token / token / token_migrated_at)
+// are still present — those carried inline UNIQUE constraints that
+// SQLite refuses to drop in place.
+func migrateDropLegacyUserColumns(db *sql.DB) error {
+	// Detect which optional columns are present BEFORE opening a
+	// transaction — db.SetMaxOpenConns(1) means a probe inside the txn
+	// would deadlock waiting for the only connection.
+	hasIdentityProvider, err := userColumnExists(db, "identity_provider")
+	if err != nil {
+		return err
+	}
+	hasIdentitySubject, err := userColumnExists(db, "identity_subject")
+	if err != nil {
+		return err
+	}
+	hasIsDemo, err := userColumnExists(db, "is_demo")
+	if err != nil {
+		return err
+	}
+
+	_, _ = db.Exec("PRAGMA foreign_keys=OFF")
+	defer db.Exec("PRAGMA foreign_keys=ON")
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`
+		CREATE TABLE users_new (
+			id                TEXT PRIMARY KEY,
+			created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+			is_demo           INTEGER DEFAULT 0,
+			identity_provider TEXT,
+			identity_subject  TEXT
+		)`); err != nil {
+		return err
+	}
+
+	isDemoCol := "0"
+	if hasIsDemo {
+		isDemoCol = "COALESCE(is_demo, 0)"
+	}
+	identityProviderCol := "NULL"
+	if hasIdentityProvider {
+		identityProviderCol = "identity_provider"
+	}
+	identitySubjectCol := "NULL"
+	if hasIdentitySubject {
+		identitySubjectCol = "identity_subject"
+	}
+	copyStmt := fmt.Sprintf(
+		`INSERT INTO users_new (id, created_at, is_demo, identity_provider, identity_subject)
+		 SELECT id, created_at, %s, %s, %s FROM users`,
+		isDemoCol, identityProviderCol, identitySubjectCol,
+	)
+	if _, err := tx.Exec(copyStmt); err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(`DROP TABLE users`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`ALTER TABLE users_new RENAME TO users`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_identity
+		 ON users(identity_provider, identity_subject)
+		 WHERE identity_provider IS NOT NULL`,
+	); err != nil {
+		return err
+	}
+
+	return tx.Commit()
 }
 
 // userColumnExists returns true when the named column is present on the users table.
@@ -619,12 +708,12 @@ func (s *Store) UpsertOAuthUser(provider, subject, hostname, machineID string) (
 	).Scan(&userID)
 
 	if err == sql.ErrNoRows {
-		// New OAuth user — create account.
+		// New OAuth user — create account. The users.token column was
+		// dropped in the OAuth-only migration; tokens live on devices.
 		userID = ulid.Make().String()
-		masterToken := generateStoreToken()
 		_, err = s.db.Exec(
-			`INSERT INTO users (id, token, identity_provider, identity_subject) VALUES (?, ?, ?, ?)`,
-			userID, masterToken, provider, subject,
+			`INSERT INTO users (id, identity_provider, identity_subject) VALUES (?, ?, ?)`,
+			userID, provider, subject,
 		)
 		if err != nil {
 			return "", "", "", fmt.Errorf("creating oauth user: %w", err)
@@ -700,13 +789,17 @@ func (s *Store) UpsertOAuthUser(provider, subject, hostname, machineID string) (
 	return userID, deviceID, deviceToken, nil
 }
 
-// UserByToken returns the user ID for a given auth token.
-// Demo users are rejected if their session has expired (10-minute TTL).
+// UserByToken returns the user ID for a given device token.
+// After the OAuth-only migration, the users table no longer carries a
+// token column — every active token lives on devices.token. Demo
+// users are still gated by the 10-minute TTL via the joined users row.
 func (s *Store) UserByToken(token string) (string, error) {
 	var id string
 	err := s.db.QueryRow(
-		`SELECT id FROM users WHERE token = ?
-		 AND (is_demo = 0 OR created_at > datetime('now', '-10 minutes'))`,
+		`SELECT u.id FROM users u
+		 JOIN devices d ON d.user_id = u.id
+		 WHERE d.token = ? AND d.revoked_at IS NULL
+		 AND (u.is_demo = 0 OR u.created_at > datetime('now', '-10 minutes'))`,
 		token,
 	).Scan(&id)
 	if err == sql.ErrNoRows {
@@ -776,16 +869,11 @@ func (s *Store) RegisterDeviceWithToken(userID, deviceID, hostname, token string
 	return err
 }
 
-// CloseGraceEarlyIfNeeded NULLs users.token on the first per-device-token use, only if
-// token_migrated_at is set and users.token is still non-NULL.
-// Idempotent. Best-effort — called async on HTTP requests; errors ignored.
-func (s *Store) CloseGraceEarlyIfNeeded(userID string) {
-	_, _ = s.db.Exec(
-		`UPDATE users SET token = NULL
-		 WHERE id = ? AND token_migrated_at IS NOT NULL AND token IS NOT NULL`,
-		userID,
-	)
-}
+// CloseGraceEarlyIfNeeded is a no-op kept for compatibility with callers
+// that haven't been cleaned up yet. The 7-day token-migration grace
+// window was retired alongside the OAuth-only schema migration; Task 5
+// removes the helper and its callers entirely.
+func (s *Store) CloseGraceEarlyIfNeeded(userID string) {}
 
 // SaveClip persists a clip and returns it.
 //
@@ -917,26 +1005,6 @@ func (s *Store) GetLatestClipBySource(userID, source string) (*cinchv1.Clip, err
 	}
 	c.CreatedAt = protocol.FormatRFC3339(createdAt)
 	return c, nil
-}
-
-// TokenForUser returns the auth token for a user.
-// DEPRECATED: Phase 2 uses per-device tokens from devices.token instead.
-func (s *Store) TokenForUser(userID string) (string, error) {
-	var token string
-	err := s.db.QueryRow("SELECT token FROM users WHERE id = ?", userID).Scan(&token)
-	return token, err
-}
-
-// RegisterDevice records a paired device. Called during AuthPair.
-func (s *Store) RegisterDevice(userID, hostname string) error {
-	id := ulid.Make().String()
-	sourceKey := "remote:" + hostname
-	_, err := s.db.Exec(
-		`INSERT OR IGNORE INTO devices (id, user_id, hostname, source_key, paired_at)
-		 VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)`,
-		id, userID, hostname, sourceKey,
-	)
-	return err
 }
 
 // UpdateDeviceActivity increments clip count and updates last_push_at.
@@ -1107,19 +1175,26 @@ func (s *Store) SetDeviceNickname(deviceID, nickname string) error {
 // ── Demo session methods ────────────────────────────────────────────
 
 // CreateDemoUser creates a temporary demo user with a 10-minute TTL.
-// It also cleans up expired demo sessions as a side effect.
+// It also cleans up expired demo sessions as a side effect. The token
+// lives on a paired device row (the users.token column was dropped in
+// the OAuth-only migration); the device row is reaped together with
+// the user via foreign-key cascade in CleanupDemoSessions.
 func (s *Store) CreateDemoUser(id, token string) error {
 	s.CleanupDemoSessions()
-	_, err := s.db.Exec(
-		"INSERT INTO users (id, token, is_demo) VALUES (?, ?, 1)",
-		id, token,
-	)
-	return err
+	if _, err := s.db.Exec(
+		"INSERT INTO users (id, is_demo) VALUES (?, 1)", id,
+	); err != nil {
+		return err
+	}
+	deviceID := ulid.Make().String()
+	return s.RegisterDeviceWithToken(id, deviceID, "demo", token)
 }
 
-// CleanupDemoSessions deletes expired demo users and their clips.
+// CleanupDemoSessions deletes expired demo users and their clips
+// (and devices, now that the demo token lives on a device row).
 func (s *Store) CleanupDemoSessions() {
 	s.db.Exec("DELETE FROM clips WHERE user_id IN (SELECT id FROM users WHERE is_demo = 1 AND created_at <= datetime('now', '-10 minutes'))")
+	s.db.Exec("DELETE FROM devices WHERE user_id IN (SELECT id FROM users WHERE is_demo = 1 AND created_at <= datetime('now', '-10 minutes'))")
 	s.db.Exec("DELETE FROM users WHERE is_demo = 1 AND created_at <= datetime('now', '-10 minutes')")
 }
 

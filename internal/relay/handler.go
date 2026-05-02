@@ -4,9 +4,7 @@ package relay
 
 import (
 	"crypto/rand"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -95,8 +93,8 @@ func NewHandler(store *Store, hub *Hub) *Handler {
 }
 
 // RequireAuth wraps a handler with token authentication.
-// Phase 2: checks per-device tokens (devices.token) first, then falls back to
-// the master token (users.token) for backward compatibility with pre-Phase-2 clients.
+// After the OAuth-only migration every active token lives on devices.token;
+// the legacy master-token (users.token) lookup has been removed.
 func (h *Handler) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -105,165 +103,80 @@ func (h *Handler) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		// Phase 2: try per-device token lookup first.
 		deviceID, revoked, derr := h.store.DeviceIDByToken(token)
-		if derr == nil {
-			// Token found in devices table.
-			if revoked {
-				writeError(w, http.StatusUnauthorized, "device_revoked",
-					"This device was revoked", "Run: cinch auth login")
-				return
-			}
-			// Resolve user from device row.
-			userID, err := h.store.DeviceOwner(deviceID)
-			if err != nil {
-				writeError(w, http.StatusUnauthorized, "invalid token", "Token is invalid or expired", "Run: cinch auth login")
-				return
-			}
-			r.Header.Set("X-Device-ID", deviceID)
-			r.Header.Set("X-User-ID", userID)
-			// Opportunistic: close grace window early on first per-device-token use.
-			go h.store.CloseGraceEarlyIfNeeded(userID)
-			next(w, r)
-			return
-		}
-
-		// Fall back to master token (users.token) — pre-Phase-2 clients and login machine.
-		if derr != sql.ErrNoRows {
-			log.Printf("DeviceIDByToken error: %v", derr)
-		}
-
-		userID, err := h.store.UserByToken(token)
-		if err != nil {
-			// Check if this was a demo token that expired (lookup without TTL filter)
-			var expiredID string
-			expErr := h.store.db.QueryRow("SELECT id FROM users WHERE token = ? AND is_demo = 1", token).Scan(&expiredID)
-			if expErr == nil {
-				writeError(w, http.StatusUnauthorized, "demo expired", "Demo session expired", "Refresh the page for a new session")
-				return
+		if derr != nil {
+			if derr != sql.ErrNoRows {
+				log.Printf("DeviceIDByToken error: %v", derr)
 			}
 			writeError(w, http.StatusUnauthorized, "invalid token", "Token is invalid or expired", "Run: cinch auth login")
 			return
 		}
+		if revoked {
+			writeError(w, http.StatusUnauthorized, "device_revoked",
+				"This device was revoked", "Run: cinch auth login")
+			return
+		}
+		userID, err := h.store.DeviceOwner(deviceID)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "invalid token", "Token is invalid or expired", "Run: cinch auth login")
+			return
+		}
 
+		// Demo TTL gate: demo sessions are bounded to 10 minutes; reject
+		// stale device tokens with a distinct error so the landing page
+		// can prompt the visitor to refresh for a fresh session.
+		var isDemo int
+		var createdAt time.Time
+		if err := h.store.db.QueryRow(
+			"SELECT is_demo, created_at FROM users WHERE id = ?", userID,
+		).Scan(&isDemo, &createdAt); err == nil && isDemo == 1 {
+			if time.Since(createdAt) > demoTTL {
+				writeError(w, http.StatusUnauthorized, "demo expired", "Demo session expired", "Refresh the page for a new session")
+				return
+			}
+		}
+
+		r.Header.Set("X-Device-ID", deviceID)
 		r.Header.Set("X-User-ID", userID)
 		next(w, r)
 	}
 }
 
-// AuthLogin creates a new user account and returns tokens.
+// AuthLogin creates an anonymous user account + first device row and
+// returns the device token. After the OAuth-only migration the user
+// table no longer carries a master token, so login auth is identical
+// to a freshly OAuth'd device.
+//
+// Used by the smoke test and the demo HTML page; production clients
+// always go through device-code OAuth.
 func (h *Handler) AuthLogin(w http.ResponseWriter, r *http.Request) {
-	// Parse optional body — backward-compatible: empty body still works.
 	var req cinchv1.LoginRequest
 	if r.Body != nil && r.ContentLength > 0 {
 		_ = json.NewDecoder(r.Body).Decode(&req)
 	}
-	hostname := ""
-	if req.Hostname != nil {
+	hostname := "unknown"
+	if req.Hostname != nil && *req.Hostname != "" {
 		hostname = *req.Hostname
-	}
-	if hostname == "" {
-		hostname = "unknown"
 	}
 
 	userID := ulid.Make().String()
-	token := generateToken()
-	pairToken := generatePairToken()
-
-	if err := h.store.CreateUser(userID, token, pairToken); err != nil {
+	if err := h.store.CreateUser(userID); err != nil {
 		writeError(w, http.StatusInternalServerError, "account creation failed", err.Error(), "")
 		return
 	}
 
-	// D-05: login machine is a device too. Mint a device row with the same token.
-	// The login device's token works via both users.token and devices.token lookups.
 	deviceID := ulid.Make().String()
-	if err := h.store.RegisterDeviceWithToken(userID, deviceID, hostname, token); err != nil {
-		// Soft-fail: user is created, login token works via users.token.
-		// Device row will be created lazily on first WS handshake.
-		log.Printf("AuthLogin: RegisterDeviceWithToken failed for %s: %v", userID[:8], err)
-		deviceID = ""
-	} else {
-		_, _ = h.store.db.Exec(
-			`UPDATE users SET token_migrated_at = COALESCE(token_migrated_at, CURRENT_TIMESTAMP) WHERE id = ?`,
-			userID,
-		)
+	deviceToken := generateToken()
+	if err := h.store.RegisterDeviceWithToken(userID, deviceID, hostname, deviceToken); err != nil {
+		writeError(w, http.StatusInternalServerError, "device creation failed", err.Error(), "")
+		return
 	}
 
 	writeJSON(w, http.StatusOK, cinchv1.LoginResponse{
-		Token:     token,
-		PairToken: pairToken,
-		UserId:    userID,
-		DeviceId:  deviceID,
-	})
-}
-
-// AuthPair exchanges a pair token for a per-device auth token.
-func (h *Handler) AuthPair(w http.ResponseWriter, r *http.Request) {
-	var req cinchv1.PairRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request", "Could not parse request body", "")
-		return
-	}
-
-	if req.PairToken == "" {
-		writeError(w, http.StatusBadRequest, "missing pair token", "pair_token is required", "Run: cinch auth login on your Mac to get a pair token")
-		return
-	}
-
-	hostname := ""
-	if req.Hostname != nil {
-		hostname = *req.Hostname
-	}
-	if hostname == "" {
-		hostname = "unknown"
-	}
-	devicePublicKey := ""
-	if req.DevicePublicKey != nil {
-		devicePublicKey = *req.DevicePublicKey
-	}
-	deviceKeyFingerprint := ""
-	if req.DeviceKeyFingerprint != nil {
-		deviceKeyFingerprint = *req.DeviceKeyFingerprint
-	}
-
-	userID, deviceID, deviceToken, err := h.store.ConsumePairTokenMintDevice(req.PairToken, hostname)
-	if err != nil {
-		writeError(w, http.StatusUnauthorized, "pairing failed", err.Error(),
-			"Run: cinch auth login on your Mac to generate a new pair token")
-		return
-	}
-
-	// Phase 4.5: store device public key for E2EE key exchange if provided.
-	if devicePublicKey != "" {
-		// Compute fingerprint: SHA-256 of the raw public key bytes, first 8 bytes as hex.
-		// Prefer the fingerprint sent by the CLI; if absent, compute it here
-		// from the base64url-decoded public key bytes.
-		fingerprint := deviceKeyFingerprint
-		if fingerprint == "" {
-			if rawPub, err := base64.RawURLEncoding.DecodeString(devicePublicKey); err == nil {
-				digest := sha256.Sum256(rawPub)
-				fingerprint = hex.EncodeToString(digest[:8])
-			}
-		}
-		if err := h.store.SetDevicePublicKey(deviceID, devicePublicKey, fingerprint); err != nil {
-			log.Printf("failed to store device public key: %v", err)
-			// non-fatal — pairing still succeeds; key exchange will happen later
-		}
-		// Notify all online devices of this user that a new device needs the encryption key.
-		// Include the fingerprint so the desktop can verify the public key out-of-band.
-		h.hub.SendToUser(userID, protocol.WSMessage{
-			Action:               protocol.ActionKeyExchangeRequested,
-			DeviceID:             deviceID,
-			Hostname:             hostname,
-			DeviceKeyFingerprint: fingerprint,
-		})
-	}
-
-	writeJSON(w, http.StatusOK, cinchv1.PairResponse{
 		Token:    deviceToken,
 		UserId:   userID,
 		DeviceId: deviceID,
+		// PairToken intentionally absent — field reserved in proto.
 	})
 }
 
@@ -520,8 +433,8 @@ func (h *Handler) ListDevices(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleWebSocket upgrades the connection and registers the agent.
-// Phase 2: checks per-device token (devices.token) first; falls back to master token
-// (users.token) with lazy migration for pre-Phase-2 clients.
+// Authentication is per-device (devices.token); the legacy master-token
+// fallback was removed alongside the OAuth-only schema migration.
 func (h *Handler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	token := r.URL.Query().Get("token")
 	if token == "" {
@@ -592,37 +505,25 @@ func (h *Handler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Phase 2: try per-device token first.
-	var userID string
-	var deviceID string
-
-	did, revoked, derr := h.store.DeviceIDByToken(token)
-	if derr == nil {
-		// Token is a per-device token.
-		if revoked {
-			http.Error(w, "device_revoked", http.StatusUnauthorized)
-			return
-		}
-		deviceID = did
-		uid, err := h.store.DeviceOwner(did)
-		if err != nil {
+	// Per-device token only. The legacy master-token (users.token) lookup
+	// and lazy-migration branch were removed in the OAuth-only migration.
+	deviceID, revoked, derr := h.store.DeviceIDByToken(token)
+	if derr != nil {
+		if derr == sql.ErrNoRows {
 			http.Error(w, "invalid token", http.StatusUnauthorized)
 			return
 		}
-		userID = uid
-	} else if derr == sql.ErrNoRows {
-		// Fall back to master token (users.token) — pre-Phase-2 or login-machine token
-		// that hasn't been migrated to devices.token yet.
-		uid, err := h.store.UserByToken(token)
-		if err != nil {
-			http.Error(w, "invalid token", http.StatusUnauthorized)
-			return
-		}
-		userID = uid
-		// deviceID stays empty; lazy migration branch below will mint one.
-	} else {
 		log.Printf("DeviceIDByToken WS error: %v", derr)
 		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if revoked {
+		http.Error(w, "device_revoked", http.StatusUnauthorized)
+		return
+	}
+	userID, err := h.store.DeviceOwner(deviceID)
+	if err != nil {
+		http.Error(w, "invalid token", http.StatusUnauthorized)
 		return
 	}
 
@@ -630,41 +531,6 @@ func (h *Handler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("ws upgrade failed: %v", err)
 		return
-	}
-
-	if deviceID == "" {
-		// Lazy migration: token is a master token with no devices.token row.
-		// Mint a new device row + send token_rotated as the first WS message.
-		hostname := r.URL.Query().Get("hostname")
-		if hostname == "" {
-			hostname = r.Header.Get("User-Agent")
-		}
-		if hostname == "" {
-			hostname = "unknown"
-		}
-		newDeviceID := ulid.Make().String()
-		newToken := generateToken()
-		if err := h.store.RegisterDeviceWithToken(userID, newDeviceID, hostname, newToken); err != nil {
-			log.Printf("lazy migration failed for user %s: %v", userID[:8], err)
-			// Fallthrough: connect with empty deviceID; retry on next WS connect.
-		} else {
-			// Stamp token_migrated_at for the 7-day grace sweeper.
-			_, _ = h.store.db.Exec(
-				`UPDATE users SET token_migrated_at = COALESCE(token_migrated_at, CURRENT_TIMESTAMP) WHERE id = ?`,
-				userID,
-			)
-			deviceID = newDeviceID
-			// Send token_rotated BEFORE Register — first message the client sees post-upgrade.
-			rotated := protocol.WSMessage{
-				Action:   protocol.ActionTokenRotated,
-				Token:    newToken,
-				DeviceID: newDeviceID,
-				Hostname: hostname,
-			}
-			if err := conn.WriteJSON(rotated); err != nil {
-				log.Printf("token_rotated write failed: %v", err)
-			}
-		}
 	}
 
 	h.hub.Register(userID, deviceID, conn)
@@ -861,12 +727,6 @@ func generateToken() string {
 	b := make([]byte, 32)
 	rand.Read(b)
 	return hex.EncodeToString(b)
-}
-
-func generatePairToken() string {
-	b := make([]byte, 4)
-	rand.Read(b)
-	return fmt.Sprintf("%s-%s", hex.EncodeToString(b[:2]), hex.EncodeToString(b[2:]))
 }
 
 // DemoSession mints a short-lived demo token for the landing page.
@@ -1283,24 +1143,6 @@ func (h *Handler) SetDeviceNickname(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// RegeneratePairToken mints a fresh pair token for the calling user so they can pair
-// additional devices without re-running `auth login` (D-05).
-func (h *Handler) RegeneratePairToken(w http.ResponseWriter, r *http.Request) {
-	userID := r.Header.Get("X-User-ID")
-	newPairToken := generatePairToken()
-	_, err := h.store.db.Exec(
-		"UPDATE users SET pair_token = ? WHERE id = ?", newPairToken, userID,
-	)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError,
-			"pair_token_regenerate_failed", err.Error(), "")
-		return
-	}
-	writeJSON(w, http.StatusOK, cinchv1.RotatePairTokenResponse{
-		PairToken: newPairToken,
-	})
-}
-
 // authBrowserHTML is the self-contained login page served by GET /auth/browser.
 const authBrowserHTML = `<!DOCTYPE html>
 <html lang="en">
@@ -1606,13 +1448,11 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 // RegisterRoutes registers all relay HTTP routes on the given mux.
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /auth/login", h.AuthLogin)
-	mux.HandleFunc("POST /auth/pair", h.AuthPair)
 	mux.HandleFunc("GET /auth/browser", h.AuthBrowser)
 	mux.HandleFunc("POST /auth/device-code", h.IssueDeviceCode)
 	mux.HandleFunc("GET /auth/device-code/poll", h.PollDeviceCode)
 	mux.HandleFunc("POST /auth/device-code/complete", h.RequireAuth(h.CompleteDeviceCodeHTTP))
 	mux.HandleFunc("POST /auth/device/revoke", h.RequireAuth(h.RevokeDevice))
-	mux.HandleFunc("POST /auth/pair-token/new", h.RequireAuth(h.RegeneratePairToken))
 	mux.HandleFunc("POST /clips", h.DemoCORS(h.RequireAuth(h.PushClip)))
 	mux.HandleFunc("OPTIONS /clips", h.DemoCORS(func(w http.ResponseWriter, r *http.Request) {}))
 	mux.HandleFunc("GET /clips", h.RequireAuth(h.ListClips))

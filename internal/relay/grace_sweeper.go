@@ -2,7 +2,6 @@ package relay
 
 import (
 	"context"
-	"log"
 	"time"
 )
 
@@ -27,13 +26,9 @@ func RunGraceSweeper(ctx context.Context, store *Store) {
 }
 
 func sweepOnce(store *Store) {
-	cutoff := time.Now().Add(-graceWindow)
-	count, err := store.SweepMigratedMasterTokens(cutoff)
-	if err != nil {
-		log.Printf("grace sweep error: %v", err)
-		return
-	}
-	if count > 0 {
-		log.Printf("grace sweep: invalidated %d stale master tokens", count)
-	}
+	// No-op: the users.token column was dropped in the OAuth-only
+	// migration, so there is nothing to sweep. Task 5 deletes this
+	// file (and its tests) entirely.
+	_ = store
+	_ = graceWindow
 }

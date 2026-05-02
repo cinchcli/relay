@@ -2,10 +2,7 @@ package relay
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/hex"
-	"log"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -36,24 +33,17 @@ func (h *Handler) requireConnectAuthHeaders(headers http.Header) error {
 	}
 
 	deviceID, revoked, derr := h.store.DeviceIDByToken(token)
-	if derr == nil {
-		if revoked {
-			return connect.NewError(connect.CodePermissionDenied, errMsg("device revoked"))
-		}
-		userID, err := h.store.DeviceOwner(deviceID)
-		if err != nil {
-			return connect.NewError(connect.CodeUnauthenticated, errMsg("invalid token"))
-		}
-		headers.Set("X-Device-ID", deviceID)
-		headers.Set("X-User-ID", userID)
-		go h.store.CloseGraceEarlyIfNeeded(userID)
-		return nil
-	}
-
-	userID, err := h.store.UserByToken(token)
-	if err != nil {
+	if derr != nil {
 		return connect.NewError(connect.CodeUnauthenticated, errMsg("invalid or expired token"))
 	}
+	if revoked {
+		return connect.NewError(connect.CodePermissionDenied, errMsg("device revoked"))
+	}
+	userID, err := h.store.DeviceOwner(deviceID)
+	if err != nil {
+		return connect.NewError(connect.CodeUnauthenticated, errMsg("invalid token"))
+	}
+	headers.Set("X-Device-ID", deviceID)
 	headers.Set("X-User-ID", userID)
 	return nil
 }
@@ -68,9 +58,9 @@ func (h *Handler) authConnectInterceptor() connect.UnaryInterceptorFunc {
 	authedProcedures := map[string]bool{
 		cinchv1connect.AuthServiceDeviceCodeCompleteProcedure: true,
 		cinchv1connect.AuthServiceRevokeDeviceProcedure:       true,
-		cinchv1connect.AuthServiceRotatePairTokenProcedure:    true,
 		cinchv1connect.AuthServiceKeyBundlePutProcedure:       true,
 		cinchv1connect.AuthServiceKeyBundleGetProcedure:       true,
+		cinchv1connect.AuthServiceKeyBundleRetryProcedure:     true,
 	}
 	return func(next connect.UnaryFunc) connect.UnaryFunc {
 		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
@@ -95,6 +85,10 @@ func (e *connectErrMsg) Error() string { return e.s }
 
 // ─── Login ──────────────────────────────────────────────────
 
+// Login mirrors the REST AuthLogin handler — anonymous account + first
+// device row, no master token (the users.token column was dropped in
+// the OAuth-only migration). PairToken is reserved in the proto and
+// intentionally left unset.
 func (s *connectAuthServer) Login(ctx context.Context, req *connect.Request[cinchv1.LoginRequest]) (*connect.Response[cinchv1.LoginResponse], error) {
 	hostname := "unknown"
 	if req.Msg.Hostname != nil && *req.Msg.Hostname != "" {
@@ -102,73 +96,17 @@ func (s *connectAuthServer) Login(ctx context.Context, req *connect.Request[cinc
 	}
 
 	userID := ulid.Make().String()
-	token := generateToken()
-	pairToken := generatePairToken()
-
-	if err := s.h.store.CreateUser(userID, token, pairToken); err != nil {
+	if err := s.h.store.CreateUser(userID); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
 	deviceID := ulid.Make().String()
-	if err := s.h.store.RegisterDeviceWithToken(userID, deviceID, hostname, token); err != nil {
-		log.Printf("connectAuthServer.Login: RegisterDeviceWithToken failed for %s: %v", userID[:8], err)
-		deviceID = ""
-	} else {
-		_, _ = s.h.store.db.Exec(
-			`UPDATE users SET token_migrated_at = COALESCE(token_migrated_at, CURRENT_TIMESTAMP) WHERE id = ?`,
-			userID,
-		)
+	deviceToken := generateToken()
+	if err := s.h.store.RegisterDeviceWithToken(userID, deviceID, hostname, deviceToken); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
 	return connect.NewResponse(&cinchv1.LoginResponse{
-		Token:     token,
-		PairToken: pairToken,
-		UserId:    userID,
-		DeviceId:  deviceID,
-	}), nil
-}
-
-// ─── Pair ───────────────────────────────────────────────────
-
-func (s *connectAuthServer) Pair(ctx context.Context, req *connect.Request[cinchv1.PairRequest]) (*connect.Response[cinchv1.PairResponse], error) {
-	if req.Msg.PairToken == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errMsg("pair_token is required"))
-	}
-
-	hostname := "unknown"
-	if req.Msg.Hostname != nil && *req.Msg.Hostname != "" {
-		hostname = *req.Msg.Hostname
-	}
-
-	userID, deviceID, deviceToken, err := s.h.store.ConsumePairTokenMintDevice(req.Msg.PairToken, hostname)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeUnauthenticated, err)
-	}
-
-	if req.Msg.DevicePublicKey != nil && *req.Msg.DevicePublicKey != "" {
-		pubKey := *req.Msg.DevicePublicKey
-		fingerprint := ""
-		if req.Msg.DeviceKeyFingerprint != nil {
-			fingerprint = *req.Msg.DeviceKeyFingerprint
-		}
-		if fingerprint == "" {
-			if rawPub, err := base64.RawURLEncoding.DecodeString(pubKey); err == nil {
-				digest := sha256.Sum256(rawPub)
-				fingerprint = hex.EncodeToString(digest[:8])
-			}
-		}
-		if err := s.h.store.SetDevicePublicKey(deviceID, pubKey, fingerprint); err != nil {
-			log.Printf("connectAuthServer.Pair: SetDevicePublicKey failed: %v", err)
-		}
-		s.h.hub.SendToUser(userID, protocol.WSMessage{
-			Action:               protocol.ActionKeyExchangeRequested,
-			DeviceID:             deviceID,
-			Hostname:             hostname,
-			DeviceKeyFingerprint: fingerprint,
-		})
-	}
-
-	return connect.NewResponse(&cinchv1.PairResponse{
 		Token:    deviceToken,
 		UserId:   userID,
 		DeviceId: deviceID,
@@ -277,20 +215,14 @@ func (s *connectAuthServer) RevokeDevice(ctx context.Context, req *connect.Reque
 	}), nil
 }
 
-// ─── RotatePairToken ─────────────────────────────────────────
+// ─── KeyBundleRetry ──────────────────────────────────────────
 
-func (s *connectAuthServer) RotatePairToken(ctx context.Context, req *connect.Request[cinchv1.RotatePairTokenRequest]) (*connect.Response[cinchv1.RotatePairTokenResponse], error) {
-	userID := req.Header().Get("X-User-ID")
-	newPairToken := generatePairToken()
-	_, err := s.h.store.db.Exec(
-		"UPDATE users SET pair_token = ? WHERE id = ?", newPairToken, userID,
-	)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-	return connect.NewResponse(&cinchv1.RotatePairTokenResponse{
-		PairToken: newPairToken,
-	}), nil
+// KeyBundleRetry — REST-mirror handler. Full implementation lands in Task 6.
+func (s *connectAuthServer) KeyBundleRetry(
+	ctx context.Context,
+	_ *connect.Request[cinchv1.KeyBundleRetryRequest],
+) (*connect.Response[cinchv1.KeyBundleRetryResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("KeyBundleRetry: implemented in Task 6"))
 }
 
 // ─── KeyBundlePut ────────────────────────────────────────────
