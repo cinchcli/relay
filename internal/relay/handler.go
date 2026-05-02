@@ -258,6 +258,43 @@ func (h *Handler) GetKeyBundle(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// RegisterPublicKeyRequest is the body for POST /auth/device/public-key.
+type RegisterPublicKeyRequest struct {
+	PublicKey   string `json:"public_key"`
+	Fingerprint string `json:"fingerprint"`
+}
+
+// RegisterDevicePublicKey accepts the X25519 public key for the calling
+// device. The relay needs this to (a) include the device in
+// ListPendingKeyExchanges sweeps and (b) broadcast key_exchange_requested
+// when the device or `cinch auth retry-key` asks for a re-share.
+// Bearer-authenticated; the device_id is taken from the auth header.
+func (h *Handler) RegisterDevicePublicKey(w http.ResponseWriter, r *http.Request) {
+	deviceID := r.Header.Get("X-Device-ID")
+	if deviceID == "" {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "missing device", "")
+		return
+	}
+	var req RegisterPublicKeyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request", "Could not parse body", "")
+		return
+	}
+	if req.PublicKey == "" || req.Fingerprint == "" {
+		writeError(w, http.StatusBadRequest, "missing fields", "public_key and fingerprint are required", "")
+		return
+	}
+	if err := h.store.SetDevicePublicKey(deviceID, req.PublicKey, req.Fingerprint); err != nil {
+		if err == sql.ErrNoRows {
+			writeError(w, http.StatusNotFound, "device not found", "", "")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "store error", err.Error(), "")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 // KeyBundleRetry re-broadcasts key_exchange_requested for the calling
 // device. Used by `cinch auth retry-key` when the initial key handoff
 // missed (no key-bearer was online). Returns 400 if the device has not
@@ -1508,6 +1545,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /auth/key-bundle", h.RequireAuth(h.PostKeyBundle))
 	mux.HandleFunc("GET /auth/key-bundle", h.RequireAuth(h.GetKeyBundle))
 	mux.HandleFunc("POST /auth/key-bundle/retry", h.RequireAuth(h.KeyBundleRetry))
+	mux.HandleFunc("POST /auth/device/public-key", h.RequireAuth(h.RegisterDevicePublicKey))
 	mux.HandleFunc("POST /clips/binary", h.RequireAuth(h.PushBinaryClip))
 	mux.HandleFunc("GET /clips/{id}/media", h.RequireAuth(h.GetClipMedia))
 	mux.HandleFunc("GET /ws", h.HandleWebSocket)

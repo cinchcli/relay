@@ -38,6 +38,13 @@ service AuthService {
   // for the calling device. Used by `cinch auth retry-key`.
   // Mirrors POST /auth/key-bundle/retry — auth required.
   rpc KeyBundleRetry(KeyBundleRetryRequest) returns (KeyBundleRetryResponse);
+
+  // RegisterDevicePublicKey stores the X25519 public key for the calling
+  // device so the relay can include it in ListPendingKeyExchanges sweeps
+  // and broadcast key_exchange_requested for it. Called once after the
+  // OAuth-only login flow finishes installing local credentials.
+  // Mirrors POST /auth/device/public-key — auth required.
+  rpc RegisterDevicePublicKey(RegisterDevicePublicKeyRequest) returns (RegisterDevicePublicKeyResponse);
 }
 
 // ─── Login ──────────────────────────────────────────────────
@@ -140,6 +147,17 @@ message KeyBundleGetResponse {
 message KeyBundleRetryRequest {}
 
 message KeyBundleRetryResponse {
+  bool ok = 1;
+}
+
+// ─── Register Device Public Key ─────────────────────────────
+
+message RegisterDevicePublicKeyRequest {
+  string public_key  = 1;  // base64url X25519 pubkey
+  string fingerprint = 2;  // 8-hex-char SHA-256 prefix of raw pubkey bytes
+}
+
+message RegisterDevicePublicKeyResponse {
   bool ok = 1;
 }
 

@@ -56,6 +56,9 @@ const (
 	// AuthServiceKeyBundleRetryProcedure is the fully-qualified name of the AuthService's
 	// KeyBundleRetry RPC.
 	AuthServiceKeyBundleRetryProcedure = "/cinch.v1.AuthService/KeyBundleRetry"
+	// AuthServiceRegisterDevicePublicKeyProcedure is the fully-qualified name of the AuthService's
+	// RegisterDevicePublicKey RPC.
+	AuthServiceRegisterDevicePublicKeyProcedure = "/cinch.v1.AuthService/RegisterDevicePublicKey"
 )
 
 // AuthServiceClient is a client for the cinch.v1.AuthService service.
@@ -85,6 +88,12 @@ type AuthServiceClient interface {
 	// for the calling device. Used by `cinch auth retry-key`.
 	// Mirrors POST /auth/key-bundle/retry — auth required.
 	KeyBundleRetry(context.Context, *connect.Request[v1.KeyBundleRetryRequest]) (*connect.Response[v1.KeyBundleRetryResponse], error)
+	// RegisterDevicePublicKey stores the X25519 public key for the calling
+	// device so the relay can include it in ListPendingKeyExchanges sweeps
+	// and broadcast key_exchange_requested for it. Called once after the
+	// OAuth-only login flow finishes installing local credentials.
+	// Mirrors POST /auth/device/public-key — auth required.
+	RegisterDevicePublicKey(context.Context, *connect.Request[v1.RegisterDevicePublicKeyRequest]) (*connect.Response[v1.RegisterDevicePublicKeyResponse], error)
 }
 
 // NewAuthServiceClient constructs a client for the cinch.v1.AuthService service. By default, it
@@ -146,19 +155,26 @@ func NewAuthServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(authServiceMethods.ByName("KeyBundleRetry")),
 			connect.WithClientOptions(opts...),
 		),
+		registerDevicePublicKey: connect.NewClient[v1.RegisterDevicePublicKeyRequest, v1.RegisterDevicePublicKeyResponse](
+			httpClient,
+			baseURL+AuthServiceRegisterDevicePublicKeyProcedure,
+			connect.WithSchema(authServiceMethods.ByName("RegisterDevicePublicKey")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // authServiceClient implements AuthServiceClient.
 type authServiceClient struct {
-	login              *connect.Client[v1.LoginRequest, v1.LoginResponse]
-	deviceCodeStart    *connect.Client[v1.DeviceCodeStartRequest, v1.DeviceCodeStartResponse]
-	deviceCodePoll     *connect.Client[v1.DeviceCodePollRequest, v1.DeviceCodePollResponse]
-	deviceCodeComplete *connect.Client[v1.DeviceCodeCompleteRequest, v1.DeviceCodeCompleteResponse]
-	revokeDevice       *connect.Client[v1.RevokeDeviceRequest, v1.RevokeDeviceResponse]
-	keyBundlePut       *connect.Client[v1.KeyBundlePutRequest, v1.KeyBundlePutResponse]
-	keyBundleGet       *connect.Client[v1.KeyBundleGetRequest, v1.KeyBundleGetResponse]
-	keyBundleRetry     *connect.Client[v1.KeyBundleRetryRequest, v1.KeyBundleRetryResponse]
+	login                   *connect.Client[v1.LoginRequest, v1.LoginResponse]
+	deviceCodeStart         *connect.Client[v1.DeviceCodeStartRequest, v1.DeviceCodeStartResponse]
+	deviceCodePoll          *connect.Client[v1.DeviceCodePollRequest, v1.DeviceCodePollResponse]
+	deviceCodeComplete      *connect.Client[v1.DeviceCodeCompleteRequest, v1.DeviceCodeCompleteResponse]
+	revokeDevice            *connect.Client[v1.RevokeDeviceRequest, v1.RevokeDeviceResponse]
+	keyBundlePut            *connect.Client[v1.KeyBundlePutRequest, v1.KeyBundlePutResponse]
+	keyBundleGet            *connect.Client[v1.KeyBundleGetRequest, v1.KeyBundleGetResponse]
+	keyBundleRetry          *connect.Client[v1.KeyBundleRetryRequest, v1.KeyBundleRetryResponse]
+	registerDevicePublicKey *connect.Client[v1.RegisterDevicePublicKeyRequest, v1.RegisterDevicePublicKeyResponse]
 }
 
 // Login calls cinch.v1.AuthService.Login.
@@ -201,6 +217,11 @@ func (c *authServiceClient) KeyBundleRetry(ctx context.Context, req *connect.Req
 	return c.keyBundleRetry.CallUnary(ctx, req)
 }
 
+// RegisterDevicePublicKey calls cinch.v1.AuthService.RegisterDevicePublicKey.
+func (c *authServiceClient) RegisterDevicePublicKey(ctx context.Context, req *connect.Request[v1.RegisterDevicePublicKeyRequest]) (*connect.Response[v1.RegisterDevicePublicKeyResponse], error) {
+	return c.registerDevicePublicKey.CallUnary(ctx, req)
+}
+
 // AuthServiceHandler is an implementation of the cinch.v1.AuthService service.
 type AuthServiceHandler interface {
 	// Login creates a new anonymous account and returns its credentials.
@@ -228,6 +249,12 @@ type AuthServiceHandler interface {
 	// for the calling device. Used by `cinch auth retry-key`.
 	// Mirrors POST /auth/key-bundle/retry — auth required.
 	KeyBundleRetry(context.Context, *connect.Request[v1.KeyBundleRetryRequest]) (*connect.Response[v1.KeyBundleRetryResponse], error)
+	// RegisterDevicePublicKey stores the X25519 public key for the calling
+	// device so the relay can include it in ListPendingKeyExchanges sweeps
+	// and broadcast key_exchange_requested for it. Called once after the
+	// OAuth-only login flow finishes installing local credentials.
+	// Mirrors POST /auth/device/public-key — auth required.
+	RegisterDevicePublicKey(context.Context, *connect.Request[v1.RegisterDevicePublicKeyRequest]) (*connect.Response[v1.RegisterDevicePublicKeyResponse], error)
 }
 
 // NewAuthServiceHandler builds an HTTP handler from the service implementation. It returns the path
@@ -285,6 +312,12 @@ func NewAuthServiceHandler(svc AuthServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(authServiceMethods.ByName("KeyBundleRetry")),
 		connect.WithHandlerOptions(opts...),
 	)
+	authServiceRegisterDevicePublicKeyHandler := connect.NewUnaryHandler(
+		AuthServiceRegisterDevicePublicKeyProcedure,
+		svc.RegisterDevicePublicKey,
+		connect.WithSchema(authServiceMethods.ByName("RegisterDevicePublicKey")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/cinch.v1.AuthService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case AuthServiceLoginProcedure:
@@ -303,6 +336,8 @@ func NewAuthServiceHandler(svc AuthServiceHandler, opts ...connect.HandlerOption
 			authServiceKeyBundleGetHandler.ServeHTTP(w, r)
 		case AuthServiceKeyBundleRetryProcedure:
 			authServiceKeyBundleRetryHandler.ServeHTTP(w, r)
+		case AuthServiceRegisterDevicePublicKeyProcedure:
+			authServiceRegisterDevicePublicKeyHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -342,4 +377,8 @@ func (UnimplementedAuthServiceHandler) KeyBundleGet(context.Context, *connect.Re
 
 func (UnimplementedAuthServiceHandler) KeyBundleRetry(context.Context, *connect.Request[v1.KeyBundleRetryRequest]) (*connect.Response[v1.KeyBundleRetryResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cinch.v1.AuthService.KeyBundleRetry is not implemented"))
+}
+
+func (UnimplementedAuthServiceHandler) RegisterDevicePublicKey(context.Context, *connect.Request[v1.RegisterDevicePublicKeyRequest]) (*connect.Response[v1.RegisterDevicePublicKeyResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cinch.v1.AuthService.RegisterDevicePublicKey is not implemented"))
 }

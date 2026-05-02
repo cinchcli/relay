@@ -877,6 +877,102 @@ func (x *KeyBundleRetryResponse) GetOk() bool {
 	return false
 }
 
+type RegisterDevicePublicKeyRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PublicKey     string                 `protobuf:"bytes,1,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"` // base64url X25519 pubkey
+	Fingerprint   string                 `protobuf:"bytes,2,opt,name=fingerprint,proto3" json:"fingerprint,omitempty"`              // 8-hex-char SHA-256 prefix of raw pubkey bytes
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RegisterDevicePublicKeyRequest) Reset() {
+	*x = RegisterDevicePublicKeyRequest{}
+	mi := &file_cinch_v1_auth_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RegisterDevicePublicKeyRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RegisterDevicePublicKeyRequest) ProtoMessage() {}
+
+func (x *RegisterDevicePublicKeyRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_cinch_v1_auth_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RegisterDevicePublicKeyRequest.ProtoReflect.Descriptor instead.
+func (*RegisterDevicePublicKeyRequest) Descriptor() ([]byte, []int) {
+	return file_cinch_v1_auth_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *RegisterDevicePublicKeyRequest) GetPublicKey() string {
+	if x != nil {
+		return x.PublicKey
+	}
+	return ""
+}
+
+func (x *RegisterDevicePublicKeyRequest) GetFingerprint() string {
+	if x != nil {
+		return x.Fingerprint
+	}
+	return ""
+}
+
+type RegisterDevicePublicKeyResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Ok            bool                   `protobuf:"varint,1,opt,name=ok,proto3" json:"ok,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RegisterDevicePublicKeyResponse) Reset() {
+	*x = RegisterDevicePublicKeyResponse{}
+	mi := &file_cinch_v1_auth_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RegisterDevicePublicKeyResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RegisterDevicePublicKeyResponse) ProtoMessage() {}
+
+func (x *RegisterDevicePublicKeyResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_cinch_v1_auth_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RegisterDevicePublicKeyResponse.ProtoReflect.Descriptor instead.
+func (*RegisterDevicePublicKeyResponse) Descriptor() ([]byte, []int) {
+	return file_cinch_v1_auth_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *RegisterDevicePublicKeyResponse) GetOk() bool {
+	if x != nil {
+		return x.Ok
+	}
+	return false
+}
+
 type ErrorResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Error         string                 `protobuf:"bytes,1,opt,name=error,proto3" json:"error,omitempty"`
@@ -888,7 +984,7 @@ type ErrorResponse struct {
 
 func (x *ErrorResponse) Reset() {
 	*x = ErrorResponse{}
-	mi := &file_cinch_v1_auth_proto_msgTypes[16]
+	mi := &file_cinch_v1_auth_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -900,7 +996,7 @@ func (x *ErrorResponse) String() string {
 func (*ErrorResponse) ProtoMessage() {}
 
 func (x *ErrorResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cinch_v1_auth_proto_msgTypes[16]
+	mi := &file_cinch_v1_auth_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -913,7 +1009,7 @@ func (x *ErrorResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ErrorResponse.ProtoReflect.Descriptor instead.
 func (*ErrorResponse) Descriptor() ([]byte, []int) {
-	return file_cinch_v1_auth_proto_rawDescGZIP(), []int{16}
+	return file_cinch_v1_auth_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ErrorResponse) GetError() string {
@@ -1006,11 +1102,17 @@ const file_cinch_v1_auth_proto_rawDesc = "" +
 	"\rpending_since\x18\x03 \x01(\tR\fpendingSince\"\x17\n" +
 	"\x15KeyBundleRetryRequest\"(\n" +
 	"\x16KeyBundleRetryResponse\x12\x0e\n" +
+	"\x02ok\x18\x01 \x01(\bR\x02ok\"a\n" +
+	"\x1eRegisterDevicePublicKeyRequest\x12\x1d\n" +
+	"\n" +
+	"public_key\x18\x01 \x01(\tR\tpublicKey\x12 \n" +
+	"\vfingerprint\x18\x02 \x01(\tR\vfingerprint\"1\n" +
+	"\x1fRegisterDevicePublicKeyResponse\x12\x0e\n" +
 	"\x02ok\x18\x01 \x01(\bR\x02ok\"Q\n" +
 	"\rErrorResponse\x12\x14\n" +
 	"\x05error\x18\x01 \x01(\tR\x05error\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12\x10\n" +
-	"\x03fix\x18\x03 \x01(\tR\x03fix2\x97\x05\n" +
+	"\x03fix\x18\x03 \x01(\tR\x03fix2\x87\x06\n" +
 	"\vAuthService\x128\n" +
 	"\x05Login\x12\x16.cinch.v1.LoginRequest\x1a\x17.cinch.v1.LoginResponse\x12V\n" +
 	"\x0fDeviceCodeStart\x12 .cinch.v1.DeviceCodeStartRequest\x1a!.cinch.v1.DeviceCodeStartResponse\x12S\n" +
@@ -1019,7 +1121,8 @@ const file_cinch_v1_auth_proto_rawDesc = "" +
 	"\fRevokeDevice\x12\x1d.cinch.v1.RevokeDeviceRequest\x1a\x1e.cinch.v1.RevokeDeviceResponse\x12M\n" +
 	"\fKeyBundlePut\x12\x1d.cinch.v1.KeyBundlePutRequest\x1a\x1e.cinch.v1.KeyBundlePutResponse\x12M\n" +
 	"\fKeyBundleGet\x12\x1d.cinch.v1.KeyBundleGetRequest\x1a\x1e.cinch.v1.KeyBundleGetResponse\x12S\n" +
-	"\x0eKeyBundleRetry\x12\x1f.cinch.v1.KeyBundleRetryRequest\x1a .cinch.v1.KeyBundleRetryResponseB9Z7github.com/cinchcli/relay/internal/gen/cinch/v1;cinchv1b\x06proto3"
+	"\x0eKeyBundleRetry\x12\x1f.cinch.v1.KeyBundleRetryRequest\x1a .cinch.v1.KeyBundleRetryResponse\x12n\n" +
+	"\x17RegisterDevicePublicKey\x12(.cinch.v1.RegisterDevicePublicKeyRequest\x1a).cinch.v1.RegisterDevicePublicKeyResponseB9Z7github.com/cinchcli/relay/internal/gen/cinch/v1;cinchv1b\x06proto3"
 
 var (
 	file_cinch_v1_auth_proto_rawDescOnce sync.Once
@@ -1033,25 +1136,27 @@ func file_cinch_v1_auth_proto_rawDescGZIP() []byte {
 	return file_cinch_v1_auth_proto_rawDescData
 }
 
-var file_cinch_v1_auth_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
+var file_cinch_v1_auth_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
 var file_cinch_v1_auth_proto_goTypes = []any{
-	(*LoginRequest)(nil),               // 0: cinch.v1.LoginRequest
-	(*LoginResponse)(nil),              // 1: cinch.v1.LoginResponse
-	(*DeviceCodeStartRequest)(nil),     // 2: cinch.v1.DeviceCodeStartRequest
-	(*DeviceCodeStartResponse)(nil),    // 3: cinch.v1.DeviceCodeStartResponse
-	(*DeviceCodePollRequest)(nil),      // 4: cinch.v1.DeviceCodePollRequest
-	(*DeviceCodePollResponse)(nil),     // 5: cinch.v1.DeviceCodePollResponse
-	(*DeviceCodeCompleteRequest)(nil),  // 6: cinch.v1.DeviceCodeCompleteRequest
-	(*DeviceCodeCompleteResponse)(nil), // 7: cinch.v1.DeviceCodeCompleteResponse
-	(*RevokeDeviceRequest)(nil),        // 8: cinch.v1.RevokeDeviceRequest
-	(*RevokeDeviceResponse)(nil),       // 9: cinch.v1.RevokeDeviceResponse
-	(*KeyBundlePutRequest)(nil),        // 10: cinch.v1.KeyBundlePutRequest
-	(*KeyBundlePutResponse)(nil),       // 11: cinch.v1.KeyBundlePutResponse
-	(*KeyBundleGetRequest)(nil),        // 12: cinch.v1.KeyBundleGetRequest
-	(*KeyBundleGetResponse)(nil),       // 13: cinch.v1.KeyBundleGetResponse
-	(*KeyBundleRetryRequest)(nil),      // 14: cinch.v1.KeyBundleRetryRequest
-	(*KeyBundleRetryResponse)(nil),     // 15: cinch.v1.KeyBundleRetryResponse
-	(*ErrorResponse)(nil),              // 16: cinch.v1.ErrorResponse
+	(*LoginRequest)(nil),                    // 0: cinch.v1.LoginRequest
+	(*LoginResponse)(nil),                   // 1: cinch.v1.LoginResponse
+	(*DeviceCodeStartRequest)(nil),          // 2: cinch.v1.DeviceCodeStartRequest
+	(*DeviceCodeStartResponse)(nil),         // 3: cinch.v1.DeviceCodeStartResponse
+	(*DeviceCodePollRequest)(nil),           // 4: cinch.v1.DeviceCodePollRequest
+	(*DeviceCodePollResponse)(nil),          // 5: cinch.v1.DeviceCodePollResponse
+	(*DeviceCodeCompleteRequest)(nil),       // 6: cinch.v1.DeviceCodeCompleteRequest
+	(*DeviceCodeCompleteResponse)(nil),      // 7: cinch.v1.DeviceCodeCompleteResponse
+	(*RevokeDeviceRequest)(nil),             // 8: cinch.v1.RevokeDeviceRequest
+	(*RevokeDeviceResponse)(nil),            // 9: cinch.v1.RevokeDeviceResponse
+	(*KeyBundlePutRequest)(nil),             // 10: cinch.v1.KeyBundlePutRequest
+	(*KeyBundlePutResponse)(nil),            // 11: cinch.v1.KeyBundlePutResponse
+	(*KeyBundleGetRequest)(nil),             // 12: cinch.v1.KeyBundleGetRequest
+	(*KeyBundleGetResponse)(nil),            // 13: cinch.v1.KeyBundleGetResponse
+	(*KeyBundleRetryRequest)(nil),           // 14: cinch.v1.KeyBundleRetryRequest
+	(*KeyBundleRetryResponse)(nil),          // 15: cinch.v1.KeyBundleRetryResponse
+	(*RegisterDevicePublicKeyRequest)(nil),  // 16: cinch.v1.RegisterDevicePublicKeyRequest
+	(*RegisterDevicePublicKeyResponse)(nil), // 17: cinch.v1.RegisterDevicePublicKeyResponse
+	(*ErrorResponse)(nil),                   // 18: cinch.v1.ErrorResponse
 }
 var file_cinch_v1_auth_proto_depIdxs = []int32{
 	0,  // 0: cinch.v1.AuthService.Login:input_type -> cinch.v1.LoginRequest
@@ -1062,16 +1167,18 @@ var file_cinch_v1_auth_proto_depIdxs = []int32{
 	10, // 5: cinch.v1.AuthService.KeyBundlePut:input_type -> cinch.v1.KeyBundlePutRequest
 	12, // 6: cinch.v1.AuthService.KeyBundleGet:input_type -> cinch.v1.KeyBundleGetRequest
 	14, // 7: cinch.v1.AuthService.KeyBundleRetry:input_type -> cinch.v1.KeyBundleRetryRequest
-	1,  // 8: cinch.v1.AuthService.Login:output_type -> cinch.v1.LoginResponse
-	3,  // 9: cinch.v1.AuthService.DeviceCodeStart:output_type -> cinch.v1.DeviceCodeStartResponse
-	5,  // 10: cinch.v1.AuthService.DeviceCodePoll:output_type -> cinch.v1.DeviceCodePollResponse
-	7,  // 11: cinch.v1.AuthService.DeviceCodeComplete:output_type -> cinch.v1.DeviceCodeCompleteResponse
-	9,  // 12: cinch.v1.AuthService.RevokeDevice:output_type -> cinch.v1.RevokeDeviceResponse
-	11, // 13: cinch.v1.AuthService.KeyBundlePut:output_type -> cinch.v1.KeyBundlePutResponse
-	13, // 14: cinch.v1.AuthService.KeyBundleGet:output_type -> cinch.v1.KeyBundleGetResponse
-	15, // 15: cinch.v1.AuthService.KeyBundleRetry:output_type -> cinch.v1.KeyBundleRetryResponse
-	8,  // [8:16] is the sub-list for method output_type
-	0,  // [0:8] is the sub-list for method input_type
+	16, // 8: cinch.v1.AuthService.RegisterDevicePublicKey:input_type -> cinch.v1.RegisterDevicePublicKeyRequest
+	1,  // 9: cinch.v1.AuthService.Login:output_type -> cinch.v1.LoginResponse
+	3,  // 10: cinch.v1.AuthService.DeviceCodeStart:output_type -> cinch.v1.DeviceCodeStartResponse
+	5,  // 11: cinch.v1.AuthService.DeviceCodePoll:output_type -> cinch.v1.DeviceCodePollResponse
+	7,  // 12: cinch.v1.AuthService.DeviceCodeComplete:output_type -> cinch.v1.DeviceCodeCompleteResponse
+	9,  // 13: cinch.v1.AuthService.RevokeDevice:output_type -> cinch.v1.RevokeDeviceResponse
+	11, // 14: cinch.v1.AuthService.KeyBundlePut:output_type -> cinch.v1.KeyBundlePutResponse
+	13, // 15: cinch.v1.AuthService.KeyBundleGet:output_type -> cinch.v1.KeyBundleGetResponse
+	15, // 16: cinch.v1.AuthService.KeyBundleRetry:output_type -> cinch.v1.KeyBundleRetryResponse
+	17, // 17: cinch.v1.AuthService.RegisterDevicePublicKey:output_type -> cinch.v1.RegisterDevicePublicKeyResponse
+	9,  // [9:18] is the sub-list for method output_type
+	0,  // [0:9] is the sub-list for method input_type
 	0,  // [0:0] is the sub-list for extension type_name
 	0,  // [0:0] is the sub-list for extension extendee
 	0,  // [0:0] is the sub-list for field type_name
@@ -1092,7 +1199,7 @@ func file_cinch_v1_auth_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_cinch_v1_auth_proto_rawDesc), len(file_cinch_v1_auth_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   17,
+			NumMessages:   19,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

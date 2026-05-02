@@ -61,6 +61,7 @@ func (h *Handler) authConnectInterceptor() connect.UnaryInterceptorFunc {
 		cinchv1connect.AuthServiceKeyBundlePutProcedure:       true,
 		cinchv1connect.AuthServiceKeyBundleGetProcedure:       true,
 		cinchv1connect.AuthServiceKeyBundleRetryProcedure:     true,
+		cinchv1connect.AuthServiceRegisterDevicePublicKeyProcedure: true,
 	}
 	return func(next connect.UnaryFunc) connect.UnaryFunc {
 		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
@@ -299,6 +300,33 @@ func (s *connectAuthServer) KeyBundleGet(ctx context.Context, req *connect.Reque
 		EncryptedBundle:    bundle,
 		PendingSince:       pendingSince,
 	}), nil
+}
+
+// ─── RegisterDevicePublicKey ────────────────────────────────
+
+// RegisterDevicePublicKey stores the X25519 public key for the calling
+// device so the relay can include it in ListPendingKeyExchanges sweeps
+// and broadcast key_exchange_requested for it. Bearer-authenticated;
+// the device_id is taken from the X-Device-ID header set by the auth
+// interceptor.
+func (s *connectAuthServer) RegisterDevicePublicKey(
+	ctx context.Context,
+	req *connect.Request[cinchv1.RegisterDevicePublicKeyRequest],
+) (*connect.Response[cinchv1.RegisterDevicePublicKeyResponse], error) {
+	deviceID := req.Header().Get("X-Device-ID")
+	if deviceID == "" {
+		return nil, connect.NewError(connect.CodeUnauthenticated, errMsg("missing device"))
+	}
+	if req.Msg.PublicKey == "" || req.Msg.Fingerprint == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errMsg("public_key and fingerprint are required"))
+	}
+	if err := s.h.store.SetDevicePublicKey(deviceID, req.Msg.PublicKey, req.Msg.Fingerprint); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, connect.NewError(connect.CodeNotFound, errMsg("device not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	return connect.NewResponse(&cinchv1.RegisterDevicePublicKeyResponse{Ok: true}), nil
 }
 
 // newAuthConnectHandler wraps the Connect AuthService handler with auth interceptor.

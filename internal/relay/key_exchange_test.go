@@ -180,6 +180,85 @@ func deviceIDFromToken(t *testing.T, store *Store, token string) string {
 	return id
 }
 
+// TestRegisterDevicePublicKey_StoresAndShowsAsPending verifies POST
+// /auth/device/public-key writes the key into the device row and that
+// GetKeyBundle then surfaces a non-empty pending_since timestamp — proof
+// that the device is now visible to ListPendingKeyExchanges sweeps.
+func TestRegisterDevicePublicKey_StoresAndShowsAsPending(t *testing.T) {
+	ts, _, _ := keyExchangeTestServer(t)
+	token, _, _ := keyExchangeLogin(t, ts, "host-a")
+
+	body, _ := json.Marshal(RegisterPublicKeyRequest{
+		PublicKey:   "test-pubkey-b64",
+		Fingerprint: "deadbeef",
+	})
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/auth/device/public-key", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("register status %d", resp.StatusCode)
+	}
+
+	getReq, _ := http.NewRequest(http.MethodGet, ts.URL+"/auth/key-bundle", nil)
+	getReq.Header.Set("Authorization", "Bearer "+token)
+	getResp, err := http.DefaultClient.Do(getReq)
+	if err != nil {
+		t.Fatalf("get key bundle: %v", err)
+	}
+	defer getResp.Body.Close()
+
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 (always-200 contract), got %d", getResp.StatusCode)
+	}
+	var got KeyBundleResponse
+	if err := json.NewDecoder(getResp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.PendingSince == "" {
+		t.Fatalf("expected pending_since to be set after RegisterDevicePublicKey")
+	}
+	if _, perr := time.Parse(time.RFC3339, got.PendingSince); perr != nil {
+		t.Fatalf("pending_since not RFC3339: %v (%q)", perr, got.PendingSince)
+	}
+}
+
+// TestRegisterDevicePublicKey_RequiresFields verifies the endpoint
+// rejects requests missing public_key or fingerprint with 400.
+func TestRegisterDevicePublicKey_RequiresFields(t *testing.T) {
+	ts, _, _ := keyExchangeTestServer(t)
+	token, _, _ := keyExchangeLogin(t, ts, "host-a")
+
+	cases := []struct {
+		name string
+		body RegisterPublicKeyRequest
+	}{
+		{"missing public_key", RegisterPublicKeyRequest{Fingerprint: "deadbeef"}},
+		{"missing fingerprint", RegisterPublicKeyRequest{PublicKey: "test-pubkey-b64"}},
+		{"both empty", RegisterPublicKeyRequest{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body, _ := json.Marshal(tc.body)
+			req, _ := http.NewRequest(http.MethodPost, ts.URL+"/auth/device/public-key", bytes.NewReader(body))
+			req.Header.Set("Authorization", "Bearer "+token)
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("register: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d", resp.StatusCode)
+			}
+		})
+	}
+}
+
 // TestKeyBundleRetry_NoPubKeyReturns400 verifies retry refuses when the
 // device hasn't yet registered a public key — there is nothing for a
 // key-bearer to encrypt against.

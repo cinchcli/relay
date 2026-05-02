@@ -1443,13 +1443,25 @@ func (s *Store) IncrementDemoCounter() error {
 
 // SetDevicePublicKey stores the X25519 public key and its fingerprint for a device.
 // The public key is safe to store — it is not secret material.
-// fingerprint is the first 8 bytes of SHA-256(raw_public_key_bytes), hex-encoded.
+// fingerprint is the first 4 bytes of SHA-256(raw_public_key_bytes), hex-encoded
+// (8 chars). Returns sql.ErrNoRows when the device does not exist — callers map
+// this to 404/NotFound so a stale token can't silently no-op the registration.
 func (s *Store) SetDevicePublicKey(deviceID, pubKeyB64, fingerprint string) error {
-	_, err := s.db.Exec(
+	res, err := s.db.Exec(
 		"UPDATE devices SET public_key = ?, public_key_fingerprint = ? WHERE id = ?",
 		pubKeyB64, fingerprint, deviceID,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 // GetDevicePublicKey returns the stored X25519 public key for a device.
