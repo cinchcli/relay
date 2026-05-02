@@ -1493,6 +1493,41 @@ func (s *Store) GetKeyBundle(deviceID string) (ephPubKeyB64, encryptedBundleB64 
 	return "", "", nil // not yet available
 }
 
+// GetDeviceHostnameAndPubKey returns the hostname and X25519 public key
+// for a device. Returns sql.ErrNoRows when the device is unknown.
+// Empty pubKey means the device has not yet registered its key.
+func (s *Store) GetDeviceHostnameAndPubKey(deviceID string) (hostname, pubKey string, err error) {
+	var nullKey sql.NullString
+	err = s.db.QueryRow(
+		`SELECT hostname, public_key FROM devices WHERE id = ?`,
+		deviceID,
+	).Scan(&hostname, &nullKey)
+	if err != nil {
+		return "", "", err
+	}
+	if nullKey.Valid {
+		pubKey = nullKey.String
+	}
+	return hostname, pubKey, nil
+}
+
+// GetKeyBundlePendingSince returns when the device first registered a
+// public key without a corresponding key bundle. Used by clients to
+// surface "awaiting key for X seconds" UX. Returns zero time when the
+// bundle is present (not pending) or the device doesn't qualify.
+func (s *Store) GetKeyBundlePendingSince(deviceID string) (time.Time, error) {
+	var t time.Time
+	err := s.db.QueryRow(
+		`SELECT paired_at FROM devices
+		 WHERE id = ? AND public_key IS NOT NULL AND encrypted_key_bundle IS NULL`,
+		deviceID,
+	).Scan(&t)
+	if err == sql.ErrNoRows {
+		return time.Time{}, nil
+	}
+	return t, err
+}
+
 // ListPendingKeyExchanges returns devices that have a public_key but no encrypted_key_bundle yet.
 // These are devices waiting for the desktop to complete the ECDH key exchange.
 // Each returned DeviceInfo includes PublicKey and PublicKeyFingerprint for relay-to-desktop delivery.

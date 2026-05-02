@@ -191,6 +191,10 @@ type KeyBundleRequest struct {
 type KeyBundleResponse struct {
 	EphemeralPublicKey string `json:"ephemeral_public_key"`
 	EncryptedBundle    string `json:"encrypted_bundle"`
+	// RFC3339 timestamp of when this device first registered its public
+	// key without yet receiving a bundle. Empty when the bundle is
+	// already present.
+	PendingSince string `json:"pending_since,omitempty"`
 }
 
 // PostKeyBundle stores an ECDH key bundle for a target device.
@@ -225,7 +229,10 @@ func (h *Handler) PostKeyBundle(w http.ResponseWriter, r *http.Request) {
 }
 
 // GetKeyBundle retrieves the ECDH key bundle for the caller's own device.
-// Returns 404 if the desktop has not yet completed the key exchange.
+// Always returns 200; an absent bundle is signalled by empty ephemeral
+// and bundle fields plus a non-empty pending_since timestamp so the
+// caller can distinguish "no key yet" from "device unknown" without a
+// 404 round trip.
 func (h *Handler) GetKeyBundle(w http.ResponseWriter, r *http.Request) {
 	deviceID := r.Header.Get("X-Device-ID")
 	if deviceID == "" {
@@ -237,14 +244,50 @@ func (h *Handler) GetKeyBundle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "store error", "Failed to read key bundle", "")
 		return
 	}
+	pendingSince := ""
 	if eph == "" || bundle == "" {
-		writeError(w, http.StatusNotFound, "not_ready", "Key bundle not yet available", "Desktop must be online to complete key exchange")
-		return
+		ts, _ := h.store.GetKeyBundlePendingSince(deviceID)
+		if !ts.IsZero() {
+			pendingSince = ts.UTC().Format(time.RFC3339)
+		}
 	}
 	writeJSON(w, http.StatusOK, KeyBundleResponse{
 		EphemeralPublicKey: eph,
 		EncryptedBundle:    bundle,
+		PendingSince:       pendingSince,
 	})
+}
+
+// KeyBundleRetry re-broadcasts key_exchange_requested for the calling
+// device. Used by `cinch auth retry-key` when the initial key handoff
+// missed (no key-bearer was online). Returns 400 if the device has not
+// yet registered a public key (nothing to broadcast about).
+func (h *Handler) KeyBundleRetry(w http.ResponseWriter, r *http.Request) {
+	userID := r.Header.Get("X-User-ID")
+	deviceID := r.Header.Get("X-Device-ID")
+	if userID == "" || deviceID == "" {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "missing user or device", "")
+		return
+	}
+	hostname, pubKey, err := h.store.GetDeviceHostnameAndPubKey(deviceID)
+	if err == sql.ErrNoRows {
+		writeError(w, http.StatusNotFound, "device not found", "", "")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "store error", err.Error(), "")
+		return
+	}
+	if pubKey == "" {
+		writeError(w, http.StatusBadRequest, "no public key registered", "device has not registered a public key yet", "Sign in via cinch auth login first")
+		return
+	}
+	h.hub.SendToUser(userID, protocol.WSMessage{
+		Action:   protocol.ActionKeyExchangeRequested,
+		DeviceID: deviceID,
+		Hostname: hostname,
+	})
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 // PushClip receives a clip from the CLI and broadcasts to the agent.
@@ -1464,6 +1507,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /devices/self/retention", h.RequireAuth(h.UpdateDeviceRetention))
 	mux.HandleFunc("POST /auth/key-bundle", h.RequireAuth(h.PostKeyBundle))
 	mux.HandleFunc("GET /auth/key-bundle", h.RequireAuth(h.GetKeyBundle))
+	mux.HandleFunc("POST /auth/key-bundle/retry", h.RequireAuth(h.KeyBundleRetry))
 	mux.HandleFunc("POST /clips/binary", h.RequireAuth(h.PushBinaryClip))
 	mux.HandleFunc("GET /clips/{id}/media", h.RequireAuth(h.GetClipMedia))
 	mux.HandleFunc("GET /ws", h.HandleWebSocket)

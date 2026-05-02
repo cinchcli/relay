@@ -2,7 +2,7 @@ package relay
 
 import (
 	"context"
-	"fmt"
+	"database/sql"
 	"net/http"
 	"strings"
 	"time"
@@ -217,12 +217,38 @@ func (s *connectAuthServer) RevokeDevice(ctx context.Context, req *connect.Reque
 
 // ─── KeyBundleRetry ──────────────────────────────────────────
 
-// KeyBundleRetry — REST-mirror handler. Full implementation lands in Task 6.
+// KeyBundleRetry re-broadcasts key_exchange_requested for the calling
+// device. Used by `cinch auth retry-key` when the initial key handoff
+// missed (no key-bearer was online). Returns FailedPrecondition when the
+// device has not yet registered a public key (nothing to broadcast about).
 func (s *connectAuthServer) KeyBundleRetry(
 	ctx context.Context,
-	_ *connect.Request[cinchv1.KeyBundleRetryRequest],
+	req *connect.Request[cinchv1.KeyBundleRetryRequest],
 ) (*connect.Response[cinchv1.KeyBundleRetryResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("KeyBundleRetry: implemented in Task 6"))
+	userID := req.Header().Get("X-User-ID")
+	deviceID := req.Header().Get("X-Device-ID")
+	if userID == "" || deviceID == "" {
+		return nil, connect.NewError(connect.CodeUnauthenticated, errMsg("missing user or device"))
+	}
+
+	hostname, pubKey, err := s.h.store.GetDeviceHostnameAndPubKey(deviceID)
+	if err == sql.ErrNoRows {
+		return nil, connect.NewError(connect.CodeNotFound, errMsg("device not found"))
+	}
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if pubKey == "" {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errMsg("device has not registered a public key yet"))
+	}
+
+	s.h.hub.SendToUser(userID, protocol.WSMessage{
+		Action:   protocol.ActionKeyExchangeRequested,
+		DeviceID: deviceID,
+		Hostname: hostname,
+	})
+
+	return connect.NewResponse(&cinchv1.KeyBundleRetryResponse{Ok: true}), nil
 }
 
 // ─── KeyBundlePut ────────────────────────────────────────────
@@ -260,13 +286,18 @@ func (s *connectAuthServer) KeyBundleGet(ctx context.Context, req *connect.Reque
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	pendingSince := ""
 	if eph == "" || bundle == "" {
-		return nil, connect.NewError(connect.CodeNotFound, errMsg("key bundle not yet available"))
+		ts, _ := s.h.store.GetKeyBundlePendingSince(deviceID)
+		if !ts.IsZero() {
+			pendingSince = ts.UTC().Format(time.RFC3339)
+		}
 	}
 
 	return connect.NewResponse(&cinchv1.KeyBundleGetResponse{
 		EphemeralPublicKey: eph,
 		EncryptedBundle:    bundle,
+		PendingSince:       pendingSince,
 	}), nil
 }
 
