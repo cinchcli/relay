@@ -10,10 +10,6 @@ service AuthService {
   // Mirrors POST /auth/login — no auth required.
   rpc Login(LoginRequest) returns (LoginResponse);
 
-  // Pair exchanges a pair token for a per-device auth token.
-  // Mirrors POST /auth/pair — no auth required.
-  rpc Pair(PairRequest) returns (PairResponse);
-
   // DeviceCodeStart initiates the device-code OAuth flow.
   // Mirrors POST /auth/device-code — no auth required.
   rpc DeviceCodeStart(DeviceCodeStartRequest) returns (DeviceCodeStartResponse);
@@ -30,10 +26,6 @@ service AuthService {
   // Mirrors POST /auth/device/revoke — auth required.
   rpc RevokeDevice(RevokeDeviceRequest) returns (RevokeDeviceResponse);
 
-  // RotatePairToken issues a new pair token, invalidating the old one.
-  // Mirrors POST /auth/pair-token/new — auth required.
-  rpc RotatePairToken(RotatePairTokenRequest) returns (RotatePairTokenResponse);
-
   // KeyBundlePut stores an encrypted key bundle for a target device.
   // Mirrors POST /auth/key-bundle — auth required.
   rpc KeyBundlePut(KeyBundlePutRequest) returns (KeyBundlePutResponse);
@@ -41,6 +33,11 @@ service AuthService {
   // KeyBundleGet retrieves the encrypted key bundle for the calling device.
   // Mirrors GET /auth/key-bundle — auth required.
   rpc KeyBundleGet(KeyBundleGetRequest) returns (KeyBundleGetResponse);
+
+  // KeyBundleRetry asks the relay to re-broadcast key_exchange_requested
+  // for the calling device. Used by `cinch auth retry-key`.
+  // Mirrors POST /auth/key-bundle/retry — auth required.
+  rpc KeyBundleRetry(KeyBundleRetryRequest) returns (KeyBundleRetryResponse);
 }
 
 // ─── Login ──────────────────────────────────────────────────
@@ -51,24 +48,10 @@ message LoginRequest {
 
 message LoginResponse {
   string token      = 1;
-  string pair_token = 2;
+  reserved 2;                // was: pair_token (removed in OAuth-only)
+  reserved "pair_token";
   string user_id    = 3;
   string device_id  = 4;
-}
-
-// ─── Pair ───────────────────────────────────────────────────
-
-message PairRequest {
-  string          pair_token             = 1;
-  optional string hostname               = 2;
-  optional string device_public_key      = 3;
-  optional string device_key_fingerprint = 4;
-}
-
-message PairResponse {
-  string token     = 1;
-  string user_id   = 2;
-  string device_id = 3;
 }
 
 // ─── Device Code ────────────────────────────────────────────
@@ -132,14 +115,6 @@ message RevokeDeviceResponse {
   string revoked_at = 3;
 }
 
-// ─── Rotate Pair Token ──────────────────────────────────────
-
-message RotatePairTokenRequest {}
-
-message RotatePairTokenResponse {
-  string pair_token = 1;
-}
-
 // ─── Key Bundle ─────────────────────────────────────────────
 
 message KeyBundlePutRequest {
@@ -157,6 +132,15 @@ message KeyBundleGetRequest {}
 message KeyBundleGetResponse {
   string ephemeral_public_key = 1;
   string encrypted_bundle     = 2;
+  // RFC3339 timestamp of when this device first registered its
+  // public key. Empty if the bundle is already present.
+  string pending_since        = 3;
+}
+
+message KeyBundleRetryRequest {}
+
+message KeyBundleRetryResponse {
+  bool ok = 1;
 }
 
 // ─── Error ──────────────────────────────────────────────────
