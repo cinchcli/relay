@@ -135,4 +135,7 @@ their types from this same schema via the `proto-cinch` crate in
 
 ## License
 
-AGPL-3.0 — see [LICENSE](LICENSE).
+Cinch is dual-licensed:
+
+- **AGPL-3.0** — free for personal use, open-source projects, and self-hosted deployments that comply with AGPL terms. See [LICENSE](LICENSE).
+- **Commercial License** — for closed-source products, SaaS deployments, or organizations that need a commercial support agreement. See [LICENSE-COMMERCIAL](LICENSE-COMMERCIAL) or contact [jingmuio@gmail.com](mailto:jingmuio@gmail.com).
