@@ -103,14 +103,11 @@ func TestPollDeviceCode_Complete(t *testing.T) {
 	json.NewDecoder(resp.Body).Decode(&dcResp)
 
 	// Login to get credentials
-	token, _, userID := login(t, ts.URL)
+	token, _, _ := login(t, ts.URL)
 
 	// Complete the device code via the authenticated endpoint
 	completeBody, _ := json.Marshal(map[string]string{
 		"user_code": dcResp.UserCode,
-		"user_id":   userID,
-		"device_id": "test-device-123",
-		"token":     token,
 	})
 	req, _ := http.NewRequest("POST", ts.URL+"/auth/device-code/complete", bytes.NewReader(completeBody))
 	req.Header.Set("Content-Type", "application/json")
@@ -222,6 +219,79 @@ func TestAuthBrowser_ServesHTML(t *testing.T) {
 	}
 	if !strings.Contains(body, "#4FB3A9") {
 		t.Error("HTML body missing Cinch accent color #4FB3A9")
+	}
+}
+
+func TestCompleteDeviceCode_IgnoresBodyCredentials(t *testing.T) {
+	ts, _ := setupTestServer(t)
+
+	// Issue a device code
+	dcBody := `{"hostname":"victim-cli"}`
+	resp, _ := http.Post(ts.URL+"/auth/device-code", "application/json", strings.NewReader(dcBody))
+	var dcResp cinchv1.DeviceCodeStartResponse
+	json.NewDecoder(resp.Body).Decode(&dcResp)
+	resp.Body.Close()
+
+	// Attacker has their own credentials — capture the real device_id
+	attackerToken, _, _ := login(t, ts.URL)
+
+	// We need the attacker's real device_id to verify it was stored.
+	// Fetch it by hitting the /devices endpoint which returns cinchv1.Device
+	// objects; Device.Id is the JSON "id" field.
+	devReq, _ := http.NewRequest("GET", ts.URL+"/devices", nil)
+	devReq.Header.Set("Authorization", "Bearer "+attackerToken)
+	devResp, err := http.DefaultClient.Do(devReq)
+	if err != nil {
+		t.Fatalf("devices request failed: %v", err)
+	}
+	var devList []struct {
+		ID string `json:"id"`
+	}
+	json.NewDecoder(devResp.Body).Decode(&devList)
+	devResp.Body.Close()
+	if len(devList) == 0 {
+		t.Fatalf("expected at least one device for attacker, got none")
+	}
+	attackerDeviceID := devList[0].ID
+
+	// Attacker posts victim's user_code with a fake device_id in the body
+	fakeDeviceID := "attacker-device-FAKE"
+	completeBody, _ := json.Marshal(map[string]string{
+		"user_code": dcResp.UserCode,
+		"device_id": fakeDeviceID, // should be ignored
+	})
+	req, _ := http.NewRequest("POST", ts.URL+"/auth/device-code/complete", bytes.NewReader(completeBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+attackerToken)
+	completeResp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("complete request failed: %v", err)
+	}
+	defer completeResp.Body.Close()
+	if completeResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(completeResp.Body)
+		t.Fatalf("complete returned %d: %s", completeResp.StatusCode, body)
+	}
+
+	// Poll — must get the attacker's real device_id, not the fake one
+	pollResp, _ := http.Get(ts.URL + "/auth/device-code/poll?code=" + dcResp.DeviceCode)
+	var pollResult cinchv1.DeviceCodePollResponse
+	json.NewDecoder(pollResp.Body).Decode(&pollResult)
+	pollResp.Body.Close()
+
+	if pollResult.Status != "complete" {
+		t.Fatalf("expected status=complete, got %q", pollResult.Status)
+	}
+	if pollResult.DeviceId == nil {
+		t.Fatal("expected device_id in poll response, got nil")
+	}
+	// Strong positive assertion: stored device_id must be the attacker's authenticated device
+	if *pollResult.DeviceId != attackerDeviceID {
+		t.Errorf("stored device_id = %q, want attacker's real device_id %q", *pollResult.DeviceId, attackerDeviceID)
+	}
+	// Also confirm the fake body value was NOT stored
+	if *pollResult.DeviceId == fakeDeviceID {
+		t.Errorf("SECURITY: body device_id was stored — credential binding is broken")
 	}
 }
 

@@ -1326,7 +1326,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
         return fetch(relayURL + '/auth/device-code/complete', {
           method: 'POST',
           headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + d.token},
-          body: JSON.stringify({user_code: deviceCode, user_id: d.user_id, device_id: d.device_id, token: d.token})
+          body: JSON.stringify({user_code: deviceCode})
         }).then(function(){ return d; });
       }
       return d;
@@ -1436,12 +1436,16 @@ p{color:#8a8a8a;font-size:.875rem;margin-bottom:1.75rem}
 
 // CompleteDeviceCodeHTTP is the HTTP handler for POST /auth/device-code/complete.
 // Called by the browser auth page to bridge device-code flow completion.
+// Credentials (user_id, device_id, token) are derived from the authenticated
+// session — NOT from the request body — to prevent session-swap attacks.
 func (h *Handler) CompleteDeviceCodeHTTP(w http.ResponseWriter, r *http.Request) {
+	// RequireAuth sets these headers from the verified auth token.
+	userID := r.Header.Get("X-User-ID")
+	deviceID := r.Header.Get("X-Device-ID")
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+
 	var req struct {
 		UserCode string `json:"user_code"`
-		UserID   string `json:"user_id"`
-		DeviceID string `json:"device_id"`
-		Token    string `json:"token"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", "Could not parse request body", "")
@@ -1451,7 +1455,7 @@ func (h *Handler) CompleteDeviceCodeHTTP(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "missing_user_code", "user_code is required", "")
 		return
 	}
-	if err := h.store.CompleteDeviceCode(req.UserCode, req.UserID, req.DeviceID, req.Token); err != nil {
+	if err := h.store.CompleteDeviceCode(req.UserCode, userID, deviceID, token); err != nil {
 		writeError(w, http.StatusBadRequest, "complete_failed", err.Error(), "")
 		return
 	}
