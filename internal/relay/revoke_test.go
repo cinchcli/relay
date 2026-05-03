@@ -15,7 +15,7 @@ import (
 )
 
 // stringPtr returns a pointer to the given string. Used for proto3 optional
-// fields (cinchv1.PairRequest.Hostname etc.) in test struct literals.
+// fields (cinchv1.LoginRequest.Hostname etc.) in test struct literals.
 func stringPtr(s string) *string { return &s }
 
 // buildRevokeTestServer spins up a fresh in-memory store + hub + handler + http test server.
@@ -42,13 +42,15 @@ func buildRevokeTestServer(t *testing.T) (*httptest.Server, *Store, *Hub) {
 	return ts, store, hub
 }
 
-// loginAndPair creates a user and pairs a device; returns the device-specific token,
-// user_id, and device_id.
+// loginAndPair creates a user + first device row in one shot via
+// POST /auth/login. After the OAuth-only migration the login response
+// carries a usable per-device token directly — there is no separate
+// pair step. Returns the device token, user_id and device_id.
 func loginAndPair(t *testing.T, ts *httptest.Server, hostname string) (deviceToken, userID, deviceID string) {
 	t.Helper()
 
-	// Login to get master token + pair_token.
-	resp, err := http.Post(ts.URL+"/auth/login", "application/json", nil)
+	body, _ := json.Marshal(cinchv1.LoginRequest{Hostname: &hostname})
+	resp, err := http.Post(ts.URL+"/auth/login", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("login: %v", err)
 	}
@@ -60,28 +62,11 @@ func loginAndPair(t *testing.T, ts *httptest.Server, hostname string) (deviceTok
 	if err := json.NewDecoder(resp.Body).Decode(&loginResp); err != nil {
 		t.Fatalf("decode login: %v", err)
 	}
-
-	// Pair to get a per-device token.
-	reqBody, _ := json.Marshal(cinchv1.PairRequest{
-		PairToken: loginResp.PairToken,
-		Hostname:  &hostname,
-	})
-	pairResp, err := http.Post(ts.URL+"/auth/pair", "application/json", bytes.NewReader(reqBody))
-	if err != nil {
-		t.Fatalf("pair: %v", err)
+	if loginResp.Token == "" || loginResp.UserId == "" || loginResp.DeviceId == "" {
+		t.Fatalf("login response missing fields: token=%q user_id=%q device_id=%q",
+			loginResp.Token, loginResp.UserId, loginResp.DeviceId)
 	}
-	defer pairResp.Body.Close()
-	if pairResp.StatusCode != http.StatusOK {
-		t.Fatalf("pair status %d", pairResp.StatusCode)
-	}
-	pr := &cinchv1.PairResponse{}
-	if err := json.NewDecoder(pairResp.Body).Decode(pr); err != nil {
-		t.Fatalf("decode pair: %v", err)
-	}
-	if pr.Token == "" || pr.UserId == "" || pr.DeviceId == "" {
-		t.Fatalf("pair response missing fields: token=%q user_id=%q device_id=%q", pr.Token, pr.UserId, pr.DeviceId)
-	}
-	return pr.Token, pr.UserId, pr.DeviceId
+	return loginResp.Token, loginResp.UserId, loginResp.DeviceId
 }
 
 // TestRevokeDeviceAuthz — cross-user revoke returns 404 "device_not_found"
@@ -203,64 +188,34 @@ func TestRevokeWSPush(t *testing.T) {
 }
 
 // TestRevokeDevice_OtherDeviceUnaffected — revoking device B keeps device A functional.
+//
+// The pair-token bootstrap was retired in the OAuth-only migration so we
+// emulate "two devices on one account" by minting device A via /auth/login
+// and adding device B directly via the store with the same user_id. Token
+// uniqueness across devices is still asserted.
 func TestRevokeDevice_OtherDeviceUnaffected(t *testing.T) {
-	ts, _, _ := buildRevokeTestServer(t)
+	ts, store, _ := buildRevokeTestServer(t)
 
-	// Login once (user A master creds).
-	resp, err := http.Post(ts.URL+"/auth/login", "application/json", nil)
-	if err != nil {
-		t.Fatalf("login: %v", err)
-	}
-	var loginA cinchv1.LoginResponse
-	json.NewDecoder(resp.Body).Decode(&loginA)
-	resp.Body.Close()
+	tokenA, userID, deviceA := loginAndPair(t, ts, "host-a")
 
-	// Pair device A using the pair token.
-	pairBodyA, _ := json.Marshal(cinchv1.PairRequest{PairToken: loginA.PairToken, Hostname: stringPtr("host-a")})
-	pairRespA, err := http.Post(ts.URL+"/auth/pair", "application/json", bytes.NewReader(pairBodyA))
-	if err != nil {
-		t.Fatalf("pair A: %v", err)
+	// Mint a second device for the same user, directly via the store.
+	deviceB := "01DEVICEBSAMEUSER000000000"
+	tokenB := "device-b-token-" + deviceB
+	if err := store.RegisterDeviceWithToken(userID, deviceB, "host-b", tokenB); err != nil {
+		t.Fatalf("register device B: %v", err)
 	}
-	var prA cinchv1.PairResponse
-	json.NewDecoder(pairRespA.Body).Decode(&prA)
-	pairRespA.Body.Close()
-
-	// Regenerate a new pair token via the new /auth/pair-token/new endpoint (using A's device token).
-	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/auth/pair-token/new", nil)
-	req.Header.Set("Authorization", "Bearer "+prA.Token)
-	regResp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("regen pair token: %v", err)
+	if tokenA == tokenB {
+		t.Fatalf("device A and B returned the same token (AUTH-01 violation)")
 	}
-	if regResp.StatusCode != http.StatusOK {
-		t.Fatalf("regen status %d", regResp.StatusCode)
-	}
-	var regOut cinchv1.RotatePairTokenResponse
-	json.NewDecoder(regResp.Body).Decode(&regOut)
-	regResp.Body.Close()
-
-	// Pair device B with the new pair token.
-	pairBodyB, _ := json.Marshal(cinchv1.PairRequest{PairToken: regOut.PairToken, Hostname: stringPtr("host-b")})
-	pairRespB, err := http.Post(ts.URL+"/auth/pair", "application/json", bytes.NewReader(pairBodyB))
-	if err != nil {
-		t.Fatalf("pair B: %v", err)
-	}
-	var prB cinchv1.PairResponse
-	json.NewDecoder(pairRespB.Body).Decode(&prB)
-	pairRespB.Body.Close()
-
-	if prA.DeviceId == prB.DeviceId {
-		t.Fatalf("two pairings returned the same device_id: %s", prA.DeviceId)
-	}
-	if prA.Token == prB.Token {
-		t.Fatalf("two pairings returned the same token (AUTH-01 violation)")
+	if deviceA == deviceB {
+		t.Fatalf("device A and B returned the same id: %s", deviceA)
 	}
 
 	// Revoke B.
-	revokeBody, _ := json.Marshal(cinchv1.RevokeDeviceRequest{DeviceId: prB.DeviceId})
+	revokeBody, _ := json.Marshal(cinchv1.RevokeDeviceRequest{DeviceId: deviceB})
 	revokeReq, _ := http.NewRequest(http.MethodPost, ts.URL+"/auth/device/revoke", bytes.NewReader(revokeBody))
 	revokeReq.Header.Set("Content-Type", "application/json")
-	revokeReq.Header.Set("Authorization", "Bearer "+prB.Token)
+	revokeReq.Header.Set("Authorization", "Bearer "+tokenB)
 	revokeResp, err := http.DefaultClient.Do(revokeReq)
 	if err != nil {
 		t.Fatalf("revoke B: %v", err)
@@ -272,7 +227,7 @@ func TestRevokeDevice_OtherDeviceUnaffected(t *testing.T) {
 
 	// Device A should still be able to list clips.
 	listReq, _ := http.NewRequest(http.MethodGet, ts.URL+"/clips", nil)
-	listReq.Header.Set("Authorization", "Bearer "+prA.Token)
+	listReq.Header.Set("Authorization", "Bearer "+tokenA)
 	listResp, err := http.DefaultClient.Do(listReq)
 	if err != nil {
 		t.Fatalf("list A: %v", err)
@@ -284,7 +239,7 @@ func TestRevokeDevice_OtherDeviceUnaffected(t *testing.T) {
 
 	// Device B's token must 401 with device_revoked.
 	listReqB, _ := http.NewRequest(http.MethodGet, ts.URL+"/clips", nil)
-	listReqB.Header.Set("Authorization", "Bearer "+prB.Token)
+	listReqB.Header.Set("Authorization", "Bearer "+tokenB)
 	listRespB, err := http.DefaultClient.Do(listReqB)
 	if err != nil {
 		t.Fatalf("list B: %v", err)

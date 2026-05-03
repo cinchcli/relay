@@ -1,6 +1,8 @@
 package relay
 
 import (
+	"database/sql"
+	"path/filepath"
 	"testing"
 )
 
@@ -20,7 +22,7 @@ func TestSweepExpiredClips(t *testing.T) {
 
 	// Create a test user
 	userID := "user-sweep-test"
-	if err := store.CreateUser(userID, "token-sweep", ""); err != nil {
+	if err := store.CreateUser(userID); err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
 
@@ -100,10 +102,10 @@ func TestSweepAllUsersRetention(t *testing.T) {
 	// Create two users
 	user1 := "user-sweep-1"
 	user2 := "user-sweep-2"
-	if err := store.CreateUser(user1, "token-1", ""); err != nil {
+	if err := store.CreateUser(user1); err != nil {
 		t.Fatalf("CreateUser 1: %v", err)
 	}
-	if err := store.CreateUser(user2, "token-2", ""); err != nil {
+	if err := store.CreateUser(user2); err != nil {
 		t.Fatalf("CreateUser 2: %v", err)
 	}
 
@@ -195,4 +197,100 @@ func TestSweepAllUsersRetention(t *testing.T) {
 	if u2Remaining != "u2-mid" {
 		t.Errorf("user2: expected u2-mid to survive, got %s", u2Remaining)
 	}
+}
+
+func TestMigrate_DropsLegacyColumns(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+
+	// Create a DB with the OLD schema (pre-migration).
+	raw, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ddl := range []string{
+		`CREATE TABLE users (
+			id TEXT PRIMARY KEY,
+			token TEXT,
+			pair_token TEXT UNIQUE,
+			token_migrated_at DATETIME,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`INSERT INTO users (id, token, pair_token) VALUES ('u1', 'tok1', 'pt1')`,
+	} {
+		if _, err := raw.Exec(ddl); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	raw.Close()
+
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore (runs Migrate): %v", err)
+	}
+	defer store.Close()
+
+	for _, col := range []string{"pair_token", "token", "token_migrated_at"} {
+		if columnExists(t, store, "users", col) {
+			t.Errorf("column users.%s should be dropped", col)
+		}
+	}
+	// User row survives.
+	var id string
+	if err := store.db.QueryRow(`SELECT id FROM users WHERE id='u1'`).Scan(&id); err != nil {
+		t.Fatalf("seeded user lost: %v", err)
+	}
+}
+
+func TestMigrate_Idempotent(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	// Re-run migration — should be a no-op.
+	if err := store.Migrate(); err != nil {
+		t.Fatalf("second Migrate: %v", err)
+	}
+}
+
+func TestMigrate_FreshDB(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := NewStore(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	for _, col := range []string{"pair_token", "token", "token_migrated_at"} {
+		if columnExists(t, store, "users", col) {
+			t.Errorf("fresh DB should not have legacy column users.%s", col)
+		}
+	}
+}
+
+func columnExists(t *testing.T, s *Store, table, col string) bool {
+	t.Helper()
+	rows, err := s.db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		t.Fatalf("table_info: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			t.Fatal(err)
+		}
+		if name == col {
+			return true
+		}
+	}
+	return false
 }

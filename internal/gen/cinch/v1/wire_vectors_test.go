@@ -131,15 +131,9 @@ func TestLoginResponseVectorsRoundTrip(t *testing.T) {
 	runGroup(t, root, "LoginResponse", func() any { return &LoginResponse{} })
 }
 
-func TestPairResponseVectorsRoundTrip(t *testing.T) {
-	root := loadVectors(t)
-	runGroup(t, root, "PairResponse", func() any { return &PairResponse{} })
-}
-
-func TestRotatePairTokenResponseVectorsRoundTrip(t *testing.T) {
-	root := loadVectors(t)
-	runGroup(t, root, "RotatePairTokenResponse", func() any { return &RotatePairTokenResponse{} })
-}
+// PairResponse / RotatePairTokenResponse round-trip tests removed —
+// the underlying proto messages were dropped in the OAuth-only
+// migration. Task 7 cleans up testdata/wire-vectors.json.
 
 func TestErrorResponseVectorsRoundTrip(t *testing.T) {
 	root := loadVectors(t)

@@ -194,11 +194,13 @@ func (h *Handler) OAuthCallback(providerName string) http.HandlerFunc {
 			return
 		}
 
-		// Resolve the device hostname from the device_codes table (best-effort).
-		hostname, _ := h.store.DeviceCodeHostname(userCode)
+		// Resolve the device hostname + machine_id from the device_codes table
+		// (best-effort). machine_id deduplicates same-Mac CLI/desktop sign-ins
+		// onto a single device row.
+		hostname, machineID, _ := h.store.DeviceCodeContext(userCode)
 
 		// Upsert user + device.
-		userID, deviceID, deviceToken, err := h.store.UpsertOAuthUser(providerName, subject, hostname)
+		userID, deviceID, deviceToken, err := h.store.UpsertOAuthUser(providerName, subject, hostname, machineID)
 		if err != nil {
 			log.Printf("oauth callback: upsert failed: %v", err)
 			http.Error(w, "Account provisioning failed", http.StatusInternalServerError)

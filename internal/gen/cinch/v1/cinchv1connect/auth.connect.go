@@ -35,8 +35,6 @@ const (
 const (
 	// AuthServiceLoginProcedure is the fully-qualified name of the AuthService's Login RPC.
 	AuthServiceLoginProcedure = "/cinch.v1.AuthService/Login"
-	// AuthServicePairProcedure is the fully-qualified name of the AuthService's Pair RPC.
-	AuthServicePairProcedure = "/cinch.v1.AuthService/Pair"
 	// AuthServiceDeviceCodeStartProcedure is the fully-qualified name of the AuthService's
 	// DeviceCodeStart RPC.
 	AuthServiceDeviceCodeStartProcedure = "/cinch.v1.AuthService/DeviceCodeStart"
@@ -49,15 +47,18 @@ const (
 	// AuthServiceRevokeDeviceProcedure is the fully-qualified name of the AuthService's RevokeDevice
 	// RPC.
 	AuthServiceRevokeDeviceProcedure = "/cinch.v1.AuthService/RevokeDevice"
-	// AuthServiceRotatePairTokenProcedure is the fully-qualified name of the AuthService's
-	// RotatePairToken RPC.
-	AuthServiceRotatePairTokenProcedure = "/cinch.v1.AuthService/RotatePairToken"
 	// AuthServiceKeyBundlePutProcedure is the fully-qualified name of the AuthService's KeyBundlePut
 	// RPC.
 	AuthServiceKeyBundlePutProcedure = "/cinch.v1.AuthService/KeyBundlePut"
 	// AuthServiceKeyBundleGetProcedure is the fully-qualified name of the AuthService's KeyBundleGet
 	// RPC.
 	AuthServiceKeyBundleGetProcedure = "/cinch.v1.AuthService/KeyBundleGet"
+	// AuthServiceKeyBundleRetryProcedure is the fully-qualified name of the AuthService's
+	// KeyBundleRetry RPC.
+	AuthServiceKeyBundleRetryProcedure = "/cinch.v1.AuthService/KeyBundleRetry"
+	// AuthServiceRegisterDevicePublicKeyProcedure is the fully-qualified name of the AuthService's
+	// RegisterDevicePublicKey RPC.
+	AuthServiceRegisterDevicePublicKeyProcedure = "/cinch.v1.AuthService/RegisterDevicePublicKey"
 )
 
 // AuthServiceClient is a client for the cinch.v1.AuthService service.
@@ -65,9 +66,6 @@ type AuthServiceClient interface {
 	// Login creates a new anonymous account and returns its credentials.
 	// Mirrors POST /auth/login — no auth required.
 	Login(context.Context, *connect.Request[v1.LoginRequest]) (*connect.Response[v1.LoginResponse], error)
-	// Pair exchanges a pair token for a per-device auth token.
-	// Mirrors POST /auth/pair — no auth required.
-	Pair(context.Context, *connect.Request[v1.PairRequest]) (*connect.Response[v1.PairResponse], error)
 	// DeviceCodeStart initiates the device-code OAuth flow.
 	// Mirrors POST /auth/device-code — no auth required.
 	DeviceCodeStart(context.Context, *connect.Request[v1.DeviceCodeStartRequest]) (*connect.Response[v1.DeviceCodeStartResponse], error)
@@ -80,15 +78,22 @@ type AuthServiceClient interface {
 	// RevokeDevice revokes a paired device by ID.
 	// Mirrors POST /auth/device/revoke — auth required.
 	RevokeDevice(context.Context, *connect.Request[v1.RevokeDeviceRequest]) (*connect.Response[v1.RevokeDeviceResponse], error)
-	// RotatePairToken issues a new pair token, invalidating the old one.
-	// Mirrors POST /auth/pair-token/new — auth required.
-	RotatePairToken(context.Context, *connect.Request[v1.RotatePairTokenRequest]) (*connect.Response[v1.RotatePairTokenResponse], error)
 	// KeyBundlePut stores an encrypted key bundle for a target device.
 	// Mirrors POST /auth/key-bundle — auth required.
 	KeyBundlePut(context.Context, *connect.Request[v1.KeyBundlePutRequest]) (*connect.Response[v1.KeyBundlePutResponse], error)
 	// KeyBundleGet retrieves the encrypted key bundle for the calling device.
 	// Mirrors GET /auth/key-bundle — auth required.
 	KeyBundleGet(context.Context, *connect.Request[v1.KeyBundleGetRequest]) (*connect.Response[v1.KeyBundleGetResponse], error)
+	// KeyBundleRetry asks the relay to re-broadcast key_exchange_requested
+	// for the calling device. Used by `cinch auth retry-key`.
+	// Mirrors POST /auth/key-bundle/retry — auth required.
+	KeyBundleRetry(context.Context, *connect.Request[v1.KeyBundleRetryRequest]) (*connect.Response[v1.KeyBundleRetryResponse], error)
+	// RegisterDevicePublicKey stores the X25519 public key for the calling
+	// device so the relay can include it in ListPendingKeyExchanges sweeps
+	// and broadcast key_exchange_requested for it. Called once after the
+	// OAuth-only login flow finishes installing local credentials.
+	// Mirrors POST /auth/device/public-key — auth required.
+	RegisterDevicePublicKey(context.Context, *connect.Request[v1.RegisterDevicePublicKeyRequest]) (*connect.Response[v1.RegisterDevicePublicKeyResponse], error)
 }
 
 // NewAuthServiceClient constructs a client for the cinch.v1.AuthService service. By default, it
@@ -106,12 +111,6 @@ func NewAuthServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			httpClient,
 			baseURL+AuthServiceLoginProcedure,
 			connect.WithSchema(authServiceMethods.ByName("Login")),
-			connect.WithClientOptions(opts...),
-		),
-		pair: connect.NewClient[v1.PairRequest, v1.PairResponse](
-			httpClient,
-			baseURL+AuthServicePairProcedure,
-			connect.WithSchema(authServiceMethods.ByName("Pair")),
 			connect.WithClientOptions(opts...),
 		),
 		deviceCodeStart: connect.NewClient[v1.DeviceCodeStartRequest, v1.DeviceCodeStartResponse](
@@ -138,12 +137,6 @@ func NewAuthServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(authServiceMethods.ByName("RevokeDevice")),
 			connect.WithClientOptions(opts...),
 		),
-		rotatePairToken: connect.NewClient[v1.RotatePairTokenRequest, v1.RotatePairTokenResponse](
-			httpClient,
-			baseURL+AuthServiceRotatePairTokenProcedure,
-			connect.WithSchema(authServiceMethods.ByName("RotatePairToken")),
-			connect.WithClientOptions(opts...),
-		),
 		keyBundlePut: connect.NewClient[v1.KeyBundlePutRequest, v1.KeyBundlePutResponse](
 			httpClient,
 			baseURL+AuthServiceKeyBundlePutProcedure,
@@ -156,30 +149,37 @@ func NewAuthServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(authServiceMethods.ByName("KeyBundleGet")),
 			connect.WithClientOptions(opts...),
 		),
+		keyBundleRetry: connect.NewClient[v1.KeyBundleRetryRequest, v1.KeyBundleRetryResponse](
+			httpClient,
+			baseURL+AuthServiceKeyBundleRetryProcedure,
+			connect.WithSchema(authServiceMethods.ByName("KeyBundleRetry")),
+			connect.WithClientOptions(opts...),
+		),
+		registerDevicePublicKey: connect.NewClient[v1.RegisterDevicePublicKeyRequest, v1.RegisterDevicePublicKeyResponse](
+			httpClient,
+			baseURL+AuthServiceRegisterDevicePublicKeyProcedure,
+			connect.WithSchema(authServiceMethods.ByName("RegisterDevicePublicKey")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // authServiceClient implements AuthServiceClient.
 type authServiceClient struct {
-	login              *connect.Client[v1.LoginRequest, v1.LoginResponse]
-	pair               *connect.Client[v1.PairRequest, v1.PairResponse]
-	deviceCodeStart    *connect.Client[v1.DeviceCodeStartRequest, v1.DeviceCodeStartResponse]
-	deviceCodePoll     *connect.Client[v1.DeviceCodePollRequest, v1.DeviceCodePollResponse]
-	deviceCodeComplete *connect.Client[v1.DeviceCodeCompleteRequest, v1.DeviceCodeCompleteResponse]
-	revokeDevice       *connect.Client[v1.RevokeDeviceRequest, v1.RevokeDeviceResponse]
-	rotatePairToken    *connect.Client[v1.RotatePairTokenRequest, v1.RotatePairTokenResponse]
-	keyBundlePut       *connect.Client[v1.KeyBundlePutRequest, v1.KeyBundlePutResponse]
-	keyBundleGet       *connect.Client[v1.KeyBundleGetRequest, v1.KeyBundleGetResponse]
+	login                   *connect.Client[v1.LoginRequest, v1.LoginResponse]
+	deviceCodeStart         *connect.Client[v1.DeviceCodeStartRequest, v1.DeviceCodeStartResponse]
+	deviceCodePoll          *connect.Client[v1.DeviceCodePollRequest, v1.DeviceCodePollResponse]
+	deviceCodeComplete      *connect.Client[v1.DeviceCodeCompleteRequest, v1.DeviceCodeCompleteResponse]
+	revokeDevice            *connect.Client[v1.RevokeDeviceRequest, v1.RevokeDeviceResponse]
+	keyBundlePut            *connect.Client[v1.KeyBundlePutRequest, v1.KeyBundlePutResponse]
+	keyBundleGet            *connect.Client[v1.KeyBundleGetRequest, v1.KeyBundleGetResponse]
+	keyBundleRetry          *connect.Client[v1.KeyBundleRetryRequest, v1.KeyBundleRetryResponse]
+	registerDevicePublicKey *connect.Client[v1.RegisterDevicePublicKeyRequest, v1.RegisterDevicePublicKeyResponse]
 }
 
 // Login calls cinch.v1.AuthService.Login.
 func (c *authServiceClient) Login(ctx context.Context, req *connect.Request[v1.LoginRequest]) (*connect.Response[v1.LoginResponse], error) {
 	return c.login.CallUnary(ctx, req)
-}
-
-// Pair calls cinch.v1.AuthService.Pair.
-func (c *authServiceClient) Pair(ctx context.Context, req *connect.Request[v1.PairRequest]) (*connect.Response[v1.PairResponse], error) {
-	return c.pair.CallUnary(ctx, req)
 }
 
 // DeviceCodeStart calls cinch.v1.AuthService.DeviceCodeStart.
@@ -202,11 +202,6 @@ func (c *authServiceClient) RevokeDevice(ctx context.Context, req *connect.Reque
 	return c.revokeDevice.CallUnary(ctx, req)
 }
 
-// RotatePairToken calls cinch.v1.AuthService.RotatePairToken.
-func (c *authServiceClient) RotatePairToken(ctx context.Context, req *connect.Request[v1.RotatePairTokenRequest]) (*connect.Response[v1.RotatePairTokenResponse], error) {
-	return c.rotatePairToken.CallUnary(ctx, req)
-}
-
 // KeyBundlePut calls cinch.v1.AuthService.KeyBundlePut.
 func (c *authServiceClient) KeyBundlePut(ctx context.Context, req *connect.Request[v1.KeyBundlePutRequest]) (*connect.Response[v1.KeyBundlePutResponse], error) {
 	return c.keyBundlePut.CallUnary(ctx, req)
@@ -217,14 +212,21 @@ func (c *authServiceClient) KeyBundleGet(ctx context.Context, req *connect.Reque
 	return c.keyBundleGet.CallUnary(ctx, req)
 }
 
+// KeyBundleRetry calls cinch.v1.AuthService.KeyBundleRetry.
+func (c *authServiceClient) KeyBundleRetry(ctx context.Context, req *connect.Request[v1.KeyBundleRetryRequest]) (*connect.Response[v1.KeyBundleRetryResponse], error) {
+	return c.keyBundleRetry.CallUnary(ctx, req)
+}
+
+// RegisterDevicePublicKey calls cinch.v1.AuthService.RegisterDevicePublicKey.
+func (c *authServiceClient) RegisterDevicePublicKey(ctx context.Context, req *connect.Request[v1.RegisterDevicePublicKeyRequest]) (*connect.Response[v1.RegisterDevicePublicKeyResponse], error) {
+	return c.registerDevicePublicKey.CallUnary(ctx, req)
+}
+
 // AuthServiceHandler is an implementation of the cinch.v1.AuthService service.
 type AuthServiceHandler interface {
 	// Login creates a new anonymous account and returns its credentials.
 	// Mirrors POST /auth/login — no auth required.
 	Login(context.Context, *connect.Request[v1.LoginRequest]) (*connect.Response[v1.LoginResponse], error)
-	// Pair exchanges a pair token for a per-device auth token.
-	// Mirrors POST /auth/pair — no auth required.
-	Pair(context.Context, *connect.Request[v1.PairRequest]) (*connect.Response[v1.PairResponse], error)
 	// DeviceCodeStart initiates the device-code OAuth flow.
 	// Mirrors POST /auth/device-code — no auth required.
 	DeviceCodeStart(context.Context, *connect.Request[v1.DeviceCodeStartRequest]) (*connect.Response[v1.DeviceCodeStartResponse], error)
@@ -237,15 +239,22 @@ type AuthServiceHandler interface {
 	// RevokeDevice revokes a paired device by ID.
 	// Mirrors POST /auth/device/revoke — auth required.
 	RevokeDevice(context.Context, *connect.Request[v1.RevokeDeviceRequest]) (*connect.Response[v1.RevokeDeviceResponse], error)
-	// RotatePairToken issues a new pair token, invalidating the old one.
-	// Mirrors POST /auth/pair-token/new — auth required.
-	RotatePairToken(context.Context, *connect.Request[v1.RotatePairTokenRequest]) (*connect.Response[v1.RotatePairTokenResponse], error)
 	// KeyBundlePut stores an encrypted key bundle for a target device.
 	// Mirrors POST /auth/key-bundle — auth required.
 	KeyBundlePut(context.Context, *connect.Request[v1.KeyBundlePutRequest]) (*connect.Response[v1.KeyBundlePutResponse], error)
 	// KeyBundleGet retrieves the encrypted key bundle for the calling device.
 	// Mirrors GET /auth/key-bundle — auth required.
 	KeyBundleGet(context.Context, *connect.Request[v1.KeyBundleGetRequest]) (*connect.Response[v1.KeyBundleGetResponse], error)
+	// KeyBundleRetry asks the relay to re-broadcast key_exchange_requested
+	// for the calling device. Used by `cinch auth retry-key`.
+	// Mirrors POST /auth/key-bundle/retry — auth required.
+	KeyBundleRetry(context.Context, *connect.Request[v1.KeyBundleRetryRequest]) (*connect.Response[v1.KeyBundleRetryResponse], error)
+	// RegisterDevicePublicKey stores the X25519 public key for the calling
+	// device so the relay can include it in ListPendingKeyExchanges sweeps
+	// and broadcast key_exchange_requested for it. Called once after the
+	// OAuth-only login flow finishes installing local credentials.
+	// Mirrors POST /auth/device/public-key — auth required.
+	RegisterDevicePublicKey(context.Context, *connect.Request[v1.RegisterDevicePublicKeyRequest]) (*connect.Response[v1.RegisterDevicePublicKeyResponse], error)
 }
 
 // NewAuthServiceHandler builds an HTTP handler from the service implementation. It returns the path
@@ -259,12 +268,6 @@ func NewAuthServiceHandler(svc AuthServiceHandler, opts ...connect.HandlerOption
 		AuthServiceLoginProcedure,
 		svc.Login,
 		connect.WithSchema(authServiceMethods.ByName("Login")),
-		connect.WithHandlerOptions(opts...),
-	)
-	authServicePairHandler := connect.NewUnaryHandler(
-		AuthServicePairProcedure,
-		svc.Pair,
-		connect.WithSchema(authServiceMethods.ByName("Pair")),
 		connect.WithHandlerOptions(opts...),
 	)
 	authServiceDeviceCodeStartHandler := connect.NewUnaryHandler(
@@ -291,12 +294,6 @@ func NewAuthServiceHandler(svc AuthServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(authServiceMethods.ByName("RevokeDevice")),
 		connect.WithHandlerOptions(opts...),
 	)
-	authServiceRotatePairTokenHandler := connect.NewUnaryHandler(
-		AuthServiceRotatePairTokenProcedure,
-		svc.RotatePairToken,
-		connect.WithSchema(authServiceMethods.ByName("RotatePairToken")),
-		connect.WithHandlerOptions(opts...),
-	)
 	authServiceKeyBundlePutHandler := connect.NewUnaryHandler(
 		AuthServiceKeyBundlePutProcedure,
 		svc.KeyBundlePut,
@@ -309,12 +306,22 @@ func NewAuthServiceHandler(svc AuthServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(authServiceMethods.ByName("KeyBundleGet")),
 		connect.WithHandlerOptions(opts...),
 	)
+	authServiceKeyBundleRetryHandler := connect.NewUnaryHandler(
+		AuthServiceKeyBundleRetryProcedure,
+		svc.KeyBundleRetry,
+		connect.WithSchema(authServiceMethods.ByName("KeyBundleRetry")),
+		connect.WithHandlerOptions(opts...),
+	)
+	authServiceRegisterDevicePublicKeyHandler := connect.NewUnaryHandler(
+		AuthServiceRegisterDevicePublicKeyProcedure,
+		svc.RegisterDevicePublicKey,
+		connect.WithSchema(authServiceMethods.ByName("RegisterDevicePublicKey")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/cinch.v1.AuthService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case AuthServiceLoginProcedure:
 			authServiceLoginHandler.ServeHTTP(w, r)
-		case AuthServicePairProcedure:
-			authServicePairHandler.ServeHTTP(w, r)
 		case AuthServiceDeviceCodeStartProcedure:
 			authServiceDeviceCodeStartHandler.ServeHTTP(w, r)
 		case AuthServiceDeviceCodePollProcedure:
@@ -323,12 +330,14 @@ func NewAuthServiceHandler(svc AuthServiceHandler, opts ...connect.HandlerOption
 			authServiceDeviceCodeCompleteHandler.ServeHTTP(w, r)
 		case AuthServiceRevokeDeviceProcedure:
 			authServiceRevokeDeviceHandler.ServeHTTP(w, r)
-		case AuthServiceRotatePairTokenProcedure:
-			authServiceRotatePairTokenHandler.ServeHTTP(w, r)
 		case AuthServiceKeyBundlePutProcedure:
 			authServiceKeyBundlePutHandler.ServeHTTP(w, r)
 		case AuthServiceKeyBundleGetProcedure:
 			authServiceKeyBundleGetHandler.ServeHTTP(w, r)
+		case AuthServiceKeyBundleRetryProcedure:
+			authServiceKeyBundleRetryHandler.ServeHTTP(w, r)
+		case AuthServiceRegisterDevicePublicKeyProcedure:
+			authServiceRegisterDevicePublicKeyHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -340,10 +349,6 @@ type UnimplementedAuthServiceHandler struct{}
 
 func (UnimplementedAuthServiceHandler) Login(context.Context, *connect.Request[v1.LoginRequest]) (*connect.Response[v1.LoginResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cinch.v1.AuthService.Login is not implemented"))
-}
-
-func (UnimplementedAuthServiceHandler) Pair(context.Context, *connect.Request[v1.PairRequest]) (*connect.Response[v1.PairResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cinch.v1.AuthService.Pair is not implemented"))
 }
 
 func (UnimplementedAuthServiceHandler) DeviceCodeStart(context.Context, *connect.Request[v1.DeviceCodeStartRequest]) (*connect.Response[v1.DeviceCodeStartResponse], error) {
@@ -362,14 +367,18 @@ func (UnimplementedAuthServiceHandler) RevokeDevice(context.Context, *connect.Re
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cinch.v1.AuthService.RevokeDevice is not implemented"))
 }
 
-func (UnimplementedAuthServiceHandler) RotatePairToken(context.Context, *connect.Request[v1.RotatePairTokenRequest]) (*connect.Response[v1.RotatePairTokenResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cinch.v1.AuthService.RotatePairToken is not implemented"))
-}
-
 func (UnimplementedAuthServiceHandler) KeyBundlePut(context.Context, *connect.Request[v1.KeyBundlePutRequest]) (*connect.Response[v1.KeyBundlePutResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cinch.v1.AuthService.KeyBundlePut is not implemented"))
 }
 
 func (UnimplementedAuthServiceHandler) KeyBundleGet(context.Context, *connect.Request[v1.KeyBundleGetRequest]) (*connect.Response[v1.KeyBundleGetResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cinch.v1.AuthService.KeyBundleGet is not implemented"))
+}
+
+func (UnimplementedAuthServiceHandler) KeyBundleRetry(context.Context, *connect.Request[v1.KeyBundleRetryRequest]) (*connect.Response[v1.KeyBundleRetryResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cinch.v1.AuthService.KeyBundleRetry is not implemented"))
+}
+
+func (UnimplementedAuthServiceHandler) RegisterDevicePublicKey(context.Context, *connect.Request[v1.RegisterDevicePublicKeyRequest]) (*connect.Response[v1.RegisterDevicePublicKeyResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cinch.v1.AuthService.RegisterDevicePublicKey is not implemented"))
 }

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -44,11 +43,6 @@ func main() {
 	if err := store.ReconcileMedia(); err != nil {
 		log.Printf("media reconciliation: %v", err)
 	}
-
-	// Grace sweeper: NULLs stale master tokens past the 7-day migration window.
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go relay.RunGraceSweeper(ctx, store)
 
 	// Retention sweep: deletes expired remote clips hourly.
 	go func() {
