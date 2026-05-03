@@ -15,10 +15,12 @@ import (
 
 const testClientSecret = "test-secret-abc123"
 
-// setupOAuthTestServer builds a relay handler with a fake OAuth provider wired up.
+// setupOAuthTestServer builds a relay handler with fake OAuth provider(s) wired up.
 // fakeSubject is what the injected subjectFetcher returns.
+// When bothProviders is true, both GitHub and Google are configured (forces the
+// AuthBrowser picker page). When false, only Google is configured.
 // Returns the relay test server and the fake OAuth token endpoint server.
-func setupOAuthTestServer(t *testing.T, fakeSubject string) (ts *httptest.Server, tokenServer *httptest.Server) {
+func setupOAuthTestServer(t *testing.T, fakeSubject string, bothProviders bool) (ts *httptest.Server, tokenServer *httptest.Server) {
 	t.Helper()
 
 	// Fake token endpoint: accepts any code and returns a stub access token.
@@ -48,20 +50,28 @@ func setupOAuthTestServer(t *testing.T, fakeSubject string) (ts *httptest.Server
 		return fakeSubject, nil
 	}
 
-	// Wire up a Google provider pointing at the fake token server.
-	// The redirectURL will be filled in after ts is created.
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
 	ts = httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
 
-	provider := relay.NewTestOAuthProvider(
+	gProvider := relay.NewTestOAuthProvider(
 		testClientSecret,
 		tokenServer.URL+"/token",
 		ts.URL+"/auth/oauth/google/callback",
 		fetcher,
 	)
-	handler.OAuth = &relay.OAuthProviders{Google: provider}
+	providers := &relay.OAuthProviders{Google: gProvider}
+	if bothProviders {
+		ghProvider := relay.NewTestOAuthProvider(
+			testClientSecret,
+			tokenServer.URL+"/token",
+			ts.URL+"/auth/oauth/github/callback",
+			fetcher,
+		)
+		providers.GitHub = ghProvider
+	}
+	handler.OAuth = providers
 	handler.BaseURL = ts.URL
 
 	return ts, tokenServer
@@ -83,7 +93,7 @@ func buildCallbackURL(base, userCode, clientSecret string) string {
 // is present (userCode == ""), OAuthCallback redirects to cinch://auth/callback
 // with token, device_id, user_id, and relay_url query params.
 func TestOAuthCallback_Desktop_RedirectsToCinch(t *testing.T) {
-	ts, _ := setupOAuthTestServer(t, "github-subject-123")
+	ts, _ := setupOAuthTestServer(t, "github-subject-123", false)
 
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse // capture the redirect, don't follow
@@ -134,7 +144,7 @@ func TestOAuthCallback_Desktop_RedirectsToCinch(t *testing.T) {
 // TestOAuthCallback_Desktop_SecondLogin_ReusesSameUser verifies that calling the
 // desktop OAuth flow twice with the same OAuth subject provisions the same user ID.
 func TestOAuthCallback_Desktop_SecondLogin_ReusesSameUser(t *testing.T) {
-	ts, _ := setupOAuthTestServer(t, "stable-subject-xyz")
+	ts, _ := setupOAuthTestServer(t, "stable-subject-xyz", false)
 
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
@@ -167,7 +177,7 @@ func TestOAuthCallback_Desktop_SecondLogin_ReusesSameUser(t *testing.T) {
 // TestOAuthCallback_CLI_ShowsSuccessHTML verifies that when a device_code is
 // present (CLI flow), the response is the HTML success page (not a redirect).
 func TestOAuthCallback_CLI_ShowsSuccessHTML(t *testing.T) {
-	ts, _ := setupOAuthTestServer(t, "cli-subject-456")
+	ts, _ := setupOAuthTestServer(t, "cli-subject-456", false)
 
 	// Issue a real device code so CompleteDeviceCode has a row to update.
 	dcResp, err := http.Post(ts.URL+"/auth/device-code", "application/json",
@@ -209,7 +219,7 @@ func TestOAuthCallback_CLI_ShowsSuccessHTML(t *testing.T) {
 // TestOAuthCallback_CLI_CompletesDeviceCode verifies that the CLI flow marks the
 // device code as complete so that poll returns the credentials.
 func TestOAuthCallback_CLI_CompletesDeviceCode(t *testing.T) {
-	ts, _ := setupOAuthTestServer(t, "cli-subject-poll")
+	ts, _ := setupOAuthTestServer(t, "cli-subject-poll", false)
 
 	// Issue device code.
 	dcResp, _ := http.Post(ts.URL+"/auth/device-code", "application/json",
@@ -264,7 +274,7 @@ func TestOAuthCallback_CLI_CompletesDeviceCode(t *testing.T) {
 // TestOAuthCallback_InvalidState_Returns400 verifies that a tampered state
 // parameter is rejected with 400.
 func TestOAuthCallback_InvalidState_Returns400(t *testing.T) {
-	ts, _ := setupOAuthTestServer(t, "any-subject")
+	ts, _ := setupOAuthTestServer(t, "any-subject", false)
 
 	v := url.Values{
 		"code":  {"some-code"},
@@ -284,7 +294,7 @@ func TestOAuthCallback_InvalidState_Returns400(t *testing.T) {
 // TestOAuthCallback_MissingCode_Returns400 verifies that a missing OAuth code
 // is rejected with 400.
 func TestOAuthCallback_MissingCode_Returns400(t *testing.T) {
-	ts, _ := setupOAuthTestServer(t, "any-subject")
+	ts, _ := setupOAuthTestServer(t, "any-subject", false)
 
 	state := relay.EncodeStateForTest("", testClientSecret)
 	v := url.Values{"state": {state}} // no code param
@@ -320,7 +330,7 @@ func TestOAuthCallback_OAuthNotConfigured_Returns501(t *testing.T) {
 // TestOAuthStart_RedirectsToProvider verifies that /auth/oauth/google/start
 // redirects to the provider's authorization URL.
 func TestOAuthStart_RedirectsToProvider(t *testing.T) {
-	ts, _ := setupOAuthTestServer(t, "any")
+	ts, _ := setupOAuthTestServer(t, "any", false)
 
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
@@ -366,7 +376,7 @@ func TestOAuthStart_OAuthNotConfigured_Returns501(t *testing.T) {
 // revoked device can re-authenticate via OAuth and get a valid (non-revoked) token.
 // Regression test for: UpsertOAuthUser ON CONFLICT not clearing revoked_at.
 func TestOAuthCallback_ReauthAfterRevoke_ClearsRevocation(t *testing.T) {
-	ts, _ := setupOAuthTestServer(t, "reauth-subject-789")
+	ts, _ := setupOAuthTestServer(t, "reauth-subject-789", false)
 
 	// Helper: run the full device-code OAuth flow and return the device token.
 	doOAuthFlow := func() (token, deviceID string) {
@@ -484,70 +494,12 @@ func TestGetProviders_NoOAuth(t *testing.T) {
 	}
 }
 
-// setupBothProvidersTestServer builds a relay handler with both GitHub and
-// Google OAuth configured. This forces AuthBrowser to render the picker page
-// (no auto-redirect fires when both providers are present), which is the code
-// path that interpolates device_code into href attributes.
-func setupBothProvidersTestServer(t *testing.T) *httptest.Server {
-	t.Helper()
-
-	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
-			"access_token": "fake-access-token",
-			"token_type":   "Bearer",
-		})
-	}))
-	t.Cleanup(tokenServer.Close)
-
-	store, err := relay.NewStore(":memory:")
-	if err != nil {
-		t.Fatalf("store: %v", err)
-	}
-	t.Cleanup(func() { store.Close() })
-
-	hub := relay.NewHub()
-	go hub.Run()
-
-	handler := relay.NewHandler(store, hub)
-
-	mux := http.NewServeMux()
-	handler.RegisterRoutes(mux)
-	ts := httptest.NewServer(mux)
-	t.Cleanup(ts.Close)
-
-	fetcher := func(_ string, _ *oauth2.Config, _ *oauth2.Token) (string, error) {
-		return "test-subject", nil
-	}
-
-	ghProvider := relay.NewTestOAuthProvider(
-		testClientSecret,
-		tokenServer.URL+"/token",
-		ts.URL+"/auth/oauth/github/callback",
-		fetcher,
-	)
-	gProvider := relay.NewTestOAuthProvider(
-		testClientSecret,
-		tokenServer.URL+"/token",
-		ts.URL+"/auth/oauth/google/callback",
-		fetcher,
-	)
-	handler.OAuth = &relay.OAuthProviders{GitHub: ghProvider, Google: gProvider}
-	handler.BaseURL = ts.URL
-
-	return ts
-}
-
 // TestAuthBrowser_XSSPrevention verifies that a crafted device_code containing
-// HTML/script injection is not reflected verbatim in the response body.
-// A payload of `x"><script>alert(1)</script>` must never appear as a literal
-// <script> tag in the HTML output. The server must either escape it or reject
-// the request with 400.
+// HTML/script injection is rejected with 400. The regex guard fires before any
+// HTML is rendered, so the payload must never appear in the response body.
 func TestAuthBrowser_XSSPrevention(t *testing.T) {
-	ts := setupBothProvidersTestServer(t)
+	ts, _ := setupOAuthTestServer(t, "test-subject", true)
 
-	// URL-encoded form of: x"><script>alert(1)</script>
-	xssPayload := `x"><script>alert(1)</script>`
 	resp, err := http.Get(ts.URL + "/auth/browser?device_code=x%22%3E%3Cscript%3Ealert(1)%3C%2Fscript%3E")
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
@@ -560,27 +512,21 @@ func TestAuthBrowser_XSSPrevention(t *testing.T) {
 	}
 	bodyStr := string(body)
 
-	// Either 400 (rejected) or 200 with the payload escaped — both are fine.
-	// What is NOT acceptable: the literal payload in the output.
+	// The regex guard must reject the malformed device_code with 400.
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400 for XSS payload, got %d", resp.StatusCode)
+	}
+
+	// Extra sanity: the 400 response body must not contain a script tag.
 	if strings.Contains(strings.ToLower(bodyStr), "<script>") {
-		t.Errorf("XSS payload reflected in response body (status %d); got %q", resp.StatusCode, bodyStr)
-	}
-
-	// If 400, we're done — the server rejected it cleanly.
-	if resp.StatusCode == http.StatusBadRequest {
-		return
-	}
-
-	// If 200, verify the raw payload string is not present verbatim.
-	if strings.Contains(bodyStr, xssPayload) {
-		t.Errorf("raw XSS payload %q reflected verbatim in 200 response", xssPayload)
+		t.Errorf("XSS payload reflected in 400 response body: %q", bodyStr)
 	}
 }
 
 // TestAuthBrowser_ValidDeviceCode verifies that a well-formed device_code
 // (XXXX-XXXX uppercase alphanumeric) renders the picker page successfully.
 func TestAuthBrowser_ValidDeviceCode(t *testing.T) {
-	ts := setupBothProvidersTestServer(t)
+	ts, _ := setupOAuthTestServer(t, "test-subject", true)
 
 	resp, err := http.Get(ts.URL + "/auth/browser?device_code=ABCD-1234")
 	if err != nil {
@@ -606,11 +552,16 @@ func TestAuthBrowser_ValidDeviceCode(t *testing.T) {
 	if !strings.Contains(bodyStr, "google") {
 		t.Error("expected Google button in picker page")
 	}
+
+	// The GitHub href must carry the device_code so the CLI flow completes.
+	if !strings.Contains(bodyStr, "/auth/oauth/github/start?device_code=ABCD-1234") {
+		t.Errorf("expected GitHub href with device code, got: %s", bodyStr)
+	}
 }
 
 // TestGetProviders_WithOAuth returns the configured provider names.
 func TestGetProviders_WithOAuth(t *testing.T) {
-	ts, _ := setupOAuthTestServer(t, "any")
+	ts, _ := setupOAuthTestServer(t, "any", false)
 
 	resp, err := http.Get(ts.URL + "/auth/providers")
 	if err != nil {

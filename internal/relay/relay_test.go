@@ -95,7 +95,7 @@ func TestAuthLogin(t *testing.T) {
 // returns 403 when an OAuth provider is configured, preventing account
 // creation outside the OAuth identity audit trail (security finding 3).
 func TestAuthLogin_Disabled_WhenOAuthConfigured(t *testing.T) {
-	ts, _ := setupOAuthTestServer(t, "some-subject")
+	ts, _ := setupOAuthTestServer(t, "some-subject", false)
 
 	resp, err := http.Post(ts.URL+"/auth/login", "application/json",
 		strings.NewReader(`{"hostname":"test-host"}`))
