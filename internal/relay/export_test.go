@@ -23,6 +23,16 @@ func EncodeStateForTest(userCode, clientSecret string) string {
 	return encodeState(userCode, clientSecret)
 }
 
+// IssueWsTicketForTest exposes issueWsTicket for white-box unit tests.
+func IssueWsTicketForTest(userID, deviceID string) string {
+	return issueWsTicket(userID, deviceID)
+}
+
+// ConsumeWsTicketForTest exposes consumeWsTicket for white-box unit tests.
+func ConsumeWsTicketForTest(ticket string) (userID, deviceID string, ok bool) {
+	return consumeWsTicket(ticket)
+}
+
 // NewTestOAuthProvider creates an OAuthProvider with a fake token endpoint and
 // an injected subjectFetcher — no real OAuth round-trip needed in tests.
 func NewTestOAuthProvider(clientSecret, tokenURL, redirectURL string, fetcher func(string, *oauth2.Config, *oauth2.Token) (string, error)) *OAuthProvider {

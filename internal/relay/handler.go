@@ -78,6 +78,51 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
+// wsTicket holds the identity bound to a short-lived WebSocket auth ticket.
+type wsTicket struct {
+	userID    string
+	deviceID  string
+	expiresAt time.Time
+}
+
+var (
+	wsTicketsMu sync.Mutex
+	wsTickets   = map[string]wsTicket{}
+)
+
+// issueWsTicket mints a 30-second single-use ticket for WebSocket auth.
+// The ticket is a 16-byte random value encoded as a 32-char hex string.
+func issueWsTicket(userID, deviceID string) string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		panic(err)
+	}
+	ticket := hex.EncodeToString(b)
+	wsTicketsMu.Lock()
+	wsTickets[ticket] = wsTicket{
+		userID:    userID,
+		deviceID:  deviceID,
+		expiresAt: time.Now().Add(30 * time.Second),
+	}
+	wsTicketsMu.Unlock()
+	return ticket
+}
+
+// consumeWsTicket validates and atomically removes a ticket.
+// Returns the bound identifiers and ok=true on success; ok=false on any failure
+// (unknown ticket, already used, or expired).
+func consumeWsTicket(ticket string) (userID, deviceID string, ok bool) {
+	wsTicketsMu.Lock()
+	defer wsTicketsMu.Unlock()
+	t, exists := wsTickets[ticket]
+	if !exists || time.Now().After(t.expiresAt) {
+		delete(wsTickets, ticket)
+		return "", "", false
+	}
+	delete(wsTickets, ticket) // single-use: remove immediately
+	return t.userID, t.deviceID, true
+}
+
 type Handler struct {
 	store       *Store
 	hub         *Hub
@@ -561,7 +606,59 @@ func (h *Handler) ListDevices(w http.ResponseWriter, r *http.Request) {
 // HandleWebSocket upgrades the connection and registers the agent.
 // Authentication is per-device (devices.token); the legacy master-token
 // fallback was removed alongside the OAuth-only schema migration.
+//
+// Preferred auth path: ?ticket=<ticket> — a short-lived single-use ticket
+// obtained from POST /ws/ticket. The bearer token never appears in the URL.
+// Legacy path: ?token=<token> — kept for the playground and legacy clients
+// during the migration window.
 func (h *Handler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
+	// Ticket path: short-lived, single-use — bearer token not exposed in URL.
+	if ticket := r.URL.Query().Get("ticket"); ticket != "" {
+		userID, deviceID, ok := consumeWsTicket(ticket)
+		if !ok {
+			http.Error(w, "invalid or expired ticket", http.StatusUnauthorized)
+			return
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			log.Printf("ws upgrade failed: %v", err)
+			return
+		}
+		h.hub.Register(userID, deviceID, conn)
+
+		// Notify desktop of any pending key exchanges for this user.
+		go func() {
+			pending, err := h.store.ListPendingKeyExchanges(userID)
+			if err != nil {
+				log.Printf("ListPendingKeyExchanges: %v", err)
+				return
+			}
+			for _, d := range pending {
+				conn.WriteJSON(protocol.WSMessage{ //nolint:errcheck
+					Action:   protocol.ActionKeyExchangeRequested,
+					DeviceID: d.Id,
+					Hostname: d.Hostname,
+				})
+			}
+		}()
+
+		// Read loop for agent messages.
+		go func() {
+			defer h.hub.Remove(userID, deviceID)
+			for {
+				var msg protocol.WSMessage
+				if err := conn.ReadJSON(&msg); err != nil {
+					if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
+						log.Printf("ws read error for %s: %v", userID[:8], err)
+					}
+					return
+				}
+				h.hub.HandleAgentMessage(&msg)
+			}
+		}()
+		return
+	}
+
 	token := r.URL.Query().Get("token")
 	if token == "" {
 		http.Error(w, "missing token", http.StatusUnauthorized)
@@ -1504,6 +1601,20 @@ func (h *Handler) CompleteDeviceCodeHTTP(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "complete"})
 }
 
+// IssueWsTicket issues a short-lived single-use ticket for WebSocket auth.
+// POST /ws/ticket — RequireAuth sets X-User-ID and X-Device-ID headers.
+// The ticket is valid for 30 s and consumed on first use, so the long-lived
+// bearer token never appears in the WebSocket URL or server access logs.
+func (h *Handler) IssueWsTicket(w http.ResponseWriter, r *http.Request) {
+	userID := r.Header.Get("X-User-ID")
+	deviceID := r.Header.Get("X-Device-ID")
+	ticket := issueWsTicket(userID, deviceID)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ticket": ticket,
+		"ttl":    30,
+	})
+}
+
 // IssueDeviceCode creates a new device code for CLI auth.
 // POST /auth/device-code — no auth required (this IS the auth entry point).
 func (h *Handler) IssueDeviceCode(w http.ResponseWriter, r *http.Request) {
@@ -1630,6 +1741,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /clips/binary", h.RequireAuth(h.PushBinaryClip))
 	mux.HandleFunc("GET /clips/{id}/media", h.RequireAuth(h.GetClipMedia))
 	mux.HandleFunc("GET /ws", h.HandleWebSocket)
+	mux.HandleFunc("POST /ws/ticket", h.RequireAuth(h.IssueWsTicket))
 	mux.HandleFunc("GET /health", h.Health)
 
 	// Demo session endpoints (CORS-enabled for landing page)

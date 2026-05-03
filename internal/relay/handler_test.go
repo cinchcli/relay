@@ -295,6 +295,64 @@ func TestCompleteDeviceCode_IgnoresBodyCredentials(t *testing.T) {
 	}
 }
 
+// TestIssueWsTicket_RequiresAuth verifies that POST /ws/ticket returns 401
+// when called without an auth token.
+func TestIssueWsTicket_RequiresAuth(t *testing.T) {
+	ts, _ := setupTestServer(t)
+	resp, err := http.Post(ts.URL+"/ws/ticket", "application/json", nil)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("expected 401 without auth, got %d", resp.StatusCode)
+	}
+}
+
+// TestIssueWsTicket_ReturnsTicket verifies that an authenticated POST /ws/ticket
+// returns a 32-char hex ticket with a ttl field.
+func TestIssueWsTicket_ReturnsTicket(t *testing.T) {
+	ts, _ := setupTestServer(t)
+	token, _, _ := login(t, ts.URL)
+	req, _ := http.NewRequest("POST", ts.URL+"/ws/ticket", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
+	}
+	var body map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	ticket, ok := body["ticket"].(string)
+	if !ok || len(ticket) != 32 {
+		t.Errorf("expected 32-char hex ticket, got %v", body["ticket"])
+	}
+	if body["ttl"] == nil {
+		t.Errorf("expected ttl in response")
+	}
+}
+
+// TestWsTicket_SingleUse verifies that a ticket can be consumed exactly once.
+func TestWsTicket_SingleUse(t *testing.T) {
+	userID := "user-ticket-test"
+	deviceID := "dev-ticket-test"
+	ticket := relay.IssueWsTicketForTest(userID, deviceID)
+
+	uid, did, ok := relay.ConsumeWsTicketForTest(ticket)
+	if !ok || uid != userID || did != deviceID {
+		t.Errorf("first consume failed: ok=%v uid=%v did=%v", ok, uid, did)
+	}
+	_, _, ok2 := relay.ConsumeWsTicketForTest(ticket)
+	if ok2 {
+		t.Errorf("second consume should fail (single-use)")
+	}
+}
+
 // TestRemovedEndpoints guards against accidental re-introduction of the
 // pair-token routes. Both must return 404 from the mux — the handlers
 // themselves were deleted in the OAuth-only migration.
