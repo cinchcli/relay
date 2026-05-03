@@ -11,6 +11,9 @@ pre-commit:
     go-vet:
       glob: "*.go"
       run: go vet ./...
+    golangci-lint:
+      glob: "*.go"
+      run: golangci-lint run {staged_files}
 
 pre-push:
   parallel: true

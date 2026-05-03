@@ -20,10 +20,6 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// stringPtr returns a pointer to the given string. Used for proto3 optional
-// fields (e.g. cinchv1.LoginRequest.Hostname) in test struct literals.
-func stringPtr(s string) *string { return &s }
-
 // setupTestServer creates a relay with an in-memory SQLite DB and returns the test server URL.
 func setupTestServer(t *testing.T) (*httptest.Server, *relay.Hub) {
 	t.Helper()

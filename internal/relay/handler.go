@@ -62,6 +62,11 @@ var (
 	ipRateMap = map[string]ipRateEntry{}
 )
 
+// loginRateWindow is the minimum interval between anonymous account creations
+// from the same IP. One new account per minute is generous for legitimate use
+// (smoke tests, demos) while blocking trivial DB-bloat attacks.
+const loginRateWindow = 1 * time.Minute
+
 var (
 	ErrAgentOffline = errors.New("desktop agent is not connected")
 	ErrAgentTimeout = errors.New("desktop agent did not respond in time")
@@ -82,6 +87,9 @@ type Handler struct {
 	TelemetryAPIKey string // X-API-Key sent to telemetry backend
 
 	telemetryLimiter *rateLimiter
+
+	loginRateMu  sync.Mutex
+	loginRateMap map[string]time.Time
 }
 
 func NewHandler(store *Store, hub *Hub) *Handler {
@@ -89,6 +97,7 @@ func NewHandler(store *Store, hub *Hub) *Handler {
 		store:            store,
 		hub:              hub,
 		telemetryLimiter: newRateLimiter(5, time.Hour),
+		loginRateMap:     make(map[string]time.Time),
 	}
 }
 
@@ -150,6 +159,26 @@ func (h *Handler) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 // Used by the smoke test and the demo HTML page; production clients
 // always go through device-code OAuth.
 func (h *Handler) AuthLogin(w http.ResponseWriter, r *http.Request) {
+	ip := r.Header.Get("X-Forwarded-For")
+	if ip == "" {
+		ip, _, _ = strings.Cut(r.RemoteAddr, ":")
+	} else {
+		ip = strings.TrimSpace(strings.SplitN(ip, ",", 2)[0])
+	}
+	// Loopback addresses are only reachable locally (smoke tests, local dev).
+	// Real public traffic always arrives via Cloudflare with X-Forwarded-For set.
+	if ip != "127.0.0.1" && ip != "::1" {
+		h.loginRateMu.Lock()
+		if last, ok := h.loginRateMap[ip]; ok && time.Since(last) < loginRateWindow {
+			h.loginRateMu.Unlock()
+			writeError(w, http.StatusTooManyRequests, "rate_limited",
+				"Too many login attempts. Try again in a minute.", "")
+			return
+		}
+		h.loginRateMap[ip] = time.Now()
+		h.loginRateMu.Unlock()
+	}
+
 	var req cinchv1.LoginRequest
 	if r.Body != nil && r.ContentLength > 0 {
 		_ = json.NewDecoder(r.Body).Decode(&req)
@@ -331,6 +360,7 @@ func (h *Handler) KeyBundleRetry(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) PushClip(w http.ResponseWriter, r *http.Request) {
 	userID := r.Header.Get("X-User-ID")
 
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB cap on text clips
 	var req cinchv1.PushClipRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request", "Could not parse request body", "")
@@ -1574,6 +1604,11 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 	// Anonymous opt-in telemetry (no auth; always 200 to client; silently dropped if backend not configured)
 	mux.HandleFunc("POST /telemetry", h.HandleTelemetry)
+
+	// Catch-all: return JSON 404 instead of Go's default plain-text response.
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, http.StatusNotFound, "not_found", "Endpoint not found", "")
+	})
 
 	// Connect-RPC handlers — mounted in parallel with REST (PR-B1 pilot).
 	// REST endpoints above are kept until all clients migrate.
