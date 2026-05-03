@@ -31,7 +31,7 @@ type Hub struct {
 	// eventSubs are Connect-RPC streaming subscribers (parallel to WS conns).
 	// Keyed by userID -> deviceID; fan-out mirrors the WS path.
 	eventSubsMu sync.RWMutex
-	eventSubs   map[string]map[string]chan protocol.WSMessage
+	eventSubs   map[string]map[string]chan *cinchv1.ServerEvent
 }
 
 // AgentConn wraps a WebSocket connection for one desktop agent.
@@ -41,13 +41,45 @@ type AgentConn struct {
 	Conn     *websocket.Conn
 }
 
+// serverEventToWSMessage converts a ServerEvent to a WSMessage for legacy WS delivery.
+// Returns nil for unknown or nil events.
+func serverEventToWSMessage(e *cinchv1.ServerEvent) *protocol.WSMessage {
+	if e == nil {
+		return nil
+	}
+	switch ev := e.Event.(type) {
+	case *cinchv1.ServerEvent_NewClip:
+		return &protocol.WSMessage{Action: protocol.ActionNewClip, Clip: ev.NewClip.Clip}
+	case *cinchv1.ServerEvent_SendClipboard:
+		return &protocol.WSMessage{Action: protocol.ActionSendClipboard, PullID: ev.SendClipboard.PullId}
+	case *cinchv1.ServerEvent_Revoked:
+		return &protocol.WSMessage{Action: protocol.ActionRevoked, Reason: ev.Revoked.Reason}
+	case *cinchv1.ServerEvent_TokenRotated:
+		return &protocol.WSMessage{
+			Action:   protocol.ActionTokenRotated,
+			Token:    ev.TokenRotated.Token,
+			DeviceID: ev.TokenRotated.DeviceId,
+			Hostname: ev.TokenRotated.Hostname,
+		}
+	case *cinchv1.ServerEvent_KeyExchange:
+		return &protocol.WSMessage{
+			Action:               protocol.ActionKeyExchangeRequested,
+			DeviceID:             ev.KeyExchange.DeviceId,
+			Hostname:             ev.KeyExchange.Hostname,
+			DeviceKeyFingerprint: ev.KeyExchange.DeviceKeyFingerprint,
+		}
+	default:
+		return nil
+	}
+}
+
 func NewHub() *Hub {
 	return &Hub{
 		conns:     make(map[string]map[string]*AgentConn),
 		pullReqs:  make(map[string]chan string),
 		streamIDs: make(map[string]string),
 		demoSubs:  make(map[string][]chan string),
-		eventSubs: make(map[string]map[string]chan protocol.WSMessage),
+		eventSubs: make(map[string]map[string]chan *cinchv1.ServerEvent),
 	}
 }
 
@@ -117,16 +149,16 @@ func (h *Hub) BroadcastDemoClip(userID, content string) {
 }
 
 // RegisterEventSub registers a Connect-RPC streaming subscriber for (userID, deviceID).
-// Returns a receive-only channel that receives WSMessage events until the subscriber
+// Returns a receive-only channel that receives ServerEvent events until the subscriber
 // calls UnregisterEventSub or the channel is closed on a duplicate registration.
-func (h *Hub) RegisterEventSub(userID, deviceID string) <-chan protocol.WSMessage {
-	ch := make(chan protocol.WSMessage, 64)
+func (h *Hub) RegisterEventSub(userID, deviceID string) <-chan *cinchv1.ServerEvent {
+	ch := make(chan *cinchv1.ServerEvent, 64)
 	h.eventSubsMu.Lock()
 	if h.eventSubs[userID] == nil {
-		h.eventSubs[userID] = make(map[string]chan protocol.WSMessage)
+		h.eventSubs[userID] = make(map[string]chan *cinchv1.ServerEvent)
 	}
 	if old, ok := h.eventSubs[userID][deviceID]; ok {
-		close(old) // new connection wins; close old channel to unblock its goroutine
+		close(old)
 	}
 	h.eventSubs[userID][deviceID] = ch
 	h.eventSubsMu.Unlock()
@@ -150,16 +182,16 @@ func (h *Hub) UnregisterEventSub(userID, deviceID string) {
 	h.eventSubsMu.Unlock()
 }
 
-// sendToEventSubs fans a message out to all event stream subscribers for userID.
+// sendToEventSubs fans an event out to all event stream subscribers for userID.
 // Non-blocking per subscriber; drops on full to avoid stalling.
-func (h *Hub) sendToEventSubs(userID string, msg protocol.WSMessage) {
+func (h *Hub) sendToEventSubs(userID string, event *cinchv1.ServerEvent) {
 	h.eventSubsMu.RLock()
 	devs := h.eventSubs[userID]
 	if len(devs) == 0 {
 		h.eventSubsMu.RUnlock()
 		return
 	}
-	chs := make([]chan protocol.WSMessage, 0, len(devs))
+	chs := make([]chan *cinchv1.ServerEvent, 0, len(devs))
 	for _, ch := range devs {
 		chs = append(chs, ch)
 	}
@@ -167,17 +199,17 @@ func (h *Hub) sendToEventSubs(userID string, msg protocol.WSMessage) {
 
 	for _, ch := range chs {
 		select {
-		case ch <- msg:
+		case ch <- event:
 		default:
 			log.Printf("event sub buffer full for user %s", userID[:8])
 		}
 	}
 }
 
-// sendToEventSub fans a message to a specific (userID, deviceID) event subscriber.
-func (h *Hub) sendToEventSub(userID, deviceID string, msg protocol.WSMessage) {
+// sendToEventSub fans an event to a specific (userID, deviceID) event subscriber.
+func (h *Hub) sendToEventSub(userID, deviceID string, event *cinchv1.ServerEvent) {
 	h.eventSubsMu.RLock()
-	var ch chan protocol.WSMessage
+	var ch chan *cinchv1.ServerEvent
 	if devs, ok := h.eventSubs[userID]; ok {
 		ch = devs[deviceID]
 	}
@@ -186,7 +218,7 @@ func (h *Hub) sendToEventSub(userID, deviceID string, msg protocol.WSMessage) {
 		return
 	}
 	select {
-	case ch <- msg:
+	case ch <- event:
 	default:
 		log.Printf("event sub buffer full for device %s", deviceID[:8])
 	}
@@ -299,21 +331,26 @@ func (h *Hub) SendClip(userID string, clip *cinchv1.Clip) error {
 	}
 	h.mu.RUnlock()
 
-	msg := protocol.WSMessage{Action: protocol.ActionNewClip, Clip: clip}
+	wsMsg := &protocol.WSMessage{Action: protocol.ActionNewClip, Clip: clip}
+	event := &cinchv1.ServerEvent{
+		Event: &cinchv1.ServerEvent_NewClip{
+			NewClip: &cinchv1.NewClipEvent{Clip: clip},
+		},
+	}
 
 	var firstErr error
 	for _, ac := range conns {
-		if err := ac.Conn.WriteJSON(msg); err != nil && firstErr == nil {
+		if err := ac.Conn.WriteJSON(wsMsg); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
 
-	h.sendToEventSubs(userID, msg)
+	h.sendToEventSubs(userID, event)
 	return firstErr
 }
 
-// SendToUser sends a message to all connected devices for a user (WS + event stream).
-func (h *Hub) SendToUser(userID string, msg protocol.WSMessage) {
+// SendToUser sends an event to all connected devices for a user (WS + event stream).
+func (h *Hub) SendToUser(userID string, event *cinchv1.ServerEvent) {
 	h.mu.RLock()
 	devs := h.conns[userID]
 	// Copy to avoid holding the lock during WriteJSON calls.
@@ -323,20 +360,22 @@ func (h *Hub) SendToUser(userID string, msg protocol.WSMessage) {
 	}
 	h.mu.RUnlock()
 
-	for _, ac := range conns {
-		if err := ac.Conn.WriteJSON(msg); err != nil {
-			log.Printf("SendToUser write error for device %s: %v", ac.DeviceID, err)
+	if wsMsg := serverEventToWSMessage(event); wsMsg != nil {
+		for _, ac := range conns {
+			if err := ac.Conn.WriteJSON(wsMsg); err != nil {
+				log.Printf("SendToUser write error for device %s: %v", ac.DeviceID, err)
+			}
 		}
 	}
 
-	h.sendToEventSubs(userID, msg)
+	h.sendToEventSubs(userID, event)
 }
 
-// SendToDevice pushes msg to the specific (userID, deviceID) connection if present.
+// SendToDevice pushes an event to the specific (userID, deviceID) connection if present.
 // Checks WS conn first, then event stream subscriber.
 // Returns nil if the device is offline — revoke/rotation is server-authoritative;
 // clients discover state on next HTTP request regardless of delivery.
-func (h *Hub) SendToDevice(userID, deviceID string, msg protocol.WSMessage) error {
+func (h *Hub) SendToDevice(userID, deviceID string, event *cinchv1.ServerEvent) error {
 	h.mu.RLock()
 	var ac *AgentConn
 	if devs, ok := h.conns[userID]; ok {
@@ -345,10 +384,14 @@ func (h *Hub) SendToDevice(userID, deviceID string, msg protocol.WSMessage) erro
 	h.mu.RUnlock()
 
 	if ac != nil {
-		return ac.Conn.WriteJSON(msg)
+		wsMsg := serverEventToWSMessage(event)
+		if wsMsg == nil {
+			return nil
+		}
+		return ac.Conn.WriteJSON(wsMsg)
 	}
 
-	h.sendToEventSub(userID, deviceID, msg)
+	h.sendToEventSub(userID, deviceID, event)
 	return nil
 }
 
@@ -365,7 +408,7 @@ func (h *Hub) RequestClipboard(userID, pullID string) (string, error) {
 	h.mu.RUnlock()
 
 	// Fall back to event stream subscriber if no WS conn.
-	var streamCh chan protocol.WSMessage
+	var streamCh chan *cinchv1.ServerEvent
 	if ac == nil {
 		h.eventSubsMu.RLock()
 		for _, ch := range h.eventSubs[userID] {
@@ -391,14 +434,19 @@ func (h *Hub) RequestClipboard(userID, pullID string) (string, error) {
 		h.pullMu.Unlock()
 	}()
 
-	msg := protocol.WSMessage{Action: protocol.ActionSendClipboard, PullID: pullID}
+	sendClipboardEvent := &cinchv1.ServerEvent{
+		Event: &cinchv1.ServerEvent_SendClipboard{
+			SendClipboard: &cinchv1.SendClipboardEvent{PullId: pullID},
+		},
+	}
 	if ac != nil {
-		if err := ac.Conn.WriteJSON(msg); err != nil {
+		wsMsg := &protocol.WSMessage{Action: protocol.ActionSendClipboard, PullID: pullID}
+		if err := ac.Conn.WriteJSON(wsMsg); err != nil {
 			return "", ErrAgentOffline
 		}
 	} else {
 		select {
-		case streamCh <- msg:
+		case streamCh <- sendClipboardEvent:
 		default:
 			return "", ErrAgentOffline
 		}
