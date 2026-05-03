@@ -10,7 +10,6 @@ Cinch Relay is a self-hostable clipboard relay server. It receives clipboard cli
   - `hub.go` — In-memory WebSocket hub. Broadcasts new clips to subscribed devices.
   - `handler.go` — Legacy HTTP routes (`/v1/clips`, `/v1/stream`, `/health`, CORS).
   - `connect_*.go` — Connect-RPC service implementations (auth, clips, devices, event stream).
-  - `grace_sweeper.go` — Background job that NULLs stale master tokens past the 7-day migration window.
 - **internal/gen/cinch/v1/** — Generated protobuf + Connect-RPC Go code. Do not edit by hand; regenerate with `make generate`.
 - **proto/cinch/v1/** — Protobuf service and message definitions.
 

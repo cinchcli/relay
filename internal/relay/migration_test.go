@@ -7,33 +7,13 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// TestMigrateDevicesToken asserts the Phase 2 additive migration adds three columns
-// and a partial unique index on devices(token).
-func TestMigrateDevicesToken(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer db.Close()
-	if err := migrate(db); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-
-	assertCol(t, db, "devices", "token")
-	assertCol(t, db, "devices", "revoked_at")
-	assertCol(t, db, "users", "token_migrated_at")
-
-	// Partial UNIQUE index on devices(token) WHERE token IS NOT NULL must exist.
-	var idxCount int
-	if err := db.QueryRow(
-		`SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_devices_token'`,
-	).Scan(&idxCount); err != nil {
-		t.Fatalf("idx check: %v", err)
-	}
-	if idxCount != 1 {
-		t.Fatalf("idx_devices_token missing, got count %d", idxCount)
-	}
-}
+// TestMigrateDevicesToken was removed in the OAuth-only migration (Task 4).
+// It asserted the Phase 2 additive migration left users.token_migrated_at
+// in place, but Phase 6 (Task 3) drops that column along with the rest of
+// the legacy auth machinery. TestMigrate_DropsLegacyColumns in
+// store_test.go now covers the post-migration absence of pair_token /
+// token / token_migrated_at, and the partial UNIQUE index on
+// devices(token) is no longer relevant once devices.token is gone.
 
 // TestMigrateIdempotent ensures running migrate twice succeeds (additive-only migrations).
 func TestMigrateIdempotent(t *testing.T) {
@@ -50,26 +30,3 @@ func TestMigrateIdempotent(t *testing.T) {
 	}
 }
 
-// assertCol fails the test if the column is missing from the given table.
-func assertCol(t *testing.T, db *sql.DB, table, col string) {
-	t.Helper()
-	rows, err := db.Query("PRAGMA table_info(" + table + ")")
-	if err != nil {
-		t.Fatalf("pragma: %v", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var cid int
-		var name, ctype string
-		var notnull int
-		var dflt sql.NullString
-		var pk int
-		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
-			t.Fatal(err)
-		}
-		if name == col {
-			return
-		}
-	}
-	t.Fatalf("column %s.%s missing", table, col)
-}

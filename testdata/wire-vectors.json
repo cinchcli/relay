@@ -90,23 +90,8 @@
   "LoginResponse": {
     "ok": {
       "token": "tok_01H",
-      "pair_token": "pair_01H",
       "user_id": "user_42",
       "device_id": "dev_01H"
-    }
-  },
-
-  "PairResponse": {
-    "ok": {
-      "token": "tok_01H",
-      "user_id": "user_42",
-      "device_id": "dev_01H"
-    }
-  },
-
-  "RotatePairTokenResponse": {
-    "ok": {
-      "pair_token": "pair_NEW"
     }
   },
 

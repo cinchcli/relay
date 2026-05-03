@@ -168,7 +168,7 @@ func TestPollDeviceCode_Expired(t *testing.T) {
 	_ = ts // keep the original for reference
 
 	// Issue a device code, then manually expire it
-	dcResp, err := store.CreateDeviceCode("test-cli")
+	dcResp, err := store.CreateDeviceCode("test-cli", "")
 	if err != nil {
 		t.Fatalf("create device code failed: %v", err)
 	}
@@ -222,5 +222,32 @@ func TestAuthBrowser_ServesHTML(t *testing.T) {
 	}
 	if !strings.Contains(body, "#4FB3A9") {
 		t.Error("HTML body missing Cinch accent color #4FB3A9")
+	}
+}
+
+// TestRemovedEndpoints guards against accidental re-introduction of the
+// pair-token routes. Both must return 404 from the mux — the handlers
+// themselves were deleted in the OAuth-only migration.
+func TestRemovedEndpoints(t *testing.T) {
+	ts, _ := setupTestServer(t)
+
+	for _, route := range []struct {
+		method, path string
+	}{
+		{"POST", "/auth/pair"},
+		{"POST", "/auth/pair-token/new"},
+	} {
+		t.Run(route.method+" "+route.path, func(t *testing.T) {
+			req, _ := http.NewRequest(route.method, ts.URL+route.path, nil)
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("request: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusNotFound {
+				t.Errorf("expected 404 for removed route, got %d", resp.StatusCode)
+			}
+		})
 	}
 }

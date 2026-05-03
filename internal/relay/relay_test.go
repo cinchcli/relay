@@ -21,7 +21,7 @@ import (
 )
 
 // stringPtr returns a pointer to the given string. Used for proto3 optional
-// fields (e.g. cinchv1.PairRequest.Hostname) in test struct literals.
+// fields (e.g. cinchv1.LoginRequest.Hostname) in test struct literals.
 func stringPtr(s string) *string { return &s }
 
 // setupTestServer creates a relay with an in-memory SQLite DB and returns the test server URL.
@@ -47,7 +47,9 @@ func setupTestServer(t *testing.T) (*httptest.Server, *relay.Hub) {
 	return ts, hub
 }
 
-// login creates a user and returns the auth token and pair token.
+// login creates a user + first device row and returns the device token,
+// the (now-empty) pair token (kept in the signature for call-site
+// compatibility — proto field is reserved), and the user_id.
 func login(t *testing.T, baseURL string) (token, pairToken, userID string) {
 	t.Helper()
 
@@ -63,7 +65,7 @@ func login(t *testing.T, baseURL string) (token, pairToken, userID string) {
 
 	var loginResp cinchv1.LoginResponse
 	json.NewDecoder(resp.Body).Decode(&loginResp)
-	return loginResp.Token, loginResp.PairToken, loginResp.UserId
+	return loginResp.Token, "", loginResp.UserId
 }
 
 // connectFakeAgent connects a WebSocket client that acts as the desktop agent.
@@ -83,67 +85,20 @@ func connectFakeAgent(t *testing.T, baseURL, token string) *websocket.Conn {
 func TestAuthLogin(t *testing.T) {
 	ts, _ := setupTestServer(t)
 
-	token, pairToken, userID := login(t, ts.URL)
+	token, _, userID := login(t, ts.URL)
 
 	if token == "" {
 		t.Error("token is empty")
-	}
-	if pairToken == "" {
-		t.Error("pair token is empty")
 	}
 	if userID == "" {
 		t.Error("user ID is empty")
 	}
 }
 
-func TestAuthPair(t *testing.T) {
-	ts, _ := setupTestServer(t)
-
-	token, pairToken, _ := login(t, ts.URL)
-	_ = token
-
-	// Pair with the pair token
-	reqBody, _ := json.Marshal(cinchv1.PairRequest{
-		PairToken: pairToken,
-		Hostname:  stringPtr("test-server"),
-	})
-	resp, err := http.Post(ts.URL+"/auth/pair", "application/json", bytes.NewReader(reqBody))
-	if err != nil {
-		t.Fatalf("pair request failed: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("pair returned %d", resp.StatusCode)
-	}
-
-	var pairResp cinchv1.PairResponse
-	json.NewDecoder(resp.Body).Decode(&pairResp)
-
-	if pairResp.Token == "" {
-		t.Error("paired token is empty")
-	}
-	if pairResp.UserId == "" {
-		t.Error("paired user ID is empty")
-	}
-}
-
-func TestAuthPairInvalidToken(t *testing.T) {
-	ts, _ := setupTestServer(t)
-
-	reqBody, _ := json.Marshal(cinchv1.PairRequest{
-		PairToken: "invalid-token",
-	})
-	resp, err := http.Post(ts.URL+"/auth/pair", "application/json", bytes.NewReader(reqBody))
-	if err != nil {
-		t.Fatalf("pair request failed: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Errorf("expected 401, got %d", resp.StatusCode)
-	}
-}
+// TestAuthPair / TestAuthPairInvalidToken removed — the /auth/pair
+// endpoint and PairRequest/PairResponse messages were retired in the
+// OAuth-only migration. Cross-device bootstrap is exercised by the
+// integration smoke test (cinch pair via SSH).
 
 func TestPushClip(t *testing.T) {
 	ts, _ := setupTestServer(t)
