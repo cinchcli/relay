@@ -12,7 +12,6 @@ import (
 
 	cinchv1 "github.com/cinchcli/relay/internal/gen/cinch/v1"
 	"github.com/cinchcli/relay/internal/gen/cinch/v1/cinchv1connect"
-	"github.com/cinchcli/relay/internal/protocol"
 )
 
 // connectAuthServer implements cinchv1connect.AuthServiceHandler.
@@ -204,9 +203,10 @@ func (s *connectAuthServer) RevokeDevice(ctx context.Context, req *connect.Reque
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	s.h.hub.SendToDevice(ownerID, req.Msg.DeviceId, protocol.WSMessage{
-		Action: protocol.ActionRevoked,
-		Reason: "revoked_by_user",
+	s.h.hub.SendToDevice(ownerID, req.Msg.DeviceId, &cinchv1.ServerEvent{
+		Event: &cinchv1.ServerEvent_Revoked{
+			Revoked: &cinchv1.RevokedEvent{Reason: "revoked_by_user"},
+		},
 	})
 
 	return connect.NewResponse(&cinchv1.RevokeDeviceResponse{
@@ -243,10 +243,13 @@ func (s *connectAuthServer) KeyBundleRetry(
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errMsg("device has not registered a public key yet"))
 	}
 
-	s.h.hub.SendToUser(userID, protocol.WSMessage{
-		Action:   protocol.ActionKeyExchangeRequested,
-		DeviceID: deviceID,
-		Hostname: hostname,
+	s.h.hub.SendToUser(userID, &cinchv1.ServerEvent{
+		Event: &cinchv1.ServerEvent_KeyExchange{
+			KeyExchange: &cinchv1.KeyExchangeEvent{
+				DeviceId: deviceID,
+				Hostname: hostname,
+			},
+		},
 	})
 
 	return connect.NewResponse(&cinchv1.KeyBundleRetryResponse{Ok: true}), nil
