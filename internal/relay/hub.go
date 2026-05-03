@@ -162,7 +162,7 @@ func (h *Hub) RegisterEventSub(userID, deviceID string) <-chan *cinchv1.ServerEv
 	}
 	h.eventSubs[userID][deviceID] = ch
 	h.eventSubsMu.Unlock()
-	log.Printf("event stream connected: %s device: %s", userID[:8], deviceID[:8])
+	log.Printf("event stream connected: %s device: %s", userID[:min(8, len(userID))], deviceID[:min(8, len(deviceID))])
 	return ch
 }
 
@@ -173,7 +173,7 @@ func (h *Hub) UnregisterEventSub(userID, deviceID string) {
 		if ch, ok := devs[deviceID]; ok {
 			close(ch)
 			delete(devs, deviceID)
-			log.Printf("event stream disconnected: %s device: %s", userID[:8], deviceID[:8])
+			log.Printf("event stream disconnected: %s device: %s", userID[:min(8, len(userID))], deviceID[:min(8, len(deviceID))])
 		}
 		if len(devs) == 0 {
 			delete(h.eventSubs, userID)
