@@ -91,6 +91,51 @@ func TestAuthLogin(t *testing.T) {
 	}
 }
 
+// TestAuthLogin_Disabled_WhenOAuthConfigured verifies that POST /auth/login
+// returns 403 when an OAuth provider is configured, preventing account
+// creation outside the OAuth identity audit trail (security finding 3).
+func TestAuthLogin_Disabled_WhenOAuthConfigured(t *testing.T) {
+	ts, _ := setupOAuthTestServer(t, "some-subject")
+
+	resp, err := http.Post(ts.URL+"/auth/login", "application/json",
+		strings.NewReader(`{"hostname":"test-host"}`))
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusMethodNotAllowed {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 403 or 405, got %d: %s", resp.StatusCode, body)
+	}
+}
+
+// TestAuthLogin_Available_WhenNoOAuth verifies that POST /auth/login still
+// works normally on a relay without any OAuth provider configured.
+func TestAuthLogin_Available_WhenNoOAuth(t *testing.T) {
+	ts, _ := setupTestServer(t)
+
+	resp, err := http.Post(ts.URL+"/auth/login", "application/json",
+		strings.NewReader(`{"hostname":"test-host"}`))
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body)
+	}
+
+	var loginResp cinchv1.LoginResponse
+	if err := json.NewDecoder(resp.Body).Decode(&loginResp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if loginResp.Token == "" {
+		t.Error("expected non-empty token when OAuth is not configured")
+	}
+}
+
 // TestAuthPair / TestAuthPairInvalidToken removed — the /auth/pair
 // endpoint and PairRequest/PairResponse messages were retired in the
 // OAuth-only migration. Cross-device bootstrap is exercised by the

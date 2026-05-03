@@ -159,6 +159,15 @@ func (h *Handler) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 // Used by the smoke test and the demo HTML page; production clients
 // always go through device-code OAuth.
 func (h *Handler) AuthLogin(w http.ResponseWriter, r *http.Request) {
+	// Reject direct account creation when OAuth is configured. All accounts on
+	// an OAuth-enabled relay must be created through the OAuth flow to preserve
+	// the identity audit trail (security finding 3).
+	if h.OAuth != nil && (h.OAuth.GitHub != nil || h.OAuth.Google != nil) {
+		writeError(w, http.StatusForbidden, "oauth_required",
+			"Direct login is disabled. Use OAuth to authenticate.", "")
+		return
+	}
+
 	ip := r.Header.Get("X-Forwarded-For")
 	if ip == "" {
 		ip, _, _ = strings.Cut(r.RemoteAddr, ":")
@@ -1561,7 +1570,12 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 
 // RegisterRoutes registers all relay HTTP routes on the given mux.
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("POST /auth/login", h.AuthLogin)
+	// Only register the legacy auth/login endpoint when no OAuth providers are
+	// configured. When OAuth is active, all accounts must be created via the
+	// OAuth flow to preserve the identity audit trail (security finding 3).
+	if h.OAuth == nil || (h.OAuth.GitHub == nil && h.OAuth.Google == nil) {
+		mux.HandleFunc("POST /auth/login", h.AuthLogin)
+	}
 	mux.HandleFunc("GET /auth/browser", h.AuthBrowser)
 	mux.HandleFunc("POST /auth/device-code", h.IssueDeviceCode)
 	mux.HandleFunc("GET /auth/device-code/poll", h.PollDeviceCode)
