@@ -484,6 +484,130 @@ func TestGetProviders_NoOAuth(t *testing.T) {
 	}
 }
 
+// setupBothProvidersTestServer builds a relay handler with both GitHub and
+// Google OAuth configured. This forces AuthBrowser to render the picker page
+// (no auto-redirect fires when both providers are present), which is the code
+// path that interpolates device_code into href attributes.
+func setupBothProvidersTestServer(t *testing.T) *httptest.Server {
+	t.Helper()
+
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "fake-access-token",
+			"token_type":   "Bearer",
+		})
+	}))
+	t.Cleanup(tokenServer.Close)
+
+	store, err := relay.NewStore(":memory:")
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	hub := relay.NewHub()
+	go hub.Run()
+
+	handler := relay.NewHandler(store, hub)
+
+	mux := http.NewServeMux()
+	handler.RegisterRoutes(mux)
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	fetcher := func(_ string, _ *oauth2.Config, _ *oauth2.Token) (string, error) {
+		return "test-subject", nil
+	}
+
+	ghProvider := relay.NewTestOAuthProvider(
+		testClientSecret,
+		tokenServer.URL+"/token",
+		ts.URL+"/auth/oauth/github/callback",
+		fetcher,
+	)
+	gProvider := relay.NewTestOAuthProvider(
+		testClientSecret,
+		tokenServer.URL+"/token",
+		ts.URL+"/auth/oauth/google/callback",
+		fetcher,
+	)
+	handler.OAuth = &relay.OAuthProviders{GitHub: ghProvider, Google: gProvider}
+	handler.BaseURL = ts.URL
+
+	return ts
+}
+
+// TestAuthBrowser_XSSPrevention verifies that a crafted device_code containing
+// HTML/script injection is not reflected verbatim in the response body.
+// A payload of `x"><script>alert(1)</script>` must never appear as a literal
+// <script> tag in the HTML output. The server must either escape it or reject
+// the request with 400.
+func TestAuthBrowser_XSSPrevention(t *testing.T) {
+	ts := setupBothProvidersTestServer(t)
+
+	// URL-encoded form of: x"><script>alert(1)</script>
+	xssPayload := `x"><script>alert(1)</script>`
+	resp, err := http.Get(ts.URL + "/auth/browser?device_code=x%22%3E%3Cscript%3Ealert(1)%3C%2Fscript%3E")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body failed: %v", err)
+	}
+	bodyStr := string(body)
+
+	// Either 400 (rejected) or 200 with the payload escaped — both are fine.
+	// What is NOT acceptable: the literal payload in the output.
+	if strings.Contains(strings.ToLower(bodyStr), "<script>") {
+		t.Errorf("XSS payload reflected in response body (status %d); got %q", resp.StatusCode, bodyStr)
+	}
+
+	// If 400, we're done — the server rejected it cleanly.
+	if resp.StatusCode == http.StatusBadRequest {
+		return
+	}
+
+	// If 200, verify the raw payload string is not present verbatim.
+	if strings.Contains(bodyStr, xssPayload) {
+		t.Errorf("raw XSS payload %q reflected verbatim in 200 response", xssPayload)
+	}
+}
+
+// TestAuthBrowser_ValidDeviceCode verifies that a well-formed device_code
+// (XXXX-XXXX uppercase alphanumeric) renders the picker page successfully.
+func TestAuthBrowser_ValidDeviceCode(t *testing.T) {
+	ts := setupBothProvidersTestServer(t)
+
+	resp, err := http.Get(ts.URL + "/auth/browser?device_code=ABCD-1234")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200 for valid device_code, got %d: %s", resp.StatusCode, body)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body failed: %v", err)
+	}
+	bodyStr := string(body)
+
+	// The OAuth picker page should contain both provider buttons.
+	if !strings.Contains(bodyStr, "github") {
+		t.Error("expected GitHub button in picker page")
+	}
+	if !strings.Contains(bodyStr, "google") {
+		t.Error("expected Google button in picker page")
+	}
+}
+
 // TestGetProviders_WithOAuth returns the configured provider names.
 func TestGetProviders_WithOAuth(t *testing.T) {
 	ts, _ := setupOAuthTestServer(t, "any")
