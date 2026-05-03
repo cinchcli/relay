@@ -8,7 +8,6 @@ import (
 
 	cinchv1 "github.com/cinchcli/relay/internal/gen/cinch/v1"
 	"github.com/cinchcli/relay/internal/gen/cinch/v1/cinchv1connect"
-	"github.com/cinchcli/relay/internal/protocol"
 )
 
 type connectEventsServer struct {
@@ -16,56 +15,6 @@ type connectEventsServer struct {
 }
 
 var _ cinchv1connect.EventStreamServiceHandler = (*connectEventsServer)(nil)
-
-// wsMessageToServerEvent translates a protocol.WSMessage into a typed proto ServerEvent.
-// Messages that don't map to a known server-push event are returned as nil (caller skips).
-func wsMessageToServerEvent(msg protocol.WSMessage) *cinchv1.ServerEvent {
-	switch msg.Action {
-	case protocol.ActionNewClip:
-		if msg.Clip == nil {
-			return nil
-		}
-		return &cinchv1.ServerEvent{
-			Event: &cinchv1.ServerEvent_NewClip{
-				NewClip: &cinchv1.NewClipEvent{Clip: msg.Clip},
-			},
-		}
-	case protocol.ActionSendClipboard:
-		return &cinchv1.ServerEvent{
-			Event: &cinchv1.ServerEvent_SendClipboard{
-				SendClipboard: &cinchv1.SendClipboardEvent{PullId: msg.PullID},
-			},
-		}
-	case protocol.ActionRevoked:
-		return &cinchv1.ServerEvent{
-			Event: &cinchv1.ServerEvent_Revoked{
-				Revoked: &cinchv1.RevokedEvent{Reason: msg.Reason},
-			},
-		}
-	case protocol.ActionTokenRotated:
-		return &cinchv1.ServerEvent{
-			Event: &cinchv1.ServerEvent_TokenRotated{
-				TokenRotated: &cinchv1.TokenRotatedEvent{
-					Token:    msg.Token,
-					DeviceId: msg.DeviceID,
-					Hostname: msg.Hostname,
-				},
-			},
-		}
-	case protocol.ActionKeyExchangeRequested:
-		return &cinchv1.ServerEvent{
-			Event: &cinchv1.ServerEvent_KeyExchange{
-				KeyExchange: &cinchv1.KeyExchangeEvent{
-					DeviceId:             msg.DeviceID,
-					Hostname:             msg.Hostname,
-					DeviceKeyFingerprint: msg.DeviceKeyFingerprint,
-				},
-			},
-		}
-	default:
-		return nil // ping/pong and internal-only actions are not forwarded
-	}
-}
 
 // ─── Subscribe ───────────────────────────────────────────────
 
@@ -90,11 +39,14 @@ func (s *connectEventsServer) Subscribe(
 			return
 		}
 		for _, d := range pending {
-			s.h.hub.sendToEventSub(userID, deviceID, protocol.WSMessage{
-				Action:               protocol.ActionKeyExchangeRequested,
-				DeviceID:             d.Id,
-				Hostname:             d.Hostname,
-				DeviceKeyFingerprint: d.PublicKeyFingerprint,
+			s.h.hub.sendToEventSub(userID, deviceID, &cinchv1.ServerEvent{
+				Event: &cinchv1.ServerEvent_KeyExchange{
+					KeyExchange: &cinchv1.KeyExchangeEvent{
+						DeviceId:             d.Id,
+						Hostname:             d.Hostname,
+						DeviceKeyFingerprint: d.PublicKeyFingerprint,
+					},
+				},
 			})
 		}
 	}()
@@ -103,12 +55,11 @@ func (s *connectEventsServer) Subscribe(
 		select {
 		case <-ctx.Done():
 			return nil
-		case msg, ok := <-ch:
+		case event, ok := <-ch:
 			if !ok {
 				// Channel closed — a new connection for this device replaced this one.
 				return nil
 			}
-			event := wsMessageToServerEvent(msg)
 			if event == nil {
 				continue
 			}
