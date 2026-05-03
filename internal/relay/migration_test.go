@@ -29,4 +29,3 @@ func TestMigrateIdempotent(t *testing.T) {
 		t.Fatalf("second: %v", err)
 	}
 }
-

@@ -56,11 +56,11 @@ func (h *Handler) requireConnectAuth(req connect.AnyRequest) error {
 // authConnectInterceptor applies RequireAuth only for procedures that need it.
 func (h *Handler) authConnectInterceptor() connect.UnaryInterceptorFunc {
 	authedProcedures := map[string]bool{
-		cinchv1connect.AuthServiceDeviceCodeCompleteProcedure: true,
-		cinchv1connect.AuthServiceRevokeDeviceProcedure:       true,
-		cinchv1connect.AuthServiceKeyBundlePutProcedure:       true,
-		cinchv1connect.AuthServiceKeyBundleGetProcedure:       true,
-		cinchv1connect.AuthServiceKeyBundleRetryProcedure:     true,
+		cinchv1connect.AuthServiceDeviceCodeCompleteProcedure:      true,
+		cinchv1connect.AuthServiceRevokeDeviceProcedure:            true,
+		cinchv1connect.AuthServiceKeyBundlePutProcedure:            true,
+		cinchv1connect.AuthServiceKeyBundleGetProcedure:            true,
+		cinchv1connect.AuthServiceKeyBundleRetryProcedure:          true,
 		cinchv1connect.AuthServiceRegisterDevicePublicKeyProcedure: true,
 	}
 	return func(next connect.UnaryFunc) connect.UnaryFunc {
