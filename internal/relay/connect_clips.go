@@ -9,7 +9,6 @@ import (
 
 	cinchv1 "github.com/cinchcli/relay/internal/gen/cinch/v1"
 	"github.com/cinchcli/relay/internal/gen/cinch/v1/cinchv1connect"
-	"github.com/cinchcli/relay/internal/protocol"
 )
 
 type connectClipsServer struct {
@@ -55,8 +54,10 @@ func (s *connectClipsServer) PushClip(ctx context.Context, req *connect.Request[
 		if req.Msg.Source != "" {
 			s.h.store.UpdateDeviceActivity(userID, req.Msg.Source)
 		}
-		if err := s.h.hub.SendToDevice(userID, targetDeviceID, protocol.WSMessage{
-			Action: protocol.ActionNewClip, Clip: clip,
+		if err := s.h.hub.SendToDevice(userID, targetDeviceID, &cinchv1.ServerEvent{
+			Event: &cinchv1.ServerEvent_NewClip{
+				NewClip: &cinchv1.NewClipEvent{Clip: clip},
+			},
 		}); err != nil {
 			log.Printf("connectClipsServer.PushClip: SendToDevice failed: %v", err)
 		}

@@ -348,10 +348,13 @@ func (h *Handler) KeyBundleRetry(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "no public key registered", "device has not registered a public key yet", "Sign in via cinch auth login first")
 		return
 	}
-	h.hub.SendToUser(userID, protocol.WSMessage{
-		Action:   protocol.ActionKeyExchangeRequested,
-		DeviceID: deviceID,
-		Hostname: hostname,
+	h.hub.SendToUser(userID, &cinchv1.ServerEvent{
+		Event: &cinchv1.ServerEvent_KeyExchange{
+			KeyExchange: &cinchv1.KeyExchangeEvent{
+				DeviceId: deviceID,
+				Hostname: hostname,
+			},
+		},
 	})
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
@@ -393,8 +396,10 @@ func (h *Handler) PushClip(w http.ResponseWriter, r *http.Request) {
 		if req.Source != "" {
 			h.store.UpdateDeviceActivity(userID, req.Source)
 		}
-		if err := h.hub.SendToDevice(userID, targetDeviceID, protocol.WSMessage{
-			Action: protocol.ActionNewClip, Clip: clip,
+		if err := h.hub.SendToDevice(userID, targetDeviceID, &cinchv1.ServerEvent{
+			Event: &cinchv1.ServerEvent_NewClip{
+				NewClip: &cinchv1.NewClipEvent{Clip: clip},
+			},
 		}); err != nil {
 			log.Printf("SendToDevice failed after online check: %v", err)
 		}
@@ -1203,9 +1208,10 @@ func (h *Handler) RevokeDevice(w http.ResponseWriter, r *http.Request) {
 
 	// Best-effort WS push to victim device. Do not block or surface errors —
 	// the client-side 401 (device_revoked) is the authoritative signal.
-	h.hub.SendToDevice(ownerID, req.DeviceId, protocol.WSMessage{
-		Action: protocol.ActionRevoked,
-		Reason: "revoked_by_user",
+	h.hub.SendToDevice(ownerID, req.DeviceId, &cinchv1.ServerEvent{
+		Event: &cinchv1.ServerEvent_Revoked{
+			Revoked: &cinchv1.RevokedEvent{Reason: "revoked_by_user"},
+		},
 	})
 
 	writeJSON(w, http.StatusOK, cinchv1.RevokeDeviceResponse{
