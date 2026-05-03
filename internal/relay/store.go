@@ -945,7 +945,7 @@ func (s *Store) ListClips(userID string, limit int) ([]*cinchv1.Clip, error) {
 	}
 	defer rows.Close()
 
-	var clips []*cinchv1.Clip
+	clips := make([]*cinchv1.Clip, 0)
 	for rows.Next() {
 		c := &cinchv1.Clip{}
 		var mediaPath sql.NullString
