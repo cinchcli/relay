@@ -19,7 +19,6 @@
       "label": "snippet",
       "byte_size": 15,
       "created_at": "2026-04-30T12:34:56Z",
-      "ttl": 3600,
       "encrypted": true
     },
     "image_with_media": {
@@ -44,7 +43,6 @@
       "content_type": "image",
       "label": "logo",
       "source": "remote:host",
-      "ttl": 60,
       "byte_size": 1234,
       "encrypted": true,
       "target_device_id": "01HDEV0000000000000000000"

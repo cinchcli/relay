@@ -56,7 +56,6 @@ func migrate(db *sql.DB) error {
 			label        TEXT DEFAULT '',
 			byte_size    INTEGER DEFAULT 0,
 			created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
-			ttl          INTEGER DEFAULT 0,
 			FOREIGN KEY (user_id) REFERENCES users(id)
 		);
 
@@ -468,6 +467,32 @@ func migrate(db *sql.DB) error {
 		}
 	}
 
+	// Drop ttl column — field removed from proto; relay never used it for sweep.
+	var hasTTL bool
+	ttlRows, err := db.Query("PRAGMA table_info(clips)")
+	if err != nil {
+		return err
+	}
+	defer ttlRows.Close()
+	for ttlRows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull int
+		var dfltValue sql.NullString
+		var pk int
+		if err := ttlRows.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk); err != nil {
+			return err
+		}
+		if name == "ttl" {
+			hasTTL = true
+		}
+	}
+	if hasTTL {
+		if _, err = db.Exec("ALTER TABLE clips DROP COLUMN ttl"); err != nil {
+			return err
+		}
+	}
+
 	// Login unification migration: machine_id on devices and device_codes.
 	// Same Mac signing in via CLI and desktop should reuse one device row;
 	// the dedup key is (user_id, machine_id) when machine_id is non-empty.
@@ -862,11 +887,10 @@ func (s *Store) RegisterDeviceWithToken(userID, deviceID, hostname, token string
 
 // SaveClip persists a clip and returns it.
 //
-// `req.MediaPath` and `req.Ttl` are proto3 `optional` fields and arrive as
-// `*string` / `*int64`; the SQLite columns store the underlying value (or
-// NULL when nil). `created_at` is rendered as RFC 3339 to match the wire
-// shape the proto emits — the column type is TEXT so this round-trips
-// cleanly.
+// `req.MediaPath` is a proto3 `optional` field and arrives as `*string`;
+// the SQLite column stores the underlying value (or NULL when nil).
+// `created_at` is rendered as RFC 3339 to match the wire shape the proto
+// emits — the column type is TEXT so this round-trips cleanly.
 func (s *Store) SaveClip(userID string, req *cinchv1.PushClipRequest) (*cinchv1.Clip, error) {
 	id := ulid.Make().String()
 	now := time.Now().UTC()
@@ -901,13 +925,12 @@ func (s *Store) SaveClip(userID string, req *cinchv1.PushClipRequest) (*cinchv1.
 		clip.MediaPath = &mediaPath
 	}
 
-	// ttl field removed from proto (T1); column kept until T2 migration drops it.
 	_, err := s.db.Exec(
-		`INSERT INTO clips (id, user_id, content, content_type, source, label, byte_size, media_path, created_at, ttl, encrypted)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO clips (id, user_id, content, content_type, source, label, byte_size, media_path, created_at, encrypted)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		clip.ClipId, clip.UserId, clip.Content, clip.ContentType,
 		clip.Source, clip.Label, clip.ByteSize, sql.NullString{String: mediaPath, Valid: mediaPath != ""},
-		now, int64(0), clip.Encrypted,
+		now, clip.Encrypted,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("saving clip: %w", err)
