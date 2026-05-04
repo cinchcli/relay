@@ -75,12 +75,22 @@ func (s *S3CompatStore) Download(ctx context.Context, key string) (io.ReadCloser
 	if err != nil {
 		return nil, fmt.Errorf("media(s3): download %q: %w", key, err)
 	}
+	// GetObject is lazy — Stat forces the network round-trip so callers get
+	// a missing-key error here rather than on the first Read.
+	if _, err := obj.Stat(); err != nil {
+		obj.Close()
+		return nil, fmt.Errorf("media(s3): download %q: %w", key, err)
+	}
 	return obj, nil
 }
 
 func (s *S3CompatStore) Delete(ctx context.Context, key string) error {
 	err := s.client.RemoveObject(ctx, s.bucket, key, minio.RemoveObjectOptions{})
 	if err != nil {
+		// S3 returns 204 for missing keys, but some providers return NoSuchKey.
+		if minio.ToErrorResponse(err).Code == "NoSuchKey" {
+			return nil
+		}
 		return fmt.Errorf("media(s3): delete %q: %w", key, err)
 	}
 	return nil
