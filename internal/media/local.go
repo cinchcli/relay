@@ -2,8 +2,10 @@ package media
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 )
@@ -39,7 +41,10 @@ func (s *LocalStore) Upload(_ context.Context, key string, r io.Reader, _ int64,
 		os.Remove(tmpPath)
 		return fmt.Errorf("media(local): write: %w", err)
 	}
-	tmp.Close()
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("media(local): close temp: %w", err)
+	}
 
 	if err := os.Rename(tmpPath, dst); err != nil {
 		os.Remove(tmpPath)
@@ -58,8 +63,11 @@ func (s *LocalStore) Download(_ context.Context, key string) (io.ReadCloser, err
 
 func (s *LocalStore) Delete(_ context.Context, key string) error {
 	err := os.Remove(s.path(key))
-	if os.IsNotExist(err) {
+	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
-	return err
+	if err != nil {
+		return fmt.Errorf("media(local): remove %q: %w", key, err)
+	}
+	return nil
 }
