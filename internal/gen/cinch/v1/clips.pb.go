@@ -22,18 +22,18 @@ const (
 )
 
 type Clip struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ClipId        string                 `protobuf:"bytes,1,opt,name=clip_id,json=clipId,proto3" json:"clip_id,omitempty"`
-	UserId        string                 `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	Content       string                 `protobuf:"bytes,3,opt,name=content,proto3" json:"content,omitempty"`
-	ContentType   string                 `protobuf:"bytes,4,opt,name=content_type,json=contentType,proto3" json:"content_type,omitempty"`
-	Source        string                 `protobuf:"bytes,5,opt,name=source,proto3" json:"source,omitempty"`
-	Label         string                 `protobuf:"bytes,6,opt,name=label,proto3" json:"label,omitempty"`
-	ByteSize      int64                  `protobuf:"varint,7,opt,name=byte_size,json=byteSize,proto3" json:"byte_size,omitempty"`
-	MediaPath     *string                `protobuf:"bytes,8,opt,name=media_path,json=mediaPath,proto3,oneof" json:"media_path,omitempty"`
-	CreatedAt     string                 `protobuf:"bytes,9,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	Ttl           *int64                 `protobuf:"varint,10,opt,name=ttl,proto3,oneof" json:"ttl,omitempty"`
-	Encrypted     bool                   `protobuf:"varint,11,opt,name=encrypted,proto3" json:"encrypted,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	ClipId      string                 `protobuf:"bytes,1,opt,name=clip_id,json=clipId,proto3" json:"clip_id,omitempty"`
+	UserId      string                 `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	Content     string                 `protobuf:"bytes,3,opt,name=content,proto3" json:"content,omitempty"`
+	ContentType string                 `protobuf:"bytes,4,opt,name=content_type,json=contentType,proto3" json:"content_type,omitempty"`
+	Source      string                 `protobuf:"bytes,5,opt,name=source,proto3" json:"source,omitempty"`
+	Label       string                 `protobuf:"bytes,6,opt,name=label,proto3" json:"label,omitempty"`
+	ByteSize    int64                  `protobuf:"varint,7,opt,name=byte_size,json=byteSize,proto3" json:"byte_size,omitempty"`
+	MediaPath   *string                `protobuf:"bytes,8,opt,name=media_path,json=mediaPath,proto3,oneof" json:"media_path,omitempty"`
+	CreatedAt   string                 `protobuf:"bytes,9,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	// field 10 (ttl) removed — do not reuse
+	Encrypted     bool `protobuf:"varint,11,opt,name=encrypted,proto3" json:"encrypted,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -131,13 +131,6 @@ func (x *Clip) GetCreatedAt() string {
 	return ""
 }
 
-func (x *Clip) GetTtl() int64 {
-	if x != nil && x.Ttl != nil {
-		return *x.Ttl
-	}
-	return 0
-}
-
 func (x *Clip) GetEncrypted() bool {
 	if x != nil {
 		return x.Encrypted
@@ -146,16 +139,16 @@ func (x *Clip) GetEncrypted() bool {
 }
 
 type PushClipRequest struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	Content        string                 `protobuf:"bytes,1,opt,name=content,proto3" json:"content,omitempty"`
-	ContentType    string                 `protobuf:"bytes,2,opt,name=content_type,json=contentType,proto3" json:"content_type,omitempty"`
-	Label          string                 `protobuf:"bytes,3,opt,name=label,proto3" json:"label,omitempty"`
-	Source         string                 `protobuf:"bytes,4,opt,name=source,proto3" json:"source,omitempty"`
-	Ttl            *int64                 `protobuf:"varint,5,opt,name=ttl,proto3,oneof" json:"ttl,omitempty"`
-	ByteSize       int64                  `protobuf:"varint,6,opt,name=byte_size,json=byteSize,proto3" json:"byte_size,omitempty"`
-	Encrypted      bool                   `protobuf:"varint,7,opt,name=encrypted,proto3" json:"encrypted,omitempty"`
-	TargetDeviceId *string                `protobuf:"bytes,8,opt,name=target_device_id,json=targetDeviceId,proto3,oneof" json:"target_device_id,omitempty"`
-	MediaPath      *string                `protobuf:"bytes,9,opt,name=media_path,json=mediaPath,proto3,oneof" json:"media_path,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Content     string                 `protobuf:"bytes,1,opt,name=content,proto3" json:"content,omitempty"`
+	ContentType string                 `protobuf:"bytes,2,opt,name=content_type,json=contentType,proto3" json:"content_type,omitempty"`
+	Label       string                 `protobuf:"bytes,3,opt,name=label,proto3" json:"label,omitempty"`
+	Source      string                 `protobuf:"bytes,4,opt,name=source,proto3" json:"source,omitempty"`
+	// field 5 (ttl) removed — do not reuse
+	ByteSize       int64   `protobuf:"varint,6,opt,name=byte_size,json=byteSize,proto3" json:"byte_size,omitempty"`
+	Encrypted      bool    `protobuf:"varint,7,opt,name=encrypted,proto3" json:"encrypted,omitempty"`
+	TargetDeviceId *string `protobuf:"bytes,8,opt,name=target_device_id,json=targetDeviceId,proto3,oneof" json:"target_device_id,omitempty"`
+	MediaPath      *string `protobuf:"bytes,9,opt,name=media_path,json=mediaPath,proto3,oneof" json:"media_path,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -216,13 +209,6 @@ func (x *PushClipRequest) GetSource() string {
 		return x.Source
 	}
 	return ""
-}
-
-func (x *PushClipRequest) GetTtl() int64 {
-	if x != nil && x.Ttl != nil {
-		return *x.Ttl
-	}
-	return 0
 }
 
 func (x *PushClipRequest) GetByteSize() int64 {
@@ -581,7 +567,7 @@ var File_cinch_v1_clips_proto protoreflect.FileDescriptor
 
 const file_cinch_v1_clips_proto_rawDesc = "" +
 	"\n" +
-	"\x14cinch/v1/clips.proto\x12\bcinch.v1\"\xcf\x02\n" +
+	"\x14cinch/v1/clips.proto\x12\bcinch.v1\"\xb0\x02\n" +
 	"\x04Clip\x12\x17\n" +
 	"\aclip_id\x18\x01 \x01(\tR\x06clipId\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x18\n" +
@@ -593,24 +579,19 @@ const file_cinch_v1_clips_proto_rawDesc = "" +
 	"\n" +
 	"media_path\x18\b \x01(\tH\x00R\tmediaPath\x88\x01\x01\x12\x1d\n" +
 	"\n" +
-	"created_at\x18\t \x01(\tR\tcreatedAt\x12\x15\n" +
-	"\x03ttl\x18\n" +
-	" \x01(\x03H\x01R\x03ttl\x88\x01\x01\x12\x1c\n" +
+	"created_at\x18\t \x01(\tR\tcreatedAt\x12\x1c\n" +
 	"\tencrypted\x18\v \x01(\bR\tencryptedB\r\n" +
-	"\v_media_pathB\x06\n" +
-	"\x04_ttl\"\xcd\x02\n" +
+	"\v_media_path\"\xae\x02\n" +
 	"\x0fPushClipRequest\x12\x18\n" +
 	"\acontent\x18\x01 \x01(\tR\acontent\x12!\n" +
 	"\fcontent_type\x18\x02 \x01(\tR\vcontentType\x12\x14\n" +
 	"\x05label\x18\x03 \x01(\tR\x05label\x12\x16\n" +
-	"\x06source\x18\x04 \x01(\tR\x06source\x12\x15\n" +
-	"\x03ttl\x18\x05 \x01(\x03H\x00R\x03ttl\x88\x01\x01\x12\x1b\n" +
+	"\x06source\x18\x04 \x01(\tR\x06source\x12\x1b\n" +
 	"\tbyte_size\x18\x06 \x01(\x03R\bbyteSize\x12\x1c\n" +
 	"\tencrypted\x18\a \x01(\bR\tencrypted\x12-\n" +
-	"\x10target_device_id\x18\b \x01(\tH\x01R\x0etargetDeviceId\x88\x01\x01\x12\"\n" +
+	"\x10target_device_id\x18\b \x01(\tH\x00R\x0etargetDeviceId\x88\x01\x01\x12\"\n" +
 	"\n" +
-	"media_path\x18\t \x01(\tH\x02R\tmediaPath\x88\x01\x01B\x06\n" +
-	"\x04_ttlB\x13\n" +
+	"media_path\x18\t \x01(\tH\x01R\tmediaPath\x88\x01\x01B\x13\n" +
 	"\x11_target_device_idB\r\n" +
 	"\v_media_path\"H\n" +
 	"\x10PushClipResponse\x12\x17\n" +

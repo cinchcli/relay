@@ -45,7 +45,7 @@ message Clip {
   int64           byte_size    = 7;
   optional string media_path   = 8;
   string          created_at   = 9;
-  optional int64  ttl          = 10;
+  // field 10 (ttl) removed — do not reuse
   bool            encrypted    = 11;
 }
 
@@ -56,7 +56,7 @@ message PushClipRequest {
   string          content_type     = 2;
   string          label            = 3;
   string          source           = 4;
-  optional int64  ttl              = 5;
+  // field 5 (ttl) removed — do not reuse
   int64           byte_size        = 6;
   bool            encrypted        = 7;
   optional string target_device_id = 8;
