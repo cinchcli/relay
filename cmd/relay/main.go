@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cinchcli/relay/internal/media"
 	relay "github.com/cinchcli/relay/internal/relay"
 )
 
@@ -39,14 +41,20 @@ func main() {
 	}
 	defer store.Close()
 
-	// Retention sweep: deletes expired remote clips hourly.
+	// Build media backend from env (MEDIA_BACKEND=local|s3; see DEPLOY.md).
+	mediaStore, err := media.NewStore()
+	if err != nil {
+		log.Fatalf("failed to init media backend: %v", err)
+	}
+	log.Printf("media backend: %s", mediaBackendName())
+
+	// Retention sweep: deletes expired remote clips hourly and purges their
+	// media objects from the configured backend.
 	go func() {
 		ticker := time.NewTicker(1 * time.Hour)
 		defer ticker.Stop()
 		for range ticker.C {
-			if err := store.SweepAllUsersRetention(); err != nil {
-				log.Printf("retention sweep error: %v", err)
-			}
+			runRetentionSweep(store, mediaStore)
 		}
 	}()
 
@@ -54,9 +62,9 @@ func main() {
 	go hub.Run()
 
 	handler := relay.NewHandler(store, hub)
+	handler.SetMediaStore(mediaStore)
 
 	// BASE_URL is the public HTTPS root (e.g. https://api.cinchcli.com).
-	// Required for OAuth redirect URIs and device-code verification URIs.
 	handler.BaseURL = os.Getenv("BASE_URL")
 
 	// CORS_ORIGINS: comma-separated extra allowed origins for self-hosters.
@@ -88,5 +96,30 @@ func main() {
 	fmt.Printf("cinch relay v%s listening on :%s\n", version, port)
 	if err := http.ListenAndServe(":"+port, mux); err != nil {
 		log.Fatalf("server error: %v", err)
+	}
+}
+
+func mediaBackendName() string {
+	b := os.Getenv("MEDIA_BACKEND")
+	if b == "" {
+		return "local"
+	}
+	return b
+}
+
+func runRetentionSweep(store *relay.Store, ms media.Store) {
+	mediaPaths, err := store.SweepAllUsersRetentionReturningMedia()
+	if err != nil {
+		log.Printf("retention sweep: %v", err)
+		return
+	}
+	if len(mediaPaths) == 0 {
+		return
+	}
+	ctx := context.Background()
+	for _, key := range mediaPaths {
+		if err := ms.Delete(ctx, key); err != nil {
+			log.Printf("retention sweep: delete %q: %v", key, err)
+		}
 	}
 }
