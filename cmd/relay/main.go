@@ -10,12 +10,6 @@ import (
 	"time"
 
 	relay "github.com/cinchcli/relay/internal/relay"
-
-	// AWS SDK v2 for S3 media storage
-	_ "github.com/aws/aws-sdk-go-v2"
-	_ "github.com/aws/aws-sdk-go-v2/config"
-	_ "github.com/aws/aws-sdk-go-v2/credentials"
-	_ "github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
 var version = "dev"
