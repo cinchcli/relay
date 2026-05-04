@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"time"
 
 	"connectrpc.com/connect"
 
@@ -120,7 +121,19 @@ func (s *connectClipsServer) PushClip(ctx context.Context, req *connect.Request[
 
 func (s *connectClipsServer) ListClips(ctx context.Context, req *connect.Request[cinchv1.ListClipsRequest]) (*connect.Response[cinchv1.ListClipsResponse], error) {
 	userID := req.Header().Get("X-User-ID")
-	clips, err := s.h.store.ListClips(userID, 50)
+
+	var sinceTime time.Time
+	if req.Msg.Since != "" {
+		t, err := time.Parse(time.RFC3339, req.Msg.Since)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, errMsg("invalid since parameter: must be RFC 3339"))
+		}
+		sinceTime = t
+	}
+
+	limit := int(req.Msg.Limit)
+
+	clips, err := s.h.store.ListClipsSince(userID, sinceTime, limit)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
