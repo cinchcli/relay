@@ -307,6 +307,8 @@ func (x *PushClipResponse) GetByteSize() int64 {
 
 type ListClipsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
+	Since         string                 `protobuf:"bytes,1,opt,name=since,proto3" json:"since,omitempty"`  // RFC 3339 timestamp; empty = no filter (returns most recent)
+	Limit         int32                  `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"` // 0 = default (50), max 100
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -339,6 +341,20 @@ func (x *ListClipsRequest) ProtoReflect() protoreflect.Message {
 // Deprecated: Use ListClipsRequest.ProtoReflect.Descriptor instead.
 func (*ListClipsRequest) Descriptor() ([]byte, []int) {
 	return file_cinch_v1_clips_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *ListClipsRequest) GetSince() string {
+	if x != nil {
+		return x.Since
+	}
+	return ""
+}
+
+func (x *ListClipsRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
 }
 
 type ListClipsResponse struct {
@@ -599,8 +615,10 @@ const file_cinch_v1_clips_proto_rawDesc = "" +
 	"\v_media_path\"H\n" +
 	"\x10PushClipResponse\x12\x17\n" +
 	"\aclip_id\x18\x01 \x01(\tR\x06clipId\x12\x1b\n" +
-	"\tbyte_size\x18\x02 \x01(\x03R\bbyteSize\"\x12\n" +
-	"\x10ListClipsRequest\"9\n" +
+	"\tbyte_size\x18\x02 \x01(\x03R\bbyteSize\">\n" +
+	"\x10ListClipsRequest\x12\x14\n" +
+	"\x05since\x18\x01 \x01(\tR\x05since\x12\x14\n" +
+	"\x05limit\x18\x02 \x01(\x05R\x05limit\"9\n" +
 	"\x11ListClipsResponse\x12$\n" +
 	"\x05clips\x18\x01 \x03(\v2\x0e.cinch.v1.ClipR\x05clips\".\n" +
 	"\x14GetLatestClipRequest\x12\x16\n" +

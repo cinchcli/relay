@@ -1030,3 +1030,73 @@ func TestDemoCounterIncrement(t *testing.T) {
 		t.Errorf("expected pushes_today >= 1, got %d", stats.PushesToday)
 	}
 }
+
+func TestListClipsSince(t *testing.T) {
+	ts, _ := setupTestServer(t)
+	token, _, _ := login(t, ts.URL)
+
+	pushClip := func(content string) {
+		reqBody, _ := json.Marshal(cinchv1.PushClipRequest{
+			Content:   content,
+			Encrypted: true,
+		})
+		req, _ := http.NewRequest("POST", ts.URL+"/clips", bytes.NewReader(reqBody))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("push %q failed: %v", content, err)
+		}
+		resp.Body.Close()
+	}
+
+	// Push clip A, wait for a new second boundary, record midTS, wait again,
+	// then push clips B and C. SQLite datetime() comparison operates at
+	// second precision, so we need midTS and clip-B/C to be in different seconds.
+	pushClip("clip-A")
+	time.Sleep(1100 * time.Millisecond)
+	midTS := time.Now().UTC().Truncate(time.Second)
+	time.Sleep(1100 * time.Millisecond)
+	pushClip("clip-B")
+	pushClip("clip-C")
+	time.Sleep(50 * time.Millisecond) // let writes settle
+
+	// Request clips since midTS — expect only B and C, oldest-first.
+	req, _ := http.NewRequest("GET", ts.URL+"/clips?since="+midTS.Format(time.RFC3339), nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("list since request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var clips []*cinchv1.Clip
+	json.NewDecoder(resp.Body).Decode(&clips)
+
+	if len(clips) != 2 {
+		t.Fatalf("expected 2 clips after since filter, got %d", len(clips))
+	}
+	// Oldest-first ordering from ListClipsSince.
+	if clips[0].Content != "clip-B" {
+		t.Errorf("expected clips[0] = clip-B, got %q", clips[0].Content)
+	}
+	if clips[1].Content != "clip-C" {
+		t.Errorf("expected clips[1] = clip-C, got %q", clips[1].Content)
+	}
+
+	// since=<invalid> should return 400.
+	badReq, _ := http.NewRequest("GET", ts.URL+"/clips?since=not-a-date", nil)
+	badReq.Header.Set("Authorization", "Bearer "+token)
+	badResp, err := http.DefaultClient.Do(badReq)
+	if err != nil {
+		t.Fatalf("bad since request failed: %v", err)
+	}
+	badResp.Body.Close()
+	if badResp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid since, got %d", badResp.StatusCode)
+	}
+}

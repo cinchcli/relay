@@ -68,7 +68,10 @@ message PushClipResponse {
 
 // ─── ListClips ───────────────────────────────────────────────
 
-message ListClipsRequest {}
+message ListClipsRequest {
+  string since = 1;  // RFC 3339 timestamp; empty = no filter (returns most recent)
+  int32  limit = 2;  // 0 = default (50), max 100
+}
 
 message ListClipsResponse {
   repeated Clip clips = 1;

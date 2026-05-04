@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -529,9 +530,36 @@ func (h *Handler) PushClip(w http.ResponseWriter, r *http.Request) {
 }
 
 // ListClips returns recent clips for the authenticated user.
+// Accepts optional query params: ?since=<RFC3339> and ?limit=<int>.
 func (h *Handler) ListClips(w http.ResponseWriter, r *http.Request) {
 	userID := r.Header.Get("X-User-ID")
-	clips, err := h.store.ListClips(userID, 50)
+
+	var sinceTime time.Time
+	if sinceStr := r.URL.Query().Get("since"); sinceStr != "" {
+		t, err := time.Parse(time.RFC3339, sinceStr)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_since", "invalid since parameter", "")
+			return
+		}
+		sinceTime = t
+	}
+
+	limit := 50
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		n, err := strconv.Atoi(limitStr)
+		if err != nil || n < 0 {
+			writeError(w, http.StatusBadRequest, "invalid_limit", "invalid limit parameter", "")
+			return
+		}
+		if n > 100 {
+			n = 100
+		}
+		if n > 0 {
+			limit = n
+		}
+	}
+
+	clips, err := h.store.ListClipsSince(userID, sinceTime, limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "list failed", err.Error(), "")
 		return

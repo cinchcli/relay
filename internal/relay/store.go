@@ -954,6 +954,47 @@ func (s *Store) ListClips(userID string, limit int) ([]*cinchv1.Clip, error) {
 	return clips, rows.Err()
 }
 
+// ListClipsSince returns clips newer than `since` (exclusive), ordered oldest-first
+// so the caller can replay them in order. If since is zero, delegates to ListClips.
+func (s *Store) ListClipsSince(userID string, since time.Time, limit int) ([]*cinchv1.Clip, error) {
+	if since.IsZero() {
+		return s.ListClips(userID, limit)
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+
+	rows, err := s.db.Query(`
+		SELECT id, user_id, content, content_type, source, label, byte_size,
+		       COALESCE(media_path, ''), created_at, encrypted
+		FROM clips
+		WHERE user_id = ? AND created_at > ?
+		ORDER BY created_at ASC
+		LIMIT ?`,
+		userID, since.UTC(), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	clips := make([]*cinchv1.Clip, 0)
+	for rows.Next() {
+		c := &cinchv1.Clip{}
+		var mediaPath string
+		var createdAt time.Time
+		if err := rows.Scan(&c.ClipId, &c.UserId, &c.Content, &c.ContentType, &c.Source, &c.Label, &c.ByteSize, &mediaPath, &createdAt, &c.Encrypted); err != nil {
+			return nil, err
+		}
+		if mediaPath != "" {
+			mp := mediaPath
+			c.MediaPath = &mp
+		}
+		c.CreatedAt = protocol.FormatRFC3339(createdAt)
+		clips = append(clips, c)
+	}
+	return clips, rows.Err()
+}
+
 // DeleteClip removes a clip by ID, scoped to the user.
 func (s *Store) DeleteClip(userID, clipID string) error {
 	res, err := s.db.Exec("DELETE FROM clips WHERE id = ? AND user_id = ?", clipID, userID)
