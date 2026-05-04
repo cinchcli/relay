@@ -1315,11 +1315,11 @@ func (s *Store) CleanupExpiredDeviceCodes() error {
 	return err
 }
 
-// SweepExpiredClips deletes remote clips older than retentionDays for a given user.
-// Only remote clips (source LIKE 'remote:%') are swept; local clips are preserved.
+// SweepExpiredClips deletes clips older than retentionDays for a given user.
+// All clips (regardless of source) are swept in the relay-as-pipe architecture.
 func (s *Store) SweepExpiredClips(userID string, retentionDays int) (int, error) {
 	result, err := s.db.Exec(
-		`DELETE FROM clips WHERE user_id = ? AND source LIKE 'remote:%'
+		`DELETE FROM clips WHERE user_id = ?
 		 AND created_at < datetime('now', '-' || ? || ' days')`,
 		userID, retentionDays,
 	)
@@ -1331,7 +1331,7 @@ func (s *Store) SweepExpiredClips(userID string, retentionDays int) (int, error)
 }
 
 // SweepAllUsersRetention iterates all users with remote_retention_days set
-// and sweeps their expired remote clips.
+// and sweeps their expired clips.
 func (s *Store) SweepAllUsersRetention() error {
 	rows, err := s.db.Query(
 		`SELECT DISTINCT d.user_id, d.remote_retention_days
@@ -1367,12 +1367,13 @@ func (s *Store) SweepAllUsersRetention() error {
 	return nil
 }
 
-// SweepExpiredClipsReturningMedia deletes remote clips older than retentionDays
+// SweepExpiredClipsReturningMedia deletes clips older than retentionDays
 // for a user and returns the object store keys of any media that was removed.
+// All clips (regardless of source) are swept in the relay-as-pipe architecture.
 func (s *Store) SweepExpiredClipsReturningMedia(userID string, retentionDays int) (count int, mediaPaths []string, err error) {
 	rows, err := s.db.Query(
 		`SELECT id, COALESCE(media_path, '') FROM clips
-		  WHERE user_id = ? AND source LIKE 'remote:%'
+		  WHERE user_id = ?
 		    AND created_at < datetime('now', '-' || ? || ' days')`,
 		userID, retentionDays,
 	)

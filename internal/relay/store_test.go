@@ -58,7 +58,7 @@ func TestSweepExpiredClips(t *testing.T) {
 		t.Fatalf("insert clip B: %v", err)
 	}
 
-	// Clip C: local, 10 days ago (should survive — local clips are not swept)
+	// Clip C: local, 10 days ago (should be swept in relay-as-pipe architecture)
 	_, err = store.db.Exec(
 		`INSERT INTO clips (id, user_id, content, content_type, source, byte_size, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?, datetime('now', '-10 days'))`,
@@ -73,8 +73,8 @@ func TestSweepExpiredClips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SweepExpiredClips: %v", err)
 	}
-	if count != 1 {
-		t.Errorf("expected 1 clip swept, got %d", count)
+	if count != 2 {
+		t.Errorf("expected 2 clips swept (remote A + local C), got %d", count)
 	}
 
 	// Verify Clip A is gone
@@ -90,10 +90,10 @@ func TestSweepExpiredClips(t *testing.T) {
 		t.Error("clip-b should still exist")
 	}
 
-	// Verify Clip C still exists (local clip)
+	// Verify Clip C is now deleted (local clips are also swept in relay-as-pipe)
 	store.db.QueryRow("SELECT COUNT(*) FROM clips WHERE id = 'clip-c'").Scan(&exists)
-	if exists != 1 {
-		t.Error("clip-c (local) should still exist")
+	if exists != 0 {
+		t.Error("clip-c (local, expired) should have been deleted")
 	}
 }
 
