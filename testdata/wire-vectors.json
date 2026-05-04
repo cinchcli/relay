@@ -1,5 +1,5 @@
 {
-  "_doc": "Shared wire vectors for cinch.v1 messages. Both Rust (cinch/crates/client-core/tests/wire_vectors.rs) and Go (relay/internal/gen/cinch/v1/wire_vectors_test.go) round-trip every named vector through their generated types and assert byte-equal output modulo JSON object key order. Vectors reflect the canonical wire shape the relay emits today (Go encoding/json with `,omitempty`); the Rust prost-build pipeline injects matching skip_serializing_if predicates so both sides produce identical output. Note: Device vectors must populate every field with a non-default value because Device skips the predicate injection (tauri-specta validation constraint, see proto-cinch/build.rs).",
+  "_doc": "Shared wire vectors for cinch.v1 messages. Both Rust (cinch/crates/client-core/tests/wire_vectors.rs) and Go (relay/internal/gen/cinch/v1/wire_vectors_test.go) round-trip every named vector through their generated types and assert byte-equal output modulo JSON object key order. Vectors reflect the canonical wire shape the relay emits today (Go encoding/json with `,omitempty`); the Rust prost-build pipeline injects matching skip_serializing_if predicates so both sides produce identical output. Note: Device vectors must populate every field with a non-default value because Device skips the predicate injection (tauri-specta validation constraint, see proto-cinch/build.rs). Exception: ClipDeletedEvent and ServerEvent vectors are Go-only; event_stream.proto is excluded from the proto-cinch Rust crate (tauri-specta compatibility, see proto-cinch/build.rs).",
 
   "Clip": {
     "minimal": {
@@ -123,7 +123,7 @@
 
   "ListClipsRequest": {
     "empty": {},
-    "with_since": {
+    "with_since_and_limit": {
       "since": "2026-05-04T10:00:00Z",
       "limit": 25
     }
