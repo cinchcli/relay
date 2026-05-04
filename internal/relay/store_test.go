@@ -381,6 +381,44 @@ func TestSweepExpiredClipsReturningMedia(t *testing.T) {
 	}
 }
 
+func TestSweepAllUsersRetentionReturningMedia(t *testing.T) {
+	s := newTestStore(t)
+	userID := "u-retain"
+	if err := s.CreateUser(userID); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	// Register device with 7-day retention
+	if _, err := s.db.Exec(
+		`INSERT INTO devices (id, user_id, hostname, source_key, remote_retention_days)
+		 VALUES ('dev-r1', ?, 'host', 'remote:host', 7)`,
+		userID,
+	); err != nil {
+		t.Fatalf("insert device: %v", err)
+	}
+	// Old clip with media
+	if _, err := s.db.Exec(
+		`INSERT INTO clips (id, user_id, content, content_type, source, label, byte_size, media_path, created_at)
+		 VALUES ('old-r1', ?, '', 'image/png', 'remote:host', '', 50, 'media/retain.png', datetime('now', '-10 days'))`,
+		userID,
+	); err != nil {
+		t.Fatalf("insert clip: %v", err)
+	}
+
+	mediaPaths, err := s.SweepAllUsersRetentionReturningMedia()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(mediaPaths) != 1 || mediaPaths[0] != "media/retain.png" {
+		t.Errorf("got mediaPaths=%v, want [media/retain.png]", mediaPaths)
+	}
+
+	var count int
+	s.db.QueryRow("SELECT COUNT(*) FROM clips WHERE id='old-r1'").Scan(&count)
+	if count != 0 {
+		t.Error("old clip should be swept")
+	}
+}
+
 func columnExists(t *testing.T, s *Store, table, col string) bool {
 	t.Helper()
 	rows, err := s.db.Query(`PRAGMA table_info(` + table + `)`)

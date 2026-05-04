@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -979,10 +980,12 @@ func (s *Store) DeleteClip(userID, clipID string) error {
 // DeleteClipReturningMedia removes a clip and returns its media_path key (or ""
 // if none). The caller is responsible for deleting the key from the object store.
 func (s *Store) DeleteClipReturningMedia(userID, clipID string) (mediaPath string, err error) {
-	_ = s.db.QueryRow(
+	if err = s.db.QueryRow(
 		"SELECT COALESCE(media_path, '') FROM clips WHERE id = ? AND user_id = ?",
 		clipID, userID,
-	).Scan(&mediaPath)
+	).Scan(&mediaPath); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return "", err
+	}
 
 	res, err := s.db.Exec("DELETE FROM clips WHERE id = ? AND user_id = ?", clipID, userID)
 	if err != nil {
@@ -1440,8 +1443,13 @@ func (s *Store) SweepExpiredClipsReturningMedia(userID string, retentionDays int
 	}
 	rows.Close()
 
+	if err := rows.Err(); err != nil {
+		return 0, nil, err
+	}
+
 	for _, r := range toDelete {
-		if _, err := s.db.Exec("DELETE FROM clips WHERE id = ?", r.id); err != nil {
+		if _, err := s.db.Exec("DELETE FROM clips WHERE id = ? AND user_id = ?", r.id, userID); err != nil {
+			log.Printf("sweep: delete clip %q: %v", r.id, err)
 			continue
 		}
 		count++
@@ -1479,9 +1487,15 @@ func (s *Store) SweepAllUsersRetentionReturningMedia() (mediaPaths []string, err
 	}
 	rows.Close()
 
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
 	for _, u := range users {
-		count, paths, err := s.SweepExpiredClipsReturningMedia(u.userID, u.days)
-		if err == nil && count > 0 {
+		count, paths, sweepErr := s.SweepExpiredClipsReturningMedia(u.userID, u.days)
+		if sweepErr != nil {
+			log.Printf("retention sweep: user %s: %v", u.userID, sweepErr)
+		} else if count > 0 {
 			log.Printf("retention sweep: deleted %d clips for user %s (>%d days)", count, u.userID, u.days)
 		}
 		mediaPaths = append(mediaPaths, paths...)
