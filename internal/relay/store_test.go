@@ -3,6 +3,7 @@ package relay
 import (
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -416,6 +417,98 @@ func TestSweepAllUsersRetentionReturningMedia(t *testing.T) {
 	s.db.QueryRow("SELECT COUNT(*) FROM clips WHERE id='old-r1'").Scan(&count)
 	if count != 0 {
 		t.Error("old clip should be swept")
+	}
+}
+
+func TestUpdateDeviceRetention(t *testing.T) {
+	store := newTestStore(t)
+
+	// Create a test user
+	userID := "user-retention-test"
+	if err := store.CreateUser(userID); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	// Create a test device
+	deviceID := "dev-retention-test"
+	_, err := store.db.Exec(
+		`INSERT INTO devices (id, user_id, hostname, source_key, remote_retention_days)
+		 VALUES (?, ?, ?, ?, ?)`,
+		deviceID, userID, "test-host", "test-key", 30,
+	)
+	if err != nil {
+		t.Fatalf("insert device: %v", err)
+	}
+
+	tests := []struct {
+		name      string
+		days      int
+		wantError bool
+		errMsg    string
+	}{
+		{
+			name:      "valid 1 day (new minimum)",
+			days:      1,
+			wantError: false,
+		},
+		{
+			name:      "valid 7 days",
+			days:      7,
+			wantError: false,
+		},
+		{
+			name:      "valid 365 days (maximum)",
+			days:      365,
+			wantError: false,
+		},
+		{
+			name:      "invalid 0 days (below minimum)",
+			days:      0,
+			wantError: true,
+			errMsg:    "between 1 and 365",
+		},
+		{
+			name:      "invalid 366 days (above maximum)",
+			days:      366,
+			wantError: true,
+			errMsg:    "between 1 and 365",
+		},
+		{
+			name:      "invalid -1 days (negative)",
+			days:      -1,
+			wantError: true,
+			errMsg:    "between 1 and 365",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := store.UpdateDeviceRetention(deviceID, tt.days)
+			if tt.wantError {
+				if err == nil {
+					t.Errorf("expected error, got nil")
+				} else if !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("expected error containing %q, got %q", tt.errMsg, err.Error())
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+
+				// Verify the retention days were actually updated in the database
+				var stored int
+				err = store.db.QueryRow(
+					"SELECT remote_retention_days FROM devices WHERE id = ?",
+					deviceID,
+				).Scan(&stored)
+				if err != nil {
+					t.Fatalf("failed to query stored retention: %v", err)
+				}
+				if stored != tt.days {
+					t.Errorf("expected stored retention %d, got %d", tt.days, stored)
+				}
+			}
+		})
 	}
 }
 

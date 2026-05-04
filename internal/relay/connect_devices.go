@@ -76,7 +76,7 @@ func (s *connectDevicesServer) SetRetention(ctx context.Context, req *connect.Re
 }
 
 func isRangeError(err error) bool {
-	return strings.Contains(err.Error(), "between 7 and 365")
+	return strings.Contains(err.Error(), "between 1 and 365")
 }
 
 // ─── Pull ────────────────────────────────────────────────────
