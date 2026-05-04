@@ -48,6 +48,50 @@ You must register OAuth apps **before** deploying with OAuth env vars.
 
 ---
 
+## Media Storage
+
+Binary clip media (images) is stored via a pluggable backend selected by `MEDIA_BACKEND`.
+
+| Variable | Default | Description |
+|---|---|---|
+| `MEDIA_BACKEND` | `local` | Backend: `local` (disk) or `s3` (S3-compatible) |
+
+**`local` backend (default):**
+
+| Variable | Default | Description |
+|---|---|---|
+| `MEDIA_LOCAL_DIR` | `media` | Directory for media files (relative to working dir) |
+
+**`s3` backend (AWS S3, Cloudflare R2, MinIO, GCS, etc.):**
+
+| Variable | Default | Description |
+|---|---|---|
+| `MEDIA_BUCKET` | — | Bucket name (required) |
+| `MEDIA_ENDPOINT` | `s3.amazonaws.com` | S3-compatible endpoint |
+| `MEDIA_REGION` | `us-east-1` | Bucket region |
+| `MEDIA_ACCESS_KEY_ID` | — | Access key (omit to use IAM role / env chain) |
+| `MEDIA_SECRET_ACCESS_KEY` | — | Secret key |
+| `MEDIA_USE_SSL` | `true` | Set to `false` for local MinIO without TLS |
+
+**Cloudflare R2 example:**
+```env
+MEDIA_BACKEND=s3
+MEDIA_ENDPOINT=<account-id>.r2.cloudflarestorage.com
+MEDIA_BUCKET=cinch-media
+MEDIA_ACCESS_KEY_ID=<r2-token-id>
+MEDIA_SECRET_ACCESS_KEY=<r2-token-secret>
+MEDIA_USE_SSL=true
+```
+
+**AWS S3 with IAM instance profile (EC2):**
+```env
+MEDIA_BACKEND=s3
+MEDIA_BUCKET=cinch-media
+# AWS_REGION, credentials auto-sourced from EC2 instance profile
+```
+
+---
+
 ## Environment File
 
 Create `/etc/cinch/relay.env` on the VM (mode `0600`, owned by root):
@@ -68,6 +112,12 @@ GOOGLE_CLIENT_SECRET=
 
 # Optional — comma-separated extra allowed CORS origins
 # CORS_ORIGINS=https://your-frontend.example.com
+
+# Media storage — see "Media Storage" section above for full options
+# Default: local disk (media/ dir next to cinch.db). Switch to s3 for cloud.
+# MEDIA_BACKEND=s3
+# MEDIA_BUCKET=cinch-media
+# MEDIA_ENDPOINT=<account-id>.r2.cloudflarestorage.com
 EOF
 sudo chmod 600 /etc/cinch/relay.env
 ```
