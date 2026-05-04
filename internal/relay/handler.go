@@ -22,6 +22,7 @@ import (
 	"time"
 
 	cinchv1 "github.com/cinchcli/relay/internal/gen/cinch/v1"
+	"github.com/cinchcli/relay/internal/media"
 	"github.com/cinchcli/relay/internal/protocol"
 	"github.com/gorilla/websocket"
 	"github.com/oklog/ulid/v2"
@@ -126,6 +127,7 @@ func consumeWsTicket(ticket string) (userID, deviceID string, ok bool) {
 type Handler struct {
 	store       *Store
 	hub         *Hub
+	media       media.Store // nil means binary upload disabled
 	BaseURL     string          // public base URL of the relay (for verification URIs)
 	OAuth       *OAuthProviders // nil = OAuth not configured; self-host falls back to username form
 	CORSOrigins []string        // extra allowed origins beyond the hardcoded landing page defaults
@@ -147,6 +149,9 @@ func NewHandler(store *Store, hub *Hub) *Handler {
 		loginRateMap:     make(map[string]time.Time),
 	}
 }
+
+// SetMediaStore attaches a media backend to the handler.
+func (h *Handler) SetMediaStore(s media.Store) { h.media = s }
 
 // RequireAuth wraps a handler with token authentication.
 // After the OAuth-only migration every active token lives on devices.token;
@@ -539,10 +544,22 @@ func (h *Handler) DeleteClip(w http.ResponseWriter, r *http.Request) {
 	userID := r.Header.Get("X-User-ID")
 	clipID := r.PathValue("id")
 
-	if err := h.store.DeleteClip(userID, clipID); err != nil {
-		writeError(w, http.StatusNotFound, "not found", err.Error(), "")
+	mediaPath, err := h.store.DeleteClipReturningMedia(userID, clipID)
+	if err != nil {
+		if err.Error() == "clip not found" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "delete_failed", err.Error(), "")
 		return
 	}
+
+	if mediaPath != "" && h.media != nil {
+		if err := h.media.Delete(r.Context(), mediaPath); err != nil {
+			log.Printf("media delete %q: %v", mediaPath, err)
+		}
+	}
+
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -806,9 +823,13 @@ func (h *Handler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) PushBinaryClip(w http.ResponseWriter, r *http.Request) {
 	userID := r.Header.Get("X-User-ID")
 
-	// Limit request body to 20MB
-	r.Body = http.MaxBytesReader(w, r.Body, 20<<20)
+	if h.media == nil {
+		writeError(w, http.StatusNotImplemented, "not_configured",
+			"Media storage is not configured", "Set MEDIA_BACKEND env var")
+		return
+	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, 20<<20)
 	if err := r.ParseMultipartForm(20 << 20); err != nil {
 		writeError(w, http.StatusRequestEntityTooLarge, "file too large", "Maximum file size is 20MB", "")
 		return
@@ -830,7 +851,6 @@ func (h *Handler) PushBinaryClip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Determine file extension from MIME type
 	exts, _ := mime.ExtensionsByType(contentType)
 	ext := ".png"
 	if len(exts) > 0 {
@@ -840,34 +860,16 @@ func (h *Handler) PushBinaryClip(w http.ResponseWriter, r *http.Request) {
 	clipID := ulid.Make().String()
 	filename := clipID + ext
 	mediaPath := "media/" + filename
-	fullPath := filepath.Join(h.store.MediaDir, filename)
+	n := header.Size
 
-	// Atomic write: write to temp file, then rename
-	tmpFile, err := os.CreateTemp(h.store.MediaDir, "upload-*")
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "save failed", "Could not create temp file", "")
-		return
-	}
-	tmpPath := tmpFile.Name()
-
-	n, err := io.Copy(tmpFile, file)
-	tmpFile.Close()
-	if err != nil {
-		os.Remove(tmpPath)
-		writeError(w, http.StatusInternalServerError, "save failed", "Could not write file", "")
+	if err := h.media.Upload(r.Context(), mediaPath, file, n, contentType); err != nil {
+		log.Printf("media upload failed: %v", err)
+		writeError(w, http.StatusInternalServerError, "save failed", "Could not upload file", "")
 		return
 	}
 
-	if err := os.Rename(tmpPath, fullPath); err != nil {
-		os.Remove(tmpPath)
-		writeError(w, http.StatusInternalServerError, "save failed", "Could not finalize file", "")
-		return
-	}
-
-	// Build clip metadata
 	source := r.FormValue("source")
 	label := r.FormValue("label")
-
 	req := &cinchv1.PushClipRequest{
 		Content:     "",
 		ContentType: protocol.ContentImage,
@@ -879,26 +881,18 @@ func (h *Handler) PushBinaryClip(w http.ResponseWriter, r *http.Request) {
 
 	clip, err := h.store.SaveClip(userID, req)
 	if err != nil {
-		os.Remove(fullPath)
+		h.media.Delete(r.Context(), mediaPath)
 		writeError(w, http.StatusInternalServerError, "save failed", err.Error(), "")
 		return
 	}
 
-	// Track media size and cleanup if over limit
-	h.store.AddMediaBytes(n)
-	const maxMediaBytes = 500 << 20 // 500MB
-	h.store.CleanupMediaOverLimit(maxMediaBytes)
-
-	// Update device activity
 	if source != "" {
 		if err := h.store.UpdateDeviceActivity(userID, source); err != nil {
-			log.Printf("device activity update failed: %v", err)
+			log.Printf("device activity update: %v", err)
 		}
 	}
-
-	// Broadcast to desktop agent
 	if err := h.hub.SendClip(userID, clip); err != nil {
-		log.Printf("ws broadcast failed for %s: %v", userID, err)
+		log.Printf("ws broadcast: %v", err)
 	}
 
 	writeJSON(w, http.StatusOK, cinchv1.PushClipResponse{
@@ -912,31 +906,32 @@ func (h *Handler) GetClipMedia(w http.ResponseWriter, r *http.Request) {
 	userID := r.Header.Get("X-User-ID")
 	clipID := r.PathValue("id")
 
+	if h.media == nil {
+		http.Error(w, "media storage not configured", http.StatusNotImplemented)
+		return
+	}
+
 	mediaPath, err := h.store.GetClipMediaPath(userID, clipID)
 	if err != nil || mediaPath == "" {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
 
-	fullPath := filepath.Join(h.store.MediaDir, filepath.Base(mediaPath))
-
-	f, err := os.Open(fullPath)
+	body, err := h.media.Download(r.Context(), mediaPath)
 	if err != nil {
+		log.Printf("media download %q: %v", mediaPath, err)
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	defer f.Close()
+	defer body.Close()
 
-	// Set content type from extension
-	ext := filepath.Ext(fullPath)
+	ext := filepath.Ext(mediaPath)
 	ct := mime.TypeByExtension(ext)
 	if ct == "" {
 		ct = "application/octet-stream"
 	}
 	w.Header().Set("Content-Type", ct)
-
-	stat, _ := f.Stat()
-	http.ServeContent(w, r, filepath.Base(fullPath), stat.ModTime(), f)
+	io.Copy(w, body)
 }
 
 // Helpers
