@@ -901,17 +901,13 @@ func (s *Store) SaveClip(userID string, req *cinchv1.PushClipRequest) (*cinchv1.
 		clip.MediaPath = &mediaPath
 	}
 
-	var ttl int64
-	if req.Ttl != nil {
-		ttl = *req.Ttl
-	}
-
+	// ttl field removed from proto (T1); column kept until T2 migration drops it.
 	_, err := s.db.Exec(
 		`INSERT INTO clips (id, user_id, content, content_type, source, label, byte_size, media_path, created_at, ttl, encrypted)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		clip.ClipId, clip.UserId, clip.Content, clip.ContentType,
 		clip.Source, clip.Label, clip.ByteSize, sql.NullString{String: mediaPath, Valid: mediaPath != ""},
-		now, ttl, clip.Encrypted,
+		now, int64(0), clip.Encrypted,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("saving clip: %w", err)
