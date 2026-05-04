@@ -440,6 +440,45 @@ func TestListClips(t *testing.T) {
 	}
 }
 
+// TestListClips_ZeroLimit verifies that limit=0 is clamped to the default (50).
+// This tests the bug fix where Limit: 0 (proto default when omitted) was passing
+// 0 to the store's SQL LIMIT clause, returning zero rows instead of the default.
+func TestListClips_ZeroLimit(t *testing.T) {
+	ts, _ := setupTestServer(t)
+	token, _, _ := login(t, ts.URL)
+
+	// Push 3 clips
+	for i := 0; i < 3; i++ {
+		reqBody, _ := json.Marshal(cinchv1.PushClipRequest{
+			Content:   fmt.Sprintf("clip %d", i),
+			Encrypted: true,
+		})
+		req, _ := http.NewRequest("POST", ts.URL+"/clips", bytes.NewReader(reqBody))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, _ := http.DefaultClient.Do(req)
+		resp.Body.Close()
+	}
+
+	// List with explicit limit=0 (should be clamped to default 50)
+	req, _ := http.NewRequest("GET", ts.URL+"/clips?limit=0", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("list request with limit=0 failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var clips []*cinchv1.Clip
+	json.NewDecoder(resp.Body).Decode(&clips)
+
+	// Should return all 3 clips, not zero (which would indicate the bug is present)
+	if len(clips) != 3 {
+		t.Errorf("expected 3 clips with limit=0 (clamped to 50), got %d", len(clips))
+	}
+}
+
 func TestDeleteClip(t *testing.T) {
 	ts, _ := setupTestServer(t)
 	token, _, _ := login(t, ts.URL)
