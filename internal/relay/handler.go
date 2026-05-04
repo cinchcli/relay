@@ -127,7 +127,7 @@ func consumeWsTicket(ticket string) (userID, deviceID string, ok bool) {
 type Handler struct {
 	store       *Store
 	hub         *Hub
-	media       media.Store // nil means binary upload disabled
+	media       media.Store     // nil means binary upload disabled
 	BaseURL     string          // public base URL of the relay (for verification URIs)
 	OAuth       *OAuthProviders // nil = OAuth not configured; self-host falls back to username form
 	CORSOrigins []string        // extra allowed origins beyond the hardcoded landing page defaults
