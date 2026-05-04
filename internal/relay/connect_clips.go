@@ -19,6 +19,20 @@ type connectClipsServer struct {
 
 var _ cinchv1connect.ClipsServiceHandler = (*connectClipsServer)(nil)
 
+// clampLimit ensures a limit value is within the acceptable range (1–100).
+// If n <= 0, returns the default limit of 50.
+// If n > 100, returns 100.
+// Otherwise returns n as-is.
+func clampLimit(n int) int {
+	if n <= 0 {
+		return 50
+	}
+	if n > 100 {
+		return 100
+	}
+	return n
+}
+
 // clipsConnectInterceptor requires auth for all ClipsService procedures.
 func (h *Handler) clipsConnectInterceptor() connect.UnaryInterceptorFunc {
 	return func(next connect.UnaryFunc) connect.UnaryFunc {
@@ -131,7 +145,7 @@ func (s *connectClipsServer) ListClips(ctx context.Context, req *connect.Request
 		sinceTime = t
 	}
 
-	limit := int(req.Msg.Limit)
+	limit := clampLimit(int(req.Msg.Limit))
 
 	clips, err := s.h.store.ListClipsSince(userID, sinceTime, limit)
 	if err != nil {
