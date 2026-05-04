@@ -49,7 +49,9 @@ type ClipsServiceClient interface {
 	// PushClip saves a text clip and broadcasts it to connected devices.
 	// Mirrors POST /clips — auth required.
 	PushClip(context.Context, *connect.Request[v1.PushClipRequest]) (*connect.Response[v1.PushClipResponse], error)
-	// ListClips returns the 50 most recent clips for the caller.
+	// ListClips returns clips for the caller, filtered by `since` (RFC 3339, exclusive)
+	// and bounded by `limit` (default 50, max 100). When `since` is set results are
+	// oldest-first for delta replay; without `since`, newest-first.
 	// Mirrors GET /clips — auth required.
 	ListClips(context.Context, *connect.Request[v1.ListClipsRequest]) (*connect.Response[v1.ListClipsResponse], error)
 	// GetLatestClip returns the most recent clip from a specific source.
@@ -131,7 +133,9 @@ type ClipsServiceHandler interface {
 	// PushClip saves a text clip and broadcasts it to connected devices.
 	// Mirrors POST /clips — auth required.
 	PushClip(context.Context, *connect.Request[v1.PushClipRequest]) (*connect.Response[v1.PushClipResponse], error)
-	// ListClips returns the 50 most recent clips for the caller.
+	// ListClips returns clips for the caller, filtered by `since` (RFC 3339, exclusive)
+	// and bounded by `limit` (default 50, max 100). When `since` is set results are
+	// oldest-first for delta replay; without `since`, newest-first.
 	// Mirrors GET /clips — auth required.
 	ListClips(context.Context, *connect.Request[v1.ListClipsRequest]) (*connect.Response[v1.ListClipsResponse], error)
 	// GetLatestClip returns the most recent clip from a specific source.
