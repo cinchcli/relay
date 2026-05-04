@@ -1,3 +1,5 @@
+// Package media provides a pluggable interface for binary object storage,
+// with backends for local disk and S3-compatible stores.
 package media
 
 import (

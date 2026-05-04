@@ -1038,7 +1038,6 @@ func (s *Store) SetSetting(key, value string) error {
 	return err
 }
 
-
 // GetClipMediaPath returns the media_path for a clip (for cascade delete).
 func (s *Store) GetClipMediaPath(userID, clipID string) (string, error) {
 	var mp sql.NullString
@@ -1051,7 +1050,6 @@ func (s *Store) GetClipMediaPath(userID, clipID string) (string, error) {
 	}
 	return "", nil
 }
-
 
 // ListDevices returns all non-revoked devices for a user.
 //

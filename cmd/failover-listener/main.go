@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -124,11 +123,11 @@ func runScript(ctx context.Context, path string, w http.ResponseWriter) error {
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		fmt.Fprintf(w, "ERROR: script exited with error: %v\n", err)
-		io.WriteString(w, string(out))
+		w.Write(out)
 		return err
 	}
 
-	io.WriteString(w, string(out))
+	w.Write(out)
 	return nil
 }
 
