@@ -13,7 +13,7 @@ pre-commit:
       run: go vet ./...
     golangci-lint:
       glob: "*.go"
-      run: golangci-lint run {staged_files}
+      run: golangci-lint run ./...
 
 pre-push:
   parallel: true
@@ -23,4 +23,4 @@ pre-push:
       run: go test ./... -race -count=1
     go-build:
       glob: "*.go"
-      run: go build ./cmd/relay
+      run: go build ./cmd/relay ./cmd/failover-listener
