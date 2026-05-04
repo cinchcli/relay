@@ -1,0 +1,10 @@
+[Unit]
+Description=Cinch EC2 Health Check
+After=network.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/failover-listener/env
+ExecStart=/usr/local/bin/health-check.sh
+StandardOutput=journal
+StandardError=journal

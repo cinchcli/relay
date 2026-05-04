@@ -1,0 +1,17 @@
+#!/bin/bash
+# failover.sh — executed by failover-listener when EC2 is unreachable.
+# Required env: CF_API_TOKEN, CF_ZONE_ID, CF_RECORD_ID, OCI_PUBLIC_IP
+set -euo pipefail
+
+echo "[failover] switching Cloudflare origin to OCI: ${OCI_PUBLIC_IP}"
+
+curl -s -X PATCH \
+  "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${CF_RECORD_ID}" \
+  -H "Authorization: Bearer ${CF_API_TOKEN}" \
+  -H "Content-Type: application/json" \
+  --data "{\"content\":\"${OCI_PUBLIC_IP}\"}" | jq -r '.success'
+
+echo "[failover] starting standby relay"
+docker start relay-standby
+
+echo "[failover] done"

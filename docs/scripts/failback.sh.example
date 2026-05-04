@@ -1,0 +1,17 @@
+#!/bin/bash
+# failback.sh — executed by failover-listener after EC2 recovery confirmed.
+# Required env: CF_API_TOKEN, CF_ZONE_ID, CF_RECORD_ID, EC2_PUBLIC_IP
+set -euo pipefail
+
+echo "[failback] switching Cloudflare origin back to EC2: ${EC2_PUBLIC_IP}"
+
+curl -s -X PATCH \
+  "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${CF_RECORD_ID}" \
+  -H "Authorization: Bearer ${CF_API_TOKEN}" \
+  -H "Content-Type: application/json" \
+  --data "{\"content\":\"${EC2_PUBLIC_IP}\"}" | jq -r '.success'
+
+echo "[failback] stopping standby relay"
+docker stop relay-standby
+
+echo "[failback] done"

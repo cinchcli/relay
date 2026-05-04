@@ -1,0 +1,9 @@
+#!/bin/bash
+# flush.sh — run before failback to flush Litestream WAL from standby relay to S3.
+set -euo pipefail
+
+echo "[flush] sending Litestream checkpoint signal"
+docker exec relay-standby /bin/sh -c \
+  "kill -USR1 \$(pgrep litestream) && sleep 3"
+
+echo "[flush] WAL flush complete"

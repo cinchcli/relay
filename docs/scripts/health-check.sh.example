@@ -1,0 +1,35 @@
+#!/bin/bash
+# health-check.sh — polls EC2 health endpoint and triggers failover/failback.
+# Run by systemd timer every 30 seconds.
+# Required env (set in systemd service EnvironmentFile): EC2_IP, FAILOVER_LISTENER_URL
+set -euo pipefail
+
+STATE_FILE="/var/lib/failover-listener/state"
+FAIL_COUNT_FILE="/var/lib/failover-listener/fail_count"
+mkdir -p "$(dirname "$STATE_FILE")"
+
+CURRENT_STATE=$(cat "$STATE_FILE" 2>/dev/null || echo "primary")
+FAIL_COUNT=$(cat "$FAIL_COUNT_FILE" 2>/dev/null || echo "0")
+
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+  --max-time 10 \
+  "http://${EC2_IP}:8080/health" || echo "000")
+
+if [ "$HTTP_CODE" = "200" ]; then
+  echo 0 > "$FAIL_COUNT_FILE"
+  if [ "$CURRENT_STATE" = "failover" ]; then
+    echo "[health-check] EC2 recovered — initiating failback"
+    curl -s -X POST "${FAILOVER_LISTENER_URL}/failback"
+    echo "primary" > "$STATE_FILE"
+  fi
+else
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+  echo "$FAIL_COUNT" > "$FAIL_COUNT_FILE"
+  echo "[health-check] EC2 unreachable (HTTP $HTTP_CODE), consecutive failures: $FAIL_COUNT"
+
+  if [ "$FAIL_COUNT" -ge 2 ] && [ "$CURRENT_STATE" = "primary" ]; then
+    echo "[health-check] 2 consecutive failures — initiating failover"
+    curl -s -X POST "${FAILOVER_LISTENER_URL}/failover"
+    echo "failover" > "$STATE_FILE"
+  fi
+fi

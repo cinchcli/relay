@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Cinch EC2 health check every 30 seconds
+After=network.target
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target
