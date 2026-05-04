@@ -144,3 +144,57 @@ func TestDeviceVectorsRoundTrip(t *testing.T) {
 	root := loadVectors(t)
 	runGroup(t, root, "Device", func() any { return &Device{} })
 }
+
+func TestListClipsRequestVectorsRoundTrip(t *testing.T) {
+	root := loadVectors(t)
+	runGroup(t, root, "ListClipsRequest", func() any { return &ListClipsRequest{} })
+}
+
+func TestClipDeletedEventVectorsRoundTrip(t *testing.T) {
+	root := loadVectors(t)
+	runGroup(t, root, "ClipDeletedEvent", func() any { return &ClipDeletedEvent{} })
+}
+
+// TestServerEventMarshalShape verifies that a ServerEvent with clip_deleted
+// set marshals to the expected JSON shape. ServerEvent uses a protobuf oneof,
+// which encoding/json cannot unmarshal (no custom unmarshaler on the oneof
+// interface), so a full round-trip is not possible here. The relay only ever
+// produces ServerEvent (it is never decoded from JSON on the relay side), so
+// marshal-only coverage is sufficient to gate the wire shape.
+func TestServerEventMarshalShape(t *testing.T) {
+	root := loadVectors(t)
+	group := vectorsFor(t, root, "ServerEvent")
+
+	vec, ok := group["clip_deleted"].(map[string]any)
+	if !ok {
+		t.Fatal("ServerEvent::clip_deleted is not an object")
+	}
+
+	// Build the expected JSON from the fixture.
+	expectedBytes, err := json.Marshal(vec)
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+
+	// Build the actual ServerEvent and marshal it.
+	se := &ServerEvent{
+		Event: &ServerEvent_ClipDeleted{
+			ClipDeleted: &ClipDeletedEvent{ClipId: "01HABC0000000000000000000"},
+		},
+	}
+	actualBytes, err := json.Marshal(se)
+	if err != nil {
+		t.Fatalf("marshal ServerEvent: %v", err)
+	}
+
+	var expected, actual any
+	if err := json.Unmarshal(expectedBytes, &expected); err != nil {
+		t.Fatalf("re-parse expected: %v", err)
+	}
+	if err := json.Unmarshal(actualBytes, &actual); err != nil {
+		t.Fatalf("re-parse actual: %v", err)
+	}
+	if !reflect.DeepEqual(expected, actual) {
+		t.Fatalf("ServerEvent::clip_deleted shape mismatch\n  want: %s\n  got:  %s", expectedBytes, actualBytes)
+	}
+}

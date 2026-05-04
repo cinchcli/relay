@@ -119,5 +119,29 @@
       "public_key": "abc123base64",
       "public_key_fingerprint": "deadbeef"
     }
+  },
+
+  "ListClipsRequest": {
+    "empty": {},
+    "with_since": {
+      "since": "2026-05-04T10:00:00Z",
+      "limit": 25
+    }
+  },
+
+  "ClipDeletedEvent": {
+    "basic": {
+      "clip_id": "01HABC0000000000000000000"
+    }
+  },
+
+  "ServerEvent": {
+    "clip_deleted": {
+      "Event": {
+        "ClipDeleted": {
+          "clip_id": "01HABC0000000000000000000"
+        }
+      }
+    }
   }
 }
