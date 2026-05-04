@@ -273,6 +273,114 @@ func TestMigrate_FreshDB(t *testing.T) {
 	}
 }
 
+func TestDeleteClipReturningMedia(t *testing.T) {
+	s := newTestStore(t)
+
+	userID := "u1"
+	if err := s.CreateUser(userID); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	mediaPath := "media/abc.png"
+	_, err := s.db.Exec(
+		`INSERT INTO clips (id, user_id, content, content_type, source, label, byte_size, media_path, created_at)
+		 VALUES ('c1', ?, '', 'image/png', 'test', '', 100, ?, datetime('now'))`,
+		userID, mediaPath,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.DeleteClipReturningMedia(userID, "c1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != mediaPath {
+		t.Errorf("got %q, want %q", got, mediaPath)
+	}
+
+	var count int
+	s.db.QueryRow("SELECT COUNT(*) FROM clips WHERE id = 'c1'").Scan(&count)
+	if count != 0 {
+		t.Error("clip row still exists after delete")
+	}
+}
+
+func TestDeleteClipReturningMediaNoMedia(t *testing.T) {
+	s := newTestStore(t)
+	userID := "u1"
+	if err := s.CreateUser(userID); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO clips (id, user_id, content, content_type, source, label, byte_size, created_at)
+		 VALUES ('c2', ?, 'hello', 'text', 'test', '', 5, datetime('now'))`,
+		userID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.DeleteClipReturningMedia(userID, "c2")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "" {
+		t.Errorf("expected empty media path, got %q", got)
+	}
+}
+
+func TestDeleteClipReturningMediaNotFound(t *testing.T) {
+	s := newTestStore(t)
+	_, err := s.DeleteClipReturningMedia("nobody", "nonexistent")
+	if err == nil {
+		t.Error("expected error for missing clip, got nil")
+	}
+}
+
+func TestSweepExpiredClipsReturningMedia(t *testing.T) {
+	s := newTestStore(t)
+	userID := "u1"
+	if err := s.CreateUser(userID); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	// old clip with media, should be swept
+	_, err := s.db.Exec(
+		`INSERT INTO clips (id, user_id, content, content_type, source, label, byte_size, media_path, created_at)
+		 VALUES ('old1', ?, '', 'image/png', 'remote:x', '', 50, 'media/old.png', datetime('now', '-10 days'))`,
+		userID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// recent clip, should survive
+	_, err = s.db.Exec(
+		`INSERT INTO clips (id, user_id, content, content_type, source, label, byte_size, created_at)
+		 VALUES ('new1', ?, 'fresh', 'text', 'remote:x', '', 5, datetime('now'))`,
+		userID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	count, mediaPaths, err := s.SweepExpiredClipsReturningMedia(userID, 7)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("got count=%d, want 1", count)
+	}
+	if len(mediaPaths) != 1 || mediaPaths[0] != "media/old.png" {
+		t.Errorf("got mediaPaths=%v, want [media/old.png]", mediaPaths)
+	}
+
+	var remaining int
+	s.db.QueryRow("SELECT COUNT(*) FROM clips WHERE id='new1'").Scan(&remaining)
+	if remaining != 1 {
+		t.Error("recent clip should not be swept")
+	}
+}
+
 func columnExists(t *testing.T, s *Store, table, col string) bool {
 	t.Helper()
 	rows, err := s.db.Query(`PRAGMA table_info(` + table + `)`)
