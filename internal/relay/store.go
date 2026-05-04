@@ -1317,6 +1317,9 @@ func (s *Store) CleanupExpiredDeviceCodes() error {
 
 // SweepExpiredClips deletes clips older than retentionDays for a given user.
 // All clips (regardless of source) are swept in the relay-as-pipe architecture.
+// Sweep intentionally does NOT broadcast clip_deleted: the relay is a delivery
+// buffer; the desktop is the source of truth, so TTL expiry on the relay does
+// not force deletion of the local desktop copy.
 func (s *Store) SweepExpiredClips(userID string, retentionDays int) (int, error) {
 	result, err := s.db.Exec(
 		`DELETE FROM clips WHERE user_id = ?
@@ -1370,6 +1373,7 @@ func (s *Store) SweepAllUsersRetention() error {
 // SweepExpiredClipsReturningMedia deletes clips older than retentionDays
 // for a user and returns the object store keys of any media that was removed.
 // All clips (regardless of source) are swept in the relay-as-pipe architecture.
+// Sweep intentionally does NOT broadcast clip_deleted — same rationale as SweepExpiredClips.
 func (s *Store) SweepExpiredClipsReturningMedia(userID string, retentionDays int) (count int, mediaPaths []string, err error) {
 	rows, err := s.db.Query(
 		`SELECT id, COALESCE(media_path, '') FROM clips
