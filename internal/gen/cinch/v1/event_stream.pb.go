@@ -57,6 +57,50 @@ func (*SubscribeRequest) Descriptor() ([]byte, []int) {
 	return file_cinch_v1_event_stream_proto_rawDescGZIP(), []int{0}
 }
 
+type ClipDeletedEvent struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ClipId        string                 `protobuf:"bytes,1,opt,name=clip_id,json=clipId,proto3" json:"clip_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ClipDeletedEvent) Reset() {
+	*x = ClipDeletedEvent{}
+	mi := &file_cinch_v1_event_stream_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ClipDeletedEvent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ClipDeletedEvent) ProtoMessage() {}
+
+func (x *ClipDeletedEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_cinch_v1_event_stream_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ClipDeletedEvent.ProtoReflect.Descriptor instead.
+func (*ClipDeletedEvent) Descriptor() ([]byte, []int) {
+	return file_cinch_v1_event_stream_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *ClipDeletedEvent) GetClipId() string {
+	if x != nil {
+		return x.ClipId
+	}
+	return ""
+}
+
 type ServerEvent struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Event:
@@ -66,6 +110,7 @@ type ServerEvent struct {
 	//	*ServerEvent_Revoked
 	//	*ServerEvent_TokenRotated
 	//	*ServerEvent_KeyExchange
+	//	*ServerEvent_ClipDeleted
 	Event         isServerEvent_Event `protobuf_oneof:"event"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -73,7 +118,7 @@ type ServerEvent struct {
 
 func (x *ServerEvent) Reset() {
 	*x = ServerEvent{}
-	mi := &file_cinch_v1_event_stream_proto_msgTypes[1]
+	mi := &file_cinch_v1_event_stream_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -85,7 +130,7 @@ func (x *ServerEvent) String() string {
 func (*ServerEvent) ProtoMessage() {}
 
 func (x *ServerEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_cinch_v1_event_stream_proto_msgTypes[1]
+	mi := &file_cinch_v1_event_stream_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -98,7 +143,7 @@ func (x *ServerEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ServerEvent.ProtoReflect.Descriptor instead.
 func (*ServerEvent) Descriptor() ([]byte, []int) {
-	return file_cinch_v1_event_stream_proto_rawDescGZIP(), []int{1}
+	return file_cinch_v1_event_stream_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *ServerEvent) GetEvent() isServerEvent_Event {
@@ -153,6 +198,15 @@ func (x *ServerEvent) GetKeyExchange() *KeyExchangeEvent {
 	return nil
 }
 
+func (x *ServerEvent) GetClipDeleted() *ClipDeletedEvent {
+	if x != nil {
+		if x, ok := x.Event.(*ServerEvent_ClipDeleted); ok {
+			return x.ClipDeleted
+		}
+	}
+	return nil
+}
+
 type isServerEvent_Event interface {
 	isServerEvent_Event()
 }
@@ -177,6 +231,10 @@ type ServerEvent_KeyExchange struct {
 	KeyExchange *KeyExchangeEvent `protobuf:"bytes,5,opt,name=key_exchange,json=keyExchange,proto3,oneof"`
 }
 
+type ServerEvent_ClipDeleted struct {
+	ClipDeleted *ClipDeletedEvent `protobuf:"bytes,6,opt,name=clip_deleted,json=clipDeleted,proto3,oneof"`
+}
+
 func (*ServerEvent_NewClip) isServerEvent_Event() {}
 
 func (*ServerEvent_SendClipboard) isServerEvent_Event() {}
@@ -187,6 +245,8 @@ func (*ServerEvent_TokenRotated) isServerEvent_Event() {}
 
 func (*ServerEvent_KeyExchange) isServerEvent_Event() {}
 
+func (*ServerEvent_ClipDeleted) isServerEvent_Event() {}
+
 type NewClipEvent struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Clip          *Clip                  `protobuf:"bytes,1,opt,name=clip,proto3" json:"clip,omitempty"`
@@ -196,7 +256,7 @@ type NewClipEvent struct {
 
 func (x *NewClipEvent) Reset() {
 	*x = NewClipEvent{}
-	mi := &file_cinch_v1_event_stream_proto_msgTypes[2]
+	mi := &file_cinch_v1_event_stream_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -208,7 +268,7 @@ func (x *NewClipEvent) String() string {
 func (*NewClipEvent) ProtoMessage() {}
 
 func (x *NewClipEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_cinch_v1_event_stream_proto_msgTypes[2]
+	mi := &file_cinch_v1_event_stream_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -221,7 +281,7 @@ func (x *NewClipEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NewClipEvent.ProtoReflect.Descriptor instead.
 func (*NewClipEvent) Descriptor() ([]byte, []int) {
-	return file_cinch_v1_event_stream_proto_rawDescGZIP(), []int{2}
+	return file_cinch_v1_event_stream_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *NewClipEvent) GetClip() *Clip {
@@ -240,7 +300,7 @@ type SendClipboardEvent struct {
 
 func (x *SendClipboardEvent) Reset() {
 	*x = SendClipboardEvent{}
-	mi := &file_cinch_v1_event_stream_proto_msgTypes[3]
+	mi := &file_cinch_v1_event_stream_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -252,7 +312,7 @@ func (x *SendClipboardEvent) String() string {
 func (*SendClipboardEvent) ProtoMessage() {}
 
 func (x *SendClipboardEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_cinch_v1_event_stream_proto_msgTypes[3]
+	mi := &file_cinch_v1_event_stream_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -265,7 +325,7 @@ func (x *SendClipboardEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendClipboardEvent.ProtoReflect.Descriptor instead.
 func (*SendClipboardEvent) Descriptor() ([]byte, []int) {
-	return file_cinch_v1_event_stream_proto_rawDescGZIP(), []int{3}
+	return file_cinch_v1_event_stream_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *SendClipboardEvent) GetPullId() string {
@@ -284,7 +344,7 @@ type RevokedEvent struct {
 
 func (x *RevokedEvent) Reset() {
 	*x = RevokedEvent{}
-	mi := &file_cinch_v1_event_stream_proto_msgTypes[4]
+	mi := &file_cinch_v1_event_stream_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -296,7 +356,7 @@ func (x *RevokedEvent) String() string {
 func (*RevokedEvent) ProtoMessage() {}
 
 func (x *RevokedEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_cinch_v1_event_stream_proto_msgTypes[4]
+	mi := &file_cinch_v1_event_stream_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -309,7 +369,7 @@ func (x *RevokedEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokedEvent.ProtoReflect.Descriptor instead.
 func (*RevokedEvent) Descriptor() ([]byte, []int) {
-	return file_cinch_v1_event_stream_proto_rawDescGZIP(), []int{4}
+	return file_cinch_v1_event_stream_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *RevokedEvent) GetReason() string {
@@ -330,7 +390,7 @@ type TokenRotatedEvent struct {
 
 func (x *TokenRotatedEvent) Reset() {
 	*x = TokenRotatedEvent{}
-	mi := &file_cinch_v1_event_stream_proto_msgTypes[5]
+	mi := &file_cinch_v1_event_stream_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -342,7 +402,7 @@ func (x *TokenRotatedEvent) String() string {
 func (*TokenRotatedEvent) ProtoMessage() {}
 
 func (x *TokenRotatedEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_cinch_v1_event_stream_proto_msgTypes[5]
+	mi := &file_cinch_v1_event_stream_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -355,7 +415,7 @@ func (x *TokenRotatedEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TokenRotatedEvent.ProtoReflect.Descriptor instead.
 func (*TokenRotatedEvent) Descriptor() ([]byte, []int) {
-	return file_cinch_v1_event_stream_proto_rawDescGZIP(), []int{5}
+	return file_cinch_v1_event_stream_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *TokenRotatedEvent) GetToken() string {
@@ -390,7 +450,7 @@ type KeyExchangeEvent struct {
 
 func (x *KeyExchangeEvent) Reset() {
 	*x = KeyExchangeEvent{}
-	mi := &file_cinch_v1_event_stream_proto_msgTypes[6]
+	mi := &file_cinch_v1_event_stream_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -402,7 +462,7 @@ func (x *KeyExchangeEvent) String() string {
 func (*KeyExchangeEvent) ProtoMessage() {}
 
 func (x *KeyExchangeEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_cinch_v1_event_stream_proto_msgTypes[6]
+	mi := &file_cinch_v1_event_stream_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -415,7 +475,7 @@ func (x *KeyExchangeEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use KeyExchangeEvent.ProtoReflect.Descriptor instead.
 func (*KeyExchangeEvent) Descriptor() ([]byte, []int) {
-	return file_cinch_v1_event_stream_proto_rawDescGZIP(), []int{6}
+	return file_cinch_v1_event_stream_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *KeyExchangeEvent) GetDeviceId() string {
@@ -449,7 +509,7 @@ type ProvideClipboardRequest struct {
 
 func (x *ProvideClipboardRequest) Reset() {
 	*x = ProvideClipboardRequest{}
-	mi := &file_cinch_v1_event_stream_proto_msgTypes[7]
+	mi := &file_cinch_v1_event_stream_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -461,7 +521,7 @@ func (x *ProvideClipboardRequest) String() string {
 func (*ProvideClipboardRequest) ProtoMessage() {}
 
 func (x *ProvideClipboardRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cinch_v1_event_stream_proto_msgTypes[7]
+	mi := &file_cinch_v1_event_stream_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -474,7 +534,7 @@ func (x *ProvideClipboardRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProvideClipboardRequest.ProtoReflect.Descriptor instead.
 func (*ProvideClipboardRequest) Descriptor() ([]byte, []int) {
-	return file_cinch_v1_event_stream_proto_rawDescGZIP(), []int{7}
+	return file_cinch_v1_event_stream_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ProvideClipboardRequest) GetPullId() string {
@@ -500,7 +560,7 @@ type ProvideClipboardResponse struct {
 
 func (x *ProvideClipboardResponse) Reset() {
 	*x = ProvideClipboardResponse{}
-	mi := &file_cinch_v1_event_stream_proto_msgTypes[8]
+	mi := &file_cinch_v1_event_stream_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -512,7 +572,7 @@ func (x *ProvideClipboardResponse) String() string {
 func (*ProvideClipboardResponse) ProtoMessage() {}
 
 func (x *ProvideClipboardResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cinch_v1_event_stream_proto_msgTypes[8]
+	mi := &file_cinch_v1_event_stream_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -525,7 +585,7 @@ func (x *ProvideClipboardResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProvideClipboardResponse.ProtoReflect.Descriptor instead.
 func (*ProvideClipboardResponse) Descriptor() ([]byte, []int) {
-	return file_cinch_v1_event_stream_proto_rawDescGZIP(), []int{8}
+	return file_cinch_v1_event_stream_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ProvideClipboardResponse) GetOk() bool {
@@ -540,13 +600,16 @@ var File_cinch_v1_event_stream_proto protoreflect.FileDescriptor
 const file_cinch_v1_event_stream_proto_rawDesc = "" +
 	"\n" +
 	"\x1bcinch/v1/event_stream.proto\x12\bcinch.v1\x1a\x14cinch/v1/clips.proto\"\x12\n" +
-	"\x10SubscribeRequest\"\xcb\x02\n" +
+	"\x10SubscribeRequest\"+\n" +
+	"\x10ClipDeletedEvent\x12\x17\n" +
+	"\aclip_id\x18\x01 \x01(\tR\x06clipId\"\x8c\x03\n" +
 	"\vServerEvent\x123\n" +
 	"\bnew_clip\x18\x01 \x01(\v2\x16.cinch.v1.NewClipEventH\x00R\anewClip\x12E\n" +
 	"\x0esend_clipboard\x18\x02 \x01(\v2\x1c.cinch.v1.SendClipboardEventH\x00R\rsendClipboard\x122\n" +
 	"\arevoked\x18\x03 \x01(\v2\x16.cinch.v1.RevokedEventH\x00R\arevoked\x12B\n" +
 	"\rtoken_rotated\x18\x04 \x01(\v2\x1b.cinch.v1.TokenRotatedEventH\x00R\ftokenRotated\x12?\n" +
-	"\fkey_exchange\x18\x05 \x01(\v2\x1a.cinch.v1.KeyExchangeEventH\x00R\vkeyExchangeB\a\n" +
+	"\fkey_exchange\x18\x05 \x01(\v2\x1a.cinch.v1.KeyExchangeEventH\x00R\vkeyExchange\x12?\n" +
+	"\fclip_deleted\x18\x06 \x01(\v2\x1a.cinch.v1.ClipDeletedEventH\x00R\vclipDeletedB\a\n" +
 	"\x05event\"2\n" +
 	"\fNewClipEvent\x12\"\n" +
 	"\x04clip\x18\x01 \x01(\v2\x0e.cinch.v1.ClipR\x04clip\"-\n" +
@@ -583,35 +646,37 @@ func file_cinch_v1_event_stream_proto_rawDescGZIP() []byte {
 	return file_cinch_v1_event_stream_proto_rawDescData
 }
 
-var file_cinch_v1_event_stream_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_cinch_v1_event_stream_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
 var file_cinch_v1_event_stream_proto_goTypes = []any{
 	(*SubscribeRequest)(nil),         // 0: cinch.v1.SubscribeRequest
-	(*ServerEvent)(nil),              // 1: cinch.v1.ServerEvent
-	(*NewClipEvent)(nil),             // 2: cinch.v1.NewClipEvent
-	(*SendClipboardEvent)(nil),       // 3: cinch.v1.SendClipboardEvent
-	(*RevokedEvent)(nil),             // 4: cinch.v1.RevokedEvent
-	(*TokenRotatedEvent)(nil),        // 5: cinch.v1.TokenRotatedEvent
-	(*KeyExchangeEvent)(nil),         // 6: cinch.v1.KeyExchangeEvent
-	(*ProvideClipboardRequest)(nil),  // 7: cinch.v1.ProvideClipboardRequest
-	(*ProvideClipboardResponse)(nil), // 8: cinch.v1.ProvideClipboardResponse
-	(*Clip)(nil),                     // 9: cinch.v1.Clip
+	(*ClipDeletedEvent)(nil),         // 1: cinch.v1.ClipDeletedEvent
+	(*ServerEvent)(nil),              // 2: cinch.v1.ServerEvent
+	(*NewClipEvent)(nil),             // 3: cinch.v1.NewClipEvent
+	(*SendClipboardEvent)(nil),       // 4: cinch.v1.SendClipboardEvent
+	(*RevokedEvent)(nil),             // 5: cinch.v1.RevokedEvent
+	(*TokenRotatedEvent)(nil),        // 6: cinch.v1.TokenRotatedEvent
+	(*KeyExchangeEvent)(nil),         // 7: cinch.v1.KeyExchangeEvent
+	(*ProvideClipboardRequest)(nil),  // 8: cinch.v1.ProvideClipboardRequest
+	(*ProvideClipboardResponse)(nil), // 9: cinch.v1.ProvideClipboardResponse
+	(*Clip)(nil),                     // 10: cinch.v1.Clip
 }
 var file_cinch_v1_event_stream_proto_depIdxs = []int32{
-	2, // 0: cinch.v1.ServerEvent.new_clip:type_name -> cinch.v1.NewClipEvent
-	3, // 1: cinch.v1.ServerEvent.send_clipboard:type_name -> cinch.v1.SendClipboardEvent
-	4, // 2: cinch.v1.ServerEvent.revoked:type_name -> cinch.v1.RevokedEvent
-	5, // 3: cinch.v1.ServerEvent.token_rotated:type_name -> cinch.v1.TokenRotatedEvent
-	6, // 4: cinch.v1.ServerEvent.key_exchange:type_name -> cinch.v1.KeyExchangeEvent
-	9, // 5: cinch.v1.NewClipEvent.clip:type_name -> cinch.v1.Clip
-	0, // 6: cinch.v1.EventStreamService.Subscribe:input_type -> cinch.v1.SubscribeRequest
-	7, // 7: cinch.v1.EventStreamService.ProvideClipboard:input_type -> cinch.v1.ProvideClipboardRequest
-	1, // 8: cinch.v1.EventStreamService.Subscribe:output_type -> cinch.v1.ServerEvent
-	8, // 9: cinch.v1.EventStreamService.ProvideClipboard:output_type -> cinch.v1.ProvideClipboardResponse
-	8, // [8:10] is the sub-list for method output_type
-	6, // [6:8] is the sub-list for method input_type
-	6, // [6:6] is the sub-list for extension type_name
-	6, // [6:6] is the sub-list for extension extendee
-	0, // [0:6] is the sub-list for field type_name
+	3,  // 0: cinch.v1.ServerEvent.new_clip:type_name -> cinch.v1.NewClipEvent
+	4,  // 1: cinch.v1.ServerEvent.send_clipboard:type_name -> cinch.v1.SendClipboardEvent
+	5,  // 2: cinch.v1.ServerEvent.revoked:type_name -> cinch.v1.RevokedEvent
+	6,  // 3: cinch.v1.ServerEvent.token_rotated:type_name -> cinch.v1.TokenRotatedEvent
+	7,  // 4: cinch.v1.ServerEvent.key_exchange:type_name -> cinch.v1.KeyExchangeEvent
+	1,  // 5: cinch.v1.ServerEvent.clip_deleted:type_name -> cinch.v1.ClipDeletedEvent
+	10, // 6: cinch.v1.NewClipEvent.clip:type_name -> cinch.v1.Clip
+	0,  // 7: cinch.v1.EventStreamService.Subscribe:input_type -> cinch.v1.SubscribeRequest
+	8,  // 8: cinch.v1.EventStreamService.ProvideClipboard:input_type -> cinch.v1.ProvideClipboardRequest
+	2,  // 9: cinch.v1.EventStreamService.Subscribe:output_type -> cinch.v1.ServerEvent
+	9,  // 10: cinch.v1.EventStreamService.ProvideClipboard:output_type -> cinch.v1.ProvideClipboardResponse
+	9,  // [9:11] is the sub-list for method output_type
+	7,  // [7:9] is the sub-list for method input_type
+	7,  // [7:7] is the sub-list for extension type_name
+	7,  // [7:7] is the sub-list for extension extendee
+	0,  // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_cinch_v1_event_stream_proto_init() }
@@ -620,12 +685,13 @@ func file_cinch_v1_event_stream_proto_init() {
 		return
 	}
 	file_cinch_v1_clips_proto_init()
-	file_cinch_v1_event_stream_proto_msgTypes[1].OneofWrappers = []any{
+	file_cinch_v1_event_stream_proto_msgTypes[2].OneofWrappers = []any{
 		(*ServerEvent_NewClip)(nil),
 		(*ServerEvent_SendClipboard)(nil),
 		(*ServerEvent_Revoked)(nil),
 		(*ServerEvent_TokenRotated)(nil),
 		(*ServerEvent_KeyExchange)(nil),
+		(*ServerEvent_ClipDeleted)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -633,7 +699,7 @@ func file_cinch_v1_event_stream_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_cinch_v1_event_stream_proto_rawDesc), len(file_cinch_v1_event_stream_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   9,
+			NumMessages:   10,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

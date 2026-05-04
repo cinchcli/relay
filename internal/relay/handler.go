@@ -588,6 +588,8 @@ func (h *Handler) DeleteClip(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	h.hub.SendClipDeleted(userID, clipID)
+
 	w.WriteHeader(http.StatusNoContent)
 }
 

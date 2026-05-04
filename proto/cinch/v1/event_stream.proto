@@ -22,6 +22,10 @@ service EventStreamService {
 
 message SubscribeRequest {}
 
+message ClipDeletedEvent {
+  string clip_id = 1;
+}
+
 message ServerEvent {
   oneof event {
     NewClipEvent       new_clip       = 1;
@@ -29,6 +33,7 @@ message ServerEvent {
     RevokedEvent       revoked        = 3;
     TokenRotatedEvent  token_rotated  = 4;
     KeyExchangeEvent   key_exchange   = 5;
+    ClipDeletedEvent   clip_deleted   = 6;
   }
 }
 
