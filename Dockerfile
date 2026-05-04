@@ -12,11 +12,16 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 go build -ldflags "-s -w" -o /bin/cinch-relay ./cmd/relay
 
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 go build -ldflags "-s -w" -o /bin/failover-listener ./cmd/failover-listener
+
 FROM alpine:3.21
 
 RUN apk add --no-cache ca-certificates
 
 COPY --from=builder /bin/cinch-relay /usr/local/bin/cinch-relay
+COPY --from=builder /bin/failover-listener /usr/local/bin/failover-listener
 
 RUN adduser -D -h /data cinch
 USER cinch
