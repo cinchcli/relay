@@ -956,17 +956,15 @@ func (s *Store) ListClips(userID string, limit int) ([]*cinchv1.Clip, error) {
 
 // ListClipsSince returns clips newer than `since` (exclusive), ordered oldest-first
 // so the caller can replay them in order. If since is zero, delegates to ListClips.
+// The caller is responsible for clamping limit to a valid range (1–100).
 func (s *Store) ListClipsSince(userID string, since time.Time, limit int) ([]*cinchv1.Clip, error) {
 	if since.IsZero() {
 		return s.ListClips(userID, limit)
 	}
-	if limit <= 0 || limit > 100 {
-		limit = 50
-	}
 
 	rows, err := s.db.Query(`
 		SELECT id, user_id, content, content_type, source, label, byte_size,
-		       COALESCE(media_path, ''), created_at, encrypted
+		       media_path, created_at, encrypted
 		FROM clips
 		WHERE user_id = ? AND created_at > ?
 		ORDER BY created_at ASC
@@ -980,14 +978,14 @@ func (s *Store) ListClipsSince(userID string, since time.Time, limit int) ([]*ci
 	clips := make([]*cinchv1.Clip, 0)
 	for rows.Next() {
 		c := &cinchv1.Clip{}
-		var mediaPath string
+		var mediaPath sql.NullString
 		var createdAt time.Time
 		if err := rows.Scan(&c.ClipId, &c.UserId, &c.Content, &c.ContentType, &c.Source, &c.Label, &c.ByteSize, &mediaPath, &createdAt, &c.Encrypted); err != nil {
 			return nil, err
 		}
-		if mediaPath != "" {
-			mp := mediaPath
-			c.MediaPath = &mp
+		if mediaPath.Valid && mediaPath.String != "" {
+			s := mediaPath.String
+			c.MediaPath = &s
 		}
 		c.CreatedAt = protocol.FormatRFC3339(createdAt)
 		clips = append(clips, c)
