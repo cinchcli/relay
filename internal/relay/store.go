@@ -7,9 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
-	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -20,8 +17,7 @@ import (
 )
 
 type Store struct {
-	db       *sql.DB
-	MediaDir string // directory for media files (images)
+	db *sql.DB
 }
 
 func NewStore(path string) (*Store, error) {
@@ -39,13 +35,7 @@ func NewStore(path string) (*Store, error) {
 		return nil, fmt.Errorf("migrating db: %w", err)
 	}
 
-	mediaDir := filepath.Join(filepath.Dir(path), "media")
-	if err := os.MkdirAll(mediaDir, 0755); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("creating media dir: %w", err)
-	}
-
-	return &Store{db: db, MediaDir: mediaDir}, nil
+	return &Store{db: db}, nil
 }
 
 func migrate(db *sql.DB) error {
@@ -1048,30 +1038,6 @@ func (s *Store) SetSetting(key, value string) error {
 	return err
 }
 
-// GetMediaTotalBytes returns the tracked cumulative media size.
-func (s *Store) GetMediaTotalBytes() (int64, error) {
-	val, err := s.GetSetting("media_total_bytes")
-	if err != nil || val == "" {
-		return 0, err
-	}
-	return strconv.ParseInt(val, 10, 64)
-}
-
-// AddMediaBytes increments the tracked media size.
-func (s *Store) AddMediaBytes(n int64) error {
-	current, _ := s.GetMediaTotalBytes()
-	return s.SetSetting("media_total_bytes", strconv.FormatInt(current+n, 10))
-}
-
-// SubMediaBytes decrements the tracked media size.
-func (s *Store) SubMediaBytes(n int64) error {
-	current, _ := s.GetMediaTotalBytes()
-	newVal := current - n
-	if newVal < 0 {
-		newVal = 0
-	}
-	return s.SetSetting("media_total_bytes", strconv.FormatInt(newVal, 10))
-}
 
 // GetClipMediaPath returns the media_path for a clip (for cascade delete).
 func (s *Store) GetClipMediaPath(userID, clipID string) (string, error) {
@@ -1086,60 +1052,6 @@ func (s *Store) GetClipMediaPath(userID, clipID string) (string, error) {
 	return "", nil
 }
 
-// CleanupMediaOverLimit deletes oldest media files until under the threshold.
-func (s *Store) CleanupMediaOverLimit(maxBytes int64) error {
-	total, err := s.GetMediaTotalBytes()
-	if err != nil || total <= maxBytes {
-		return err
-	}
-
-	rows, err := s.db.Query(
-		`SELECT id, user_id, media_path, byte_size FROM clips
-		 WHERE media_path IS NOT NULL AND media_path != ''
-		 ORDER BY created_at ASC`,
-	)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	target := maxBytes * 80 / 100 // clean down to 80%
-	for rows.Next() && total > target {
-		var id, userID, mediaPath string
-		var byteSize int
-		if err := rows.Scan(&id, &userID, &mediaPath, &byteSize); err != nil {
-			continue
-		}
-		fullPath := filepath.Join(s.MediaDir, filepath.Base(mediaPath))
-		os.Remove(fullPath)
-		s.db.Exec("DELETE FROM clips WHERE id = ?", id)
-		total -= int64(byteSize)
-	}
-
-	s.SetSetting("media_total_bytes", strconv.FormatInt(total, 10))
-	return nil
-}
-
-// ReconcileMedia deletes orphaned media files on startup.
-func (s *Store) ReconcileMedia() error {
-	entries, err := os.ReadDir(s.MediaDir)
-	if err != nil {
-		return err
-	}
-
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		var count int
-		s.db.QueryRow("SELECT COUNT(*) FROM clips WHERE media_path = ?", "media/"+name).Scan(&count)
-		if count == 0 {
-			os.Remove(filepath.Join(s.MediaDir, name))
-		}
-	}
-	return nil
-}
 
 // ListDevices returns all non-revoked devices for a user.
 //

@@ -39,11 +39,6 @@ func main() {
 	}
 	defer store.Close()
 
-	// Reconcile orphaned media files on startup
-	if err := store.ReconcileMedia(); err != nil {
-		log.Printf("media reconciliation: %v", err)
-	}
-
 	// Retention sweep: deletes expired remote clips hourly.
 	go func() {
 		ticker := time.NewTicker(1 * time.Hour)
