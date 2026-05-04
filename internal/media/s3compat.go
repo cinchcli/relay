@@ -1,6 +1,13 @@
 package media
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+	"io"
+
+	"github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
+)
 
 // S3Config holds configuration for an S3-compatible object store backend.
 type S3Config struct {
@@ -12,8 +19,69 @@ type S3Config struct {
 	UseSSL    bool // default true; set MEDIA_USE_SSL=false for local MinIO
 }
 
-// NewS3CompatStore is implemented in Task 2 after the minio-go dep is added.
-// This stub returns an error until then.
-func NewS3CompatStore(cfg S3Config) (Store, error) {
-	return nil, fmt.Errorf("media(s3): s3 backend not yet implemented")
+// S3CompatStore stores media objects in any S3-compatible object store
+// (AWS S3, Cloudflare R2, MinIO, GCS S3-compat, DigitalOcean Spaces, etc.).
+type S3CompatStore struct {
+	client *minio.Client
+	bucket string
+}
+
+// NewS3CompatStore creates an S3CompatStore from cfg.
+func NewS3CompatStore(cfg S3Config) (*S3CompatStore, error) {
+	if cfg.Bucket == "" {
+		return nil, fmt.Errorf("media(s3): MEDIA_BUCKET is required")
+	}
+	if cfg.Region == "" {
+		cfg.Region = "us-east-1"
+	}
+	if cfg.Endpoint == "" {
+		cfg.Endpoint = "s3.amazonaws.com"
+	}
+
+	var creds *credentials.Credentials
+	if cfg.AccessKey != "" && cfg.SecretKey != "" {
+		creds = credentials.NewStaticV4(cfg.AccessKey, cfg.SecretKey, "")
+	} else {
+		creds = credentials.NewChainCredentials([]credentials.Provider{
+			&credentials.EnvAWS{},
+			&credentials.IAM{Client: nil},
+		})
+	}
+
+	client, err := minio.New(cfg.Endpoint, &minio.Options{
+		Creds:  creds,
+		Secure: cfg.UseSSL,
+		Region: cfg.Region,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("media(s3): init client: %w", err)
+	}
+
+	return &S3CompatStore{client: client, bucket: cfg.Bucket}, nil
+}
+
+func (s *S3CompatStore) Upload(ctx context.Context, key string, r io.Reader, size int64, contentType string) error {
+	_, err := s.client.PutObject(ctx, s.bucket, key, r, size, minio.PutObjectOptions{
+		ContentType: contentType,
+	})
+	if err != nil {
+		return fmt.Errorf("media(s3): upload %q: %w", key, err)
+	}
+	return nil
+}
+
+func (s *S3CompatStore) Download(ctx context.Context, key string) (io.ReadCloser, error) {
+	obj, err := s.client.GetObject(ctx, s.bucket, key, minio.GetObjectOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("media(s3): download %q: %w", key, err)
+	}
+	return obj, nil
+}
+
+func (s *S3CompatStore) Delete(ctx context.Context, key string) error {
+	err := s.client.RemoveObject(ctx, s.bucket, key, minio.RemoveObjectOptions{})
+	if err != nil {
+		return fmt.Errorf("media(s3): delete %q: %w", key, err)
+	}
+	return nil
 }
