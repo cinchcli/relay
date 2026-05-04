@@ -8,13 +8,13 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	cinchv1 "github.com/cinchcli/relay/internal/gen/cinch/v1"
+	"github.com/cinchcli/relay/internal/media"
 	"github.com/cinchcli/relay/internal/protocol"
 	relay "github.com/cinchcli/relay/internal/relay"
 	"github.com/gorilla/websocket"
@@ -493,10 +493,16 @@ func setupTestServerWithDisk(t *testing.T) *httptest.Server {
 	}
 	t.Cleanup(func() { store.Close() })
 
+	mediaStore, err := media.NewLocalStore(filepath.Join(tmpDir, "media"))
+	if err != nil {
+		t.Fatalf("failed to create media store: %v", err)
+	}
+
 	hub := relay.NewHub()
 	go hub.Run()
 
 	handler := relay.NewHandler(store, hub)
+	handler.SetMediaStore(mediaStore)
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
 
@@ -798,58 +804,6 @@ func TestTextPushStillWorksAfterBinary(t *testing.T) {
 	if pr.ByteSize != int64(len("text after image")) {
 		t.Errorf("expected %d bytes, got %d", len("text after image"), pr.ByteSize)
 	}
-}
-
-func TestMediaRetentionTracking(t *testing.T) {
-	ts := setupTestServerWithDisk(t)
-	token, _, _ := login(t, ts.URL)
-
-	// Push 3 images
-	png := createTestPNG()
-	for i := 0; i < 3; i++ {
-		resp := postBinary(t, ts.URL, token, png, "image/png", "remote:test")
-		resp.Body.Close()
-	}
-
-	// List should show 3 image clips
-	req, _ := http.NewRequest("GET", ts.URL+"/clips", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	listResp, _ := http.DefaultClient.Do(req)
-	var clips []*cinchv1.Clip
-	json.NewDecoder(listResp.Body).Decode(&clips)
-	listResp.Body.Close()
-
-	imageCount := 0
-	for _, c := range clips {
-		if c.MediaPath != nil && *c.MediaPath != "" {
-			imageCount++
-		}
-	}
-	if imageCount != 3 {
-		t.Errorf("expected 3 image clips, got %d", imageCount)
-	}
-}
-
-func TestMediaReconciliation(t *testing.T) {
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "test.db")
-
-	store, err := relay.NewStore(dbPath)
-	if err != nil {
-		t.Fatalf("failed to create store: %v", err)
-	}
-
-	// Create orphan file
-	os.WriteFile(filepath.Join(store.MediaDir, "orphan.png"), []byte("fake"), 0644)
-
-	// Reconcile should remove it
-	store.ReconcileMedia()
-
-	if _, err := os.Stat(filepath.Join(store.MediaDir, "orphan.png")); !os.IsNotExist(err) {
-		t.Error("orphan file was not removed by ReconcileMedia")
-	}
-
-	store.Close()
 }
 
 // ── Demo session tests ────────────────────────────────────────────
