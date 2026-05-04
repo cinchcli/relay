@@ -976,6 +976,24 @@ func (s *Store) DeleteClip(userID, clipID string) error {
 	return nil
 }
 
+// DeleteClipReturningMedia removes a clip and returns its media_path key (or ""
+// if none). The caller is responsible for deleting the key from the object store.
+func (s *Store) DeleteClipReturningMedia(userID, clipID string) (mediaPath string, err error) {
+	_ = s.db.QueryRow(
+		"SELECT COALESCE(media_path, '') FROM clips WHERE id = ? AND user_id = ?",
+		clipID, userID,
+	).Scan(&mediaPath)
+
+	res, err := s.db.Exec("DELETE FROM clips WHERE id = ? AND user_id = ?", clipID, userID)
+	if err != nil {
+		return "", err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return "", fmt.Errorf("clip not found")
+	}
+	return mediaPath, nil
+}
+
 // GetLatestClipBySource returns the most recent clip from a specific source.
 func (s *Store) GetLatestClipBySource(userID, source string) (*cinchv1.Clip, error) {
 	c := &cinchv1.Clip{}
@@ -1395,6 +1413,80 @@ func (s *Store) SweepAllUsersRetention() error {
 		}
 	}
 	return nil
+}
+
+// SweepExpiredClipsReturningMedia deletes remote clips older than retentionDays
+// for a user and returns the object store keys of any media that was removed.
+func (s *Store) SweepExpiredClipsReturningMedia(userID string, retentionDays int) (count int, mediaPaths []string, err error) {
+	rows, err := s.db.Query(
+		`SELECT id, COALESCE(media_path, '') FROM clips
+		  WHERE user_id = ? AND source LIKE 'remote:%'
+		    AND created_at < datetime('now', '-' || ? || ' days')`,
+		userID, retentionDays,
+	)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer rows.Close()
+
+	type row struct{ id, key string }
+	var toDelete []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.id, &r.key); err != nil {
+			continue
+		}
+		toDelete = append(toDelete, r)
+	}
+	rows.Close()
+
+	for _, r := range toDelete {
+		if _, err := s.db.Exec("DELETE FROM clips WHERE id = ?", r.id); err != nil {
+			continue
+		}
+		count++
+		if r.key != "" {
+			mediaPaths = append(mediaPaths, r.key)
+		}
+	}
+	return count, mediaPaths, nil
+}
+
+// SweepAllUsersRetentionReturningMedia sweeps all users' expired clips and
+// collects the media keys that were deleted so callers can remove them from
+// the object store.
+func (s *Store) SweepAllUsersRetentionReturningMedia() (mediaPaths []string, err error) {
+	rows, err := s.db.Query(
+		`SELECT DISTINCT d.user_id, d.remote_retention_days
+		  FROM devices d
+		  WHERE d.remote_retention_days IS NOT NULL AND d.revoked_at IS NULL`,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	type ur struct {
+		userID string
+		days   int
+	}
+	var users []ur
+	for rows.Next() {
+		var u ur
+		if err := rows.Scan(&u.userID, &u.days); err != nil {
+			continue
+		}
+		users = append(users, u)
+	}
+	rows.Close()
+
+	for _, u := range users {
+		count, paths, err := s.SweepExpiredClipsReturningMedia(u.userID, u.days)
+		if err == nil && count > 0 {
+			log.Printf("retention sweep: deleted %d clips for user %s (>%d days)", count, u.userID, u.days)
+		}
+		mediaPaths = append(mediaPaths, paths...)
+	}
+	return mediaPaths, nil
 }
 
 // UpdateDeviceRetention sets the remote_retention_days for a specific device.
