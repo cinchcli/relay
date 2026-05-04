@@ -1139,3 +1139,81 @@ func TestListClipsSince(t *testing.T) {
 		t.Errorf("expected 400 for invalid since, got %d", badResp.StatusCode)
 	}
 }
+
+// TestDeleteBroadcastsEvent verifies that deleting a clip via DELETE /clips/{id}
+// broadcasts a clip_deleted WebSocket message to all connected devices of that user.
+func TestDeleteBroadcastsEvent(t *testing.T) {
+	ts, _ := setupTestServer(t)
+
+	// One user with one connected agent.
+	token, _, _ := login(t, ts.URL)
+	agent := connectFakeAgent(t, ts.URL, token)
+
+	// Push a clip.
+	pushBody, _ := json.Marshal(cinchv1.PushClipRequest{
+		Content:   "clip-to-delete",
+		Source:    "remote:test-device",
+		Encrypted: true,
+	})
+	pushReq, _ := http.NewRequest("POST", ts.URL+"/clips", bytes.NewReader(pushBody))
+	pushReq.Header.Set("Content-Type", "application/json")
+	pushReq.Header.Set("Authorization", "Bearer "+token)
+
+	pushResp, err := http.DefaultClient.Do(pushReq)
+	if err != nil {
+		t.Fatalf("push request failed: %v", err)
+	}
+	defer pushResp.Body.Close()
+
+	if pushResp.StatusCode != http.StatusOK {
+		t.Fatalf("push returned %d", pushResp.StatusCode)
+	}
+
+	var pushResult cinchv1.PushClipResponse
+	json.NewDecoder(pushResp.Body).Decode(&pushResult)
+	clipID := pushResult.ClipId
+	if clipID == "" {
+		t.Fatal("clip ID is empty after push")
+	}
+
+	// Drain the new_clip broadcast so the next read sees only clip_deleted.
+	agent.SetReadDeadline(time.Now().Add(3 * time.Second))
+	var newClipMsg protocol.WSMessage
+	if err := agent.ReadJSON(&newClipMsg); err != nil {
+		t.Fatalf("agent did not receive new_clip broadcast: %v", err)
+	}
+	if newClipMsg.Action != protocol.ActionNewClip {
+		t.Fatalf("expected new_clip, got %q", newClipMsg.Action)
+	}
+
+	// Delete the clip.
+	delReq, _ := http.NewRequest("DELETE", ts.URL+"/clips/"+clipID, nil)
+	delReq.Header.Set("Authorization", "Bearer "+token)
+
+	delResp, err := http.DefaultClient.Do(delReq)
+	if err != nil {
+		t.Fatalf("delete request failed: %v", err)
+	}
+	delResp.Body.Close()
+
+	if delResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete returned %d, want 204", delResp.StatusCode)
+	}
+
+	// The agent should receive a clip_deleted message.
+	agent.SetReadDeadline(time.Now().Add(3 * time.Second))
+	var delMsg protocol.WSMessage
+	if err := agent.ReadJSON(&delMsg); err != nil {
+		t.Fatalf("agent did not receive clip_deleted message: %v", err)
+	}
+
+	if delMsg.Action != protocol.ActionClipDeleted {
+		t.Errorf("expected action %q, got %q", protocol.ActionClipDeleted, delMsg.Action)
+	}
+	if delMsg.Clip == nil {
+		t.Fatal("clip field is nil in clip_deleted message")
+	}
+	if delMsg.Clip.ClipId != clipID {
+		t.Errorf("expected clip_id %q, got %q", clipID, delMsg.Clip.ClipId)
+	}
+}

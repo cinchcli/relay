@@ -68,6 +68,11 @@ func serverEventToWSMessage(e *cinchv1.ServerEvent) *protocol.WSMessage {
 			Hostname:             ev.KeyExchange.Hostname,
 			DeviceKeyFingerprint: ev.KeyExchange.DeviceKeyFingerprint,
 		}
+	case *cinchv1.ServerEvent_ClipDeleted:
+		return &protocol.WSMessage{
+			Action: protocol.ActionClipDeleted,
+			Clip:   &cinchv1.Clip{ClipId: ev.ClipDeleted.ClipId},
+		}
 	default:
 		return nil
 	}
@@ -347,6 +352,36 @@ func (h *Hub) SendClip(userID string, clip *cinchv1.Clip) error {
 
 	h.sendToEventSubs(userID, event)
 	return firstErr
+}
+
+// SendClipDeleted broadcasts a clip_deleted event to all connected devices of the user.
+// Delivers to both WS conns and Connect event stream subscribers.
+func (h *Hub) SendClipDeleted(userID, clipID string) {
+	h.mu.RLock()
+	devs := h.conns[userID]
+	conns := make([]*AgentConn, 0, len(devs))
+	for _, ac := range devs {
+		conns = append(conns, ac)
+	}
+	h.mu.RUnlock()
+
+	wsMsg := &protocol.WSMessage{
+		Action: protocol.ActionClipDeleted,
+		Clip:   &cinchv1.Clip{ClipId: clipID},
+	}
+	event := &cinchv1.ServerEvent{
+		Event: &cinchv1.ServerEvent_ClipDeleted{
+			ClipDeleted: &cinchv1.ClipDeletedEvent{ClipId: clipID},
+		},
+	}
+
+	for _, ac := range conns {
+		if err := ac.Conn.WriteJSON(wsMsg); err != nil {
+			log.Printf("SendClipDeleted write error for device %s: %v", ac.DeviceID, err)
+		}
+	}
+
+	h.sendToEventSubs(userID, event)
 }
 
 // SendToUser sends an event to all connected devices for a user (WS + event stream).
