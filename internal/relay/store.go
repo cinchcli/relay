@@ -261,7 +261,7 @@ func migrate(db *sql.DB) error {
 		}
 	}
 	if !hasRetentionDays {
-		if _, err = db.Exec("ALTER TABLE devices ADD COLUMN remote_retention_days INTEGER DEFAULT 30"); err != nil {
+		if _, err = db.Exec("ALTER TABLE devices ADD COLUMN remote_retention_days INTEGER DEFAULT 1"); err != nil {
 			return err
 		}
 	}
@@ -1453,10 +1453,10 @@ func (s *Store) SweepAllUsersRetentionReturningMedia() (mediaPaths []string, err
 }
 
 // UpdateDeviceRetention sets the remote_retention_days for a specific device.
-// days must be between 7 and 365 inclusive.
+// days must be between 1 and 365 inclusive.
 func (s *Store) UpdateDeviceRetention(deviceID string, days int) error {
-	if days < 7 || days > 365 {
-		return fmt.Errorf("retention days must be between 7 and 365, got %d", days)
+	if days < 1 || days > 365 {
+		return fmt.Errorf("retention days must be between 1 and 365, got %d", days)
 	}
 	result, err := s.db.Exec(
 		"UPDATE devices SET remote_retention_days = ? WHERE id = ? AND revoked_at IS NULL",
