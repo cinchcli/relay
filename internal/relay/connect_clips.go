@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 
@@ -37,6 +38,13 @@ func (s *connectClipsServer) PushClip(ctx context.Context, req *connect.Request[
 		return nil, connect.NewError(connect.CodeInvalidArgument, errMsg("content is required"))
 	}
 
+	// E2EE is mandatory for non-demo users.
+	isDemoUser, _ := s.h.store.IsDemoUser(userID)
+	if !isDemoUser && !req.Msg.Encrypted {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			errors.New("encryption_required: server requires end-to-end encrypted clips"))
+	}
+
 	targetDeviceID := ""
 	if req.Msg.TargetDeviceId != nil {
 		targetDeviceID = *req.Msg.TargetDeviceId
@@ -67,9 +75,8 @@ func (s *connectClipsServer) PushClip(ctx context.Context, req *connect.Request[
 		}), nil
 	}
 
-	// Demo restrictions.
-	isDemo, _ := s.h.store.IsDemoUser(userID)
-	if isDemo {
+	// Demo restrictions. isDemoUser was resolved above for the E2EE gate; reuse it here.
+	if isDemoUser {
 		if req.Msg.ContentType != "" && req.Msg.ContentType != "text" {
 			return nil, connect.NewError(connect.CodePermissionDenied, errMsg("demo sessions accept text only"))
 		}
@@ -87,7 +94,7 @@ func (s *connectClipsServer) PushClip(ctx context.Context, req *connect.Request[
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	if isDemo {
+	if isDemoUser {
 		if err := s.h.store.IncrementDemoCounter(); err != nil {
 			log.Printf("connectClipsServer.PushClip: demo counter increment failed: %v", err)
 		}

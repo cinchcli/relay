@@ -147,8 +147,9 @@ func TestPushClip(t *testing.T) {
 
 	// Push a clip
 	reqBody, _ := json.Marshal(cinchv1.PushClipRequest{
-		Content: "hello from test",
-		Source:  "remote:test-server",
+		Content:   "hello from test",
+		Source:    "remote:test-server",
+		Encrypted: true,
 	})
 	req, _ := http.NewRequest("POST", ts.URL+"/clips", bytes.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
@@ -214,6 +215,71 @@ func TestPushClipEmpty(t *testing.T) {
 	}
 }
 
+func TestPushClip_RejectsPlaintext(t *testing.T) {
+	ts, _ := setupTestServer(t)
+	token, _, _ := login(t, ts.URL)
+
+	body, _ := json.Marshal(cinchv1.PushClipRequest{Content: "hi", Encrypted: false})
+	req, _ := http.NewRequest("POST", ts.URL+"/clips", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422, got %d", resp.StatusCode)
+	}
+	var errResp cinchv1.ErrorResponse
+	json.NewDecoder(resp.Body).Decode(&errResp)
+	if errResp.Error != "encryption_required" {
+		t.Errorf("want error=encryption_required, got %q", errResp.Error)
+	}
+}
+
+func TestPushClip_AcceptsEncrypted(t *testing.T) {
+	ts, _ := setupTestServer(t)
+	token, _, _ := login(t, ts.URL)
+
+	body, _ := json.Marshal(cinchv1.PushClipRequest{Content: "encrypted-content", Encrypted: true})
+	req, _ := http.NewRequest("POST", ts.URL+"/clips", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestPushClip_DemoStillAllowsPlaintext(t *testing.T) {
+	ts, _ := setupTestServer(t)
+	sess := createDemoSession(t, ts.URL)
+
+	body, _ := json.Marshal(cinchv1.PushClipRequest{Content: "demo-plaintext", Encrypted: false})
+	req, _ := http.NewRequest("POST", ts.URL+"/clips", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+sess.Token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+}
+
 func TestPushAndReceiveViaWebSocket(t *testing.T) {
 	ts, _ := setupTestServer(t)
 	token, _, _ := login(t, ts.URL)
@@ -224,8 +290,9 @@ func TestPushAndReceiveViaWebSocket(t *testing.T) {
 	// Push a clip
 	content := "E2E test: push → WS → agent"
 	reqBody, _ := json.Marshal(cinchv1.PushClipRequest{
-		Content: content,
-		Source:  "remote:ci-server",
+		Content:   content,
+		Source:    "remote:ci-server",
+		Encrypted: true,
 	})
 	req, _ := http.NewRequest("POST", ts.URL+"/clips", bytes.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")
@@ -340,7 +407,8 @@ func TestListClips(t *testing.T) {
 	// Push 3 clips
 	for i := 0; i < 3; i++ {
 		reqBody, _ := json.Marshal(cinchv1.PushClipRequest{
-			Content: fmt.Sprintf("clip %d", i),
+			Content:   fmt.Sprintf("clip %d", i),
+			Encrypted: true,
 		})
 		req, _ := http.NewRequest("POST", ts.URL+"/clips", bytes.NewReader(reqBody))
 		req.Header.Set("Content-Type", "application/json")
@@ -377,7 +445,7 @@ func TestDeleteClip(t *testing.T) {
 	token, _, _ := login(t, ts.URL)
 
 	// Push a clip
-	reqBody, _ := json.Marshal(cinchv1.PushClipRequest{Content: "to delete"})
+	reqBody, _ := json.Marshal(cinchv1.PushClipRequest{Content: "to delete", Encrypted: true})
 	pushReq, _ := http.NewRequest("POST", ts.URL+"/clips", bytes.NewReader(reqBody))
 	pushReq.Header.Set("Content-Type", "application/json")
 	pushReq.Header.Set("Authorization", "Bearer "+token)
@@ -707,8 +775,9 @@ func TestTextPushStillWorksAfterBinary(t *testing.T) {
 
 	// Then push text (should still work)
 	reqBody, _ := json.Marshal(cinchv1.PushClipRequest{
-		Content: "text after image",
-		Source:  "remote:test",
+		Content:   "text after image",
+		Source:    "remote:test",
+		Encrypted: true,
 	})
 	req, _ := http.NewRequest("POST", ts.URL+"/clips", bytes.NewReader(reqBody))
 	req.Header.Set("Content-Type", "application/json")

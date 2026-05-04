@@ -431,6 +431,17 @@ func (h *Handler) PushClip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// E2EE is mandatory for non-demo users. Demo identities are server-side
+	// ephemeral with no client-side key exchange; demo data is intentionally
+	// public, capped at 1024 bytes, and TTL'd.
+	isDemoUser, _ := h.store.IsDemoUser(userID)
+	if !isDemoUser && !req.Encrypted {
+		writeError(w, http.StatusUnprocessableEntity, "encryption_required",
+			"Server requires end-to-end encrypted clips. Plaintext push was rejected.",
+			"Run cinch auth login to (re)generate your encryption key.")
+		return
+	}
+
 	targetDeviceID := ""
 	if req.TargetDeviceId != nil {
 		targetDeviceID = *req.TargetDeviceId
@@ -466,8 +477,8 @@ func (h *Handler) PushClip(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Demo sessions are restricted to prevent abuse: text-only, 1KB, 5 clips.
-	isDemo, _ := h.store.IsDemoUser(userID)
-	if isDemo {
+	// isDemoUser was resolved above for the E2EE gate; reuse it here.
+	if isDemoUser {
 		if req.ContentType != "" && req.ContentType != protocol.ContentText {
 			writeError(w, http.StatusBadRequest, "demo text only", "Demo sessions accept text only", "Sign up for image support")
 			return
@@ -489,7 +500,7 @@ func (h *Handler) PushClip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if isDemo {
+	if isDemoUser {
 		if err := h.store.IncrementDemoCounter(); err != nil {
 			log.Printf("demo counter increment failed: %v", err)
 		}
