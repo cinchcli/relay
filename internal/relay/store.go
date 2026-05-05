@@ -1531,11 +1531,16 @@ func (s *Store) SweepAllUsersRetentionReturningMedia() (mediaPaths []string, err
 	}
 
 	for _, u := range users {
-		count, paths, sweepErr := s.SweepExpiredClipsReturningMedia(u.userID, u.days)
+		retentionDays := u.days
+		// Capabilities override per-device retention when set (non-zero).
+		if cap, capErr := s.GetUserCapabilities(u.userID); capErr == nil && cap.RetentionDays > 0 {
+			retentionDays = cap.RetentionDays
+		}
+		count, paths, sweepErr := s.SweepExpiredClipsReturningMedia(u.userID, retentionDays)
 		if sweepErr != nil {
 			log.Printf("retention sweep: user %s: %v", u.userID, sweepErr)
 		} else if count > 0 {
-			log.Printf("retention sweep: deleted %d clips for user %s (>%d days)", count, u.userID, u.days)
+			log.Printf("retention sweep: deleted %d clips for user %s (>%d days)", count, u.userID, retentionDays)
 		}
 		mediaPaths = append(mediaPaths, paths...)
 	}
@@ -1829,6 +1834,9 @@ func (s *Store) IncrementDailyRequestCount(userID string) (int, error) {
 	).Scan(&count)
 	return count, err
 }
+
+// DB returns the underlying *sql.DB. Only use in tests.
+func (s *Store) DB() *sql.DB { return s.db }
 
 // SweepOldRequestCounts deletes daily request count rows older than retentionDays.
 func (s *Store) SweepOldRequestCounts(retentionDays int) (int, error) {
