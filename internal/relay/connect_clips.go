@@ -180,6 +180,9 @@ func (s *connectClipsServer) DeleteClip(ctx context.Context, req *connect.Reques
 	if err := s.h.store.DeleteClip(userID, req.Msg.ClipId); err != nil {
 		return nil, connect.NewError(connect.CodeNotFound, err)
 	}
+	if err := s.h.store.InsertTombstone(userID, req.Msg.ClipId); err != nil {
+		log.Printf("InsertTombstone %s: %v", req.Msg.ClipId, err)
+	}
 	s.h.hub.SendClipDeleted(userID, req.Msg.ClipId)
 	return connect.NewResponse(&cinchv1.DeleteClipResponse{Ok: true}), nil
 }

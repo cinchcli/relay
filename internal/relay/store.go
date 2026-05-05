@@ -16,6 +16,12 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// Tombstone records that a clip was deleted, for offline-device sync.
+type Tombstone struct {
+	ClipID    string `json:"clip_id"`
+	DeletedAt string `json:"deleted_at"`
+}
+
 type Store struct {
 	db *sql.DB
 }
@@ -95,6 +101,13 @@ func migrate(db *sql.DB) error {
 			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
 			expires_at  DATETIME NOT NULL
 		);
+
+		CREATE TABLE IF NOT EXISTS clip_tombstones (
+			clip_id    TEXT PRIMARY KEY,
+			user_id    TEXT NOT NULL,
+			deleted_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE INDEX IF NOT EXISTS idx_tombstones_user_deleted ON clip_tombstones(user_id, deleted_at);
 	`)
 	if err != nil {
 		return err
@@ -1429,6 +1442,10 @@ func (s *Store) SweepExpiredClipsReturningMedia(userID string, retentionDays int
 		if r.key != "" {
 			mediaPaths = append(mediaPaths, r.key)
 		}
+		// Record tombstone so offline devices learn about this deletion on reconnect.
+		if err := s.InsertTombstone(userID, r.id); err != nil {
+			log.Printf("sweep: insert tombstone %q: %v", r.id, err)
+		}
 	}
 	return count, mediaPaths, nil
 }
@@ -1642,4 +1659,53 @@ func (s *Store) ListPendingKeyExchanges(userID string) ([]*cinchv1.Device, error
 		devices = append(devices, d)
 	}
 	return devices, rows.Err()
+}
+
+// ── Tombstone methods ────────────────────────────────────────────────────────
+
+// InsertTombstone records that a clip was deleted. Idempotent (INSERT OR IGNORE).
+func (s *Store) InsertTombstone(userID, clipID string) error {
+	_, err := s.db.Exec(
+		`INSERT OR IGNORE INTO clip_tombstones (clip_id, user_id) VALUES (?, ?)`,
+		clipID, userID,
+	)
+	return err
+}
+
+// ListTombstones returns tombstones for userID with deleted_at > since, oldest first.
+// limit is caller-validated (1–500).
+func (s *Store) ListTombstones(userID string, since time.Time, limit int) ([]Tombstone, error) {
+	rows, err := s.db.Query(
+		`SELECT clip_id, deleted_at FROM clip_tombstones
+		 WHERE user_id = ? AND deleted_at > ?
+		 ORDER BY deleted_at ASC
+		 LIMIT ?`,
+		userID, since.UTC().Format(time.RFC3339), limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Tombstone
+	for rows.Next() {
+		var t Tombstone
+		if err := rows.Scan(&t.ClipID, &t.DeletedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// SweepTombstones deletes tombstones older than retentionDays.
+func (s *Store) SweepTombstones(retentionDays int) (int, error) {
+	res, err := s.db.Exec(
+		`DELETE FROM clip_tombstones WHERE deleted_at < datetime('now', '-' || ? || ' days')`,
+		retentionDays,
+	)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
 }

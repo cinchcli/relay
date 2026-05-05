@@ -113,13 +113,16 @@ func runRetentionSweep(store *relay.Store, ms media.Store) {
 		log.Printf("retention sweep: %v", err)
 		return
 	}
-	if len(mediaPaths) == 0 {
-		return
-	}
 	ctx := context.Background()
 	for _, key := range mediaPaths {
 		if err := ms.Delete(ctx, key); err != nil {
 			log.Printf("retention sweep: delete %q: %v", key, err)
 		}
+	}
+
+	if n, err := store.SweepTombstones(7); err != nil {
+		log.Printf("tombstone sweep: %v", err)
+	} else if n > 0 {
+		log.Printf("tombstone sweep: removed %d tombstones", n)
 	}
 }

@@ -588,9 +588,54 @@ func (h *Handler) DeleteClip(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if err := h.store.InsertTombstone(userID, clipID); err != nil {
+		log.Printf("InsertTombstone %s: %v", clipID, err)
+	}
+
 	h.hub.SendClipDeleted(userID, clipID)
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// ListTombstones returns tombstones (deleted clip IDs) for the authenticated user.
+// Query params: since=<RFC3339> (optional, defaults to epoch), limit=<int> (optional, default 200, max 500).
+func (h *Handler) ListTombstones(w http.ResponseWriter, r *http.Request) {
+	userID := r.Header.Get("X-User-ID")
+
+	var since time.Time
+	if sinceStr := r.URL.Query().Get("since"); sinceStr != "" {
+		var err error
+		since, err = time.Parse(time.RFC3339, sinceStr)
+		if err != nil {
+			http.Error(w, `{"error":"invalid_since","message":"since must be RFC3339"}`, http.StatusBadRequest)
+			return
+		}
+	}
+	// since zero value means "return all" — ListTombstones treats it as epoch.
+
+	limit := 200
+	if ls := r.URL.Query().Get("limit"); ls != "" {
+		n, err := strconv.Atoi(ls)
+		if err != nil || n < 1 {
+			http.Error(w, `{"error":"invalid_limit"}`, http.StatusBadRequest)
+			return
+		}
+		if n > 500 {
+			n = 500
+		}
+		limit = n
+	}
+
+	tombstones, err := h.store.ListTombstones(userID, since, limit)
+	if err != nil {
+		http.Error(w, `{"error":"internal"}`, http.StatusInternalServerError)
+		return
+	}
+	if tombstones == nil {
+		tombstones = []Tombstone{} // never return null
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(tombstones)
 }
 
 // PullClipboard requests clipboard content from the desktop agent.
@@ -1765,6 +1810,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("OPTIONS /clips", h.DemoCORS(func(w http.ResponseWriter, r *http.Request) {}))
 	mux.HandleFunc("GET /clips", h.RequireAuth(h.ListClips))
 	mux.HandleFunc("DELETE /clips/{id}", h.RequireAuth(h.DeleteClip))
+	mux.HandleFunc("GET /tombstones", h.RequireAuth(h.ListTombstones))
 	mux.HandleFunc("POST /pull", h.RequireAuth(h.PullClipboard))
 	mux.HandleFunc("GET /clips/latest", h.RequireAuth(h.GetLatestClip))
 	mux.HandleFunc("GET /devices", h.RequireAuth(h.ListDevices))
