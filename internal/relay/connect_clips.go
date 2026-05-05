@@ -3,6 +3,7 @@ package relay
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -63,6 +64,19 @@ func (s *connectClipsServer) PushClip(ctx context.Context, req *connect.Request[
 	targetDeviceID := ""
 	if req.Msg.TargetDeviceId != nil {
 		targetDeviceID = *req.Msg.TargetDeviceId
+	}
+
+	// Rate limit check — applies to all non-demo users on both targeted and non-targeted paths.
+	// Fail open on DB errors so a transient blip does not block all pushes.
+	if !isDemoUser {
+		cap, capErr := s.h.store.GetUserCapabilities(userID)
+		if capErr == nil && cap.RateLimit > 0 {
+			count, cntErr := s.h.store.IncrementDailyRequestCount(userID)
+			if cntErr == nil && count > cap.RateLimit {
+				return nil, connect.NewError(connect.CodeResourceExhausted,
+					fmt.Errorf("rate_limit_exceeded: daily push limit of %d reached", cap.RateLimit))
+			}
+		}
 	}
 
 	// Targeted push — check online before saving (D-10).
