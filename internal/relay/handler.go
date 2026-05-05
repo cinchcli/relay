@@ -453,6 +453,21 @@ func (h *Handler) PushClip(w http.ResponseWriter, r *http.Request) {
 		targetDeviceID = *req.TargetDeviceId
 	}
 
+	// Rate limit check — applies to all non-demo users on both targeted and non-targeted paths.
+	// Fail open on DB errors so a transient blip does not block all pushes.
+	if !isDemoUser {
+		cap, capErr := h.store.GetUserCapabilities(userID)
+		if capErr == nil && cap.RateLimit > 0 {
+			count, cntErr := h.store.IncrementDailyRequestCount(userID)
+			if cntErr == nil && count > cap.RateLimit {
+				writeError(w, http.StatusTooManyRequests, "rate_limit_exceeded",
+					fmt.Sprintf("Daily push limit of %d reached", cap.RateLimit),
+					"Upgrade your plan or wait until midnight UTC to reset")
+				return
+			}
+		}
+	}
+
 	// Targeted push — check online BEFORE SaveClip (per D-10: no clip saved if device offline)
 	if targetDeviceID != "" {
 		if !h.hub.IsDeviceOnline(userID, targetDeviceID) {

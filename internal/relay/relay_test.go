@@ -1517,3 +1517,86 @@ func TestDeviceLimit_ReauthAllowed(t *testing.T) {
 		t.Fatalf("re-auth from same machine should succeed, got: %v", err)
 	}
 }
+
+func TestRateLimit_BlocksAfterLimit(t *testing.T) {
+	store, err := relay.NewStore(":memory:")
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	defer store.Close()
+	uid := "rate-user"
+	if err := store.CreateUser(uid); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := store.UpsertUserCapabilities(relay.UserCapabilities{
+		UserID:    uid,
+		RateLimit: 2,
+	}); err != nil {
+		t.Fatalf("UpsertUserCapabilities: %v", err)
+	}
+
+	// Increment twice — both should be within limit.
+	for i := 0; i < 2; i++ {
+		count, err := store.IncrementDailyRequestCount(uid)
+		if err != nil {
+			t.Fatalf("increment %d: %v", i, err)
+		}
+		cap, _ := store.GetUserCapabilities(uid)
+		if cap.RateLimit > 0 && count > cap.RateLimit {
+			t.Fatalf("push %d blocked unexpectedly", i+1)
+		}
+	}
+
+	// Third increment — count=3 exceeds limit=2.
+	count, err := store.IncrementDailyRequestCount(uid)
+	if err != nil {
+		t.Fatalf("increment: %v", err)
+	}
+	cap, _ := store.GetUserCapabilities(uid)
+	if cap.RateLimit == 0 || count <= cap.RateLimit {
+		t.Fatalf("expected rate limit exceeded (count=%d limit=%d)", count, cap.RateLimit)
+	}
+}
+
+func TestRateLimit_ZeroIsUnlimited(t *testing.T) {
+	store, err := relay.NewStore(":memory:")
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	defer store.Close()
+	uid := "unlimited-user"
+	if err := store.CreateUser(uid); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	// No capabilities row = rate_limit 0 = unlimited.
+	cap, err := store.GetUserCapabilities(uid)
+	if err != nil {
+		t.Fatalf("GetUserCapabilities: %v", err)
+	}
+	if cap.RateLimit != 0 {
+		t.Fatalf("expected rate_limit 0, got %d", cap.RateLimit)
+	}
+}
+
+func TestPushClip_RateLimitHTTP(t *testing.T) {
+	// Verifies that the rate limit check does not block pushes when no
+	// capabilities row exists (self-host / no limit configured).
+	ts, _ := setupTestServer(t)
+	token, _, _ := login(t, ts.URL)
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"content":   "hello",
+		"encrypted": true,
+	})
+	req, _ := http.NewRequest("POST", ts.URL+"/clips", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("push: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+}
