@@ -22,6 +22,16 @@ type Tombstone struct {
 	DeletedAt string `json:"deleted_at"`
 }
 
+// UserCapabilities stores plan-derived limits for a user.
+// All zero values mean unlimited (self-host default).
+type UserCapabilities struct {
+	UserID         string
+	DeviceLimit    int
+	RetentionDays  int
+	RateLimit      int       // requests per day; 0 = unlimited
+	GraceExpiresAt time.Time // zero = no active grace period
+}
+
 type Store struct {
 	db *sql.DB
 }
@@ -108,6 +118,22 @@ func migrate(db *sql.DB) error {
 			deleted_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);
 		CREATE INDEX IF NOT EXISTS idx_tombstones_user_deleted ON clip_tombstones(user_id, deleted_at);
+
+		CREATE TABLE IF NOT EXISTS user_capabilities (
+		    user_id          TEXT PRIMARY KEY REFERENCES users(id),
+		    device_limit     INTEGER  NOT NULL DEFAULT 0,
+		    retention_days   INTEGER  NOT NULL DEFAULT 0,
+		    rate_limit       INTEGER  NOT NULL DEFAULT 0,
+		    grace_expires_at DATETIME,
+		    updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+
+		CREATE TABLE IF NOT EXISTS api_request_counts (
+		    user_id TEXT NOT NULL,
+		    date    TEXT NOT NULL,
+		    count   INTEGER NOT NULL DEFAULT 0,
+		    PRIMARY KEY (user_id, date)
+		);
 	`)
 	if err != nil {
 		return err
@@ -1701,6 +1727,88 @@ func (s *Store) ListTombstones(userID string, since time.Time, limit int) ([]Tom
 func (s *Store) SweepTombstones(retentionDays int) (int, error) {
 	res, err := s.db.Exec(
 		`DELETE FROM clip_tombstones WHERE deleted_at < datetime('now', '-' || ? || ' days')`,
+		retentionDays,
+	)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
+// GetUserCapabilities loads quota limits for a user.
+// Returns a zero-value UserCapabilities (all limits = 0 = unlimited) when
+// no row exists, which is the correct default for self-hosters.
+func (s *Store) GetUserCapabilities(userID string) (UserCapabilities, error) {
+	var cap UserCapabilities
+	var graceAt sql.NullTime
+	err := s.db.QueryRow(
+		`SELECT user_id, device_limit, retention_days, rate_limit, grace_expires_at
+		 FROM user_capabilities WHERE user_id = ?`,
+		userID,
+	).Scan(&cap.UserID, &cap.DeviceLimit, &cap.RetentionDays, &cap.RateLimit, &graceAt)
+	if err == sql.ErrNoRows {
+		return UserCapabilities{}, nil // unlimited
+	}
+	if err != nil {
+		return UserCapabilities{}, err
+	}
+	if graceAt.Valid {
+		cap.GraceExpiresAt = graceAt.Time
+	}
+	return cap, nil
+}
+
+// UpsertUserCapabilities writes (or replaces) quota limits for a user.
+// Called only by the internal quota endpoint.
+func (s *Store) UpsertUserCapabilities(cap UserCapabilities) error {
+	var graceAt interface{}
+	if !cap.GraceExpiresAt.IsZero() {
+		graceAt = cap.GraceExpiresAt.UTC().Format(time.RFC3339)
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO user_capabilities (user_id, device_limit, retention_days, rate_limit, grace_expires_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, datetime('now'))
+		 ON CONFLICT(user_id) DO UPDATE SET
+		   device_limit     = excluded.device_limit,
+		   retention_days   = excluded.retention_days,
+		   rate_limit       = excluded.rate_limit,
+		   grace_expires_at = excluded.grace_expires_at,
+		   updated_at       = excluded.updated_at`,
+		cap.UserID, cap.DeviceLimit, cap.RetentionDays, cap.RateLimit, graceAt,
+	)
+	return err
+}
+
+// CountActiveDevices returns the number of non-revoked devices for a user.
+func (s *Store) CountActiveDevices(userID string) (int, error) {
+	var count int
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM devices WHERE user_id = ? AND revoked_at IS NULL`,
+		userID,
+	).Scan(&count)
+	return count, err
+}
+
+// IncrementDailyRequestCount atomically increments today's request count for a user
+// and returns the new total.
+func (s *Store) IncrementDailyRequestCount(userID string) (int, error) {
+	today := time.Now().UTC().Format("2006-01-02")
+	var count int
+	err := s.db.QueryRow(
+		`INSERT INTO api_request_counts (user_id, date, count)
+		 VALUES (?, ?, 1)
+		 ON CONFLICT(user_id, date) DO UPDATE SET count = count + 1
+		 RETURNING count`,
+		userID, today,
+	).Scan(&count)
+	return count, err
+}
+
+// SweepOldRequestCounts deletes daily request count rows older than retentionDays.
+func (s *Store) SweepOldRequestCounts(retentionDays int) (int, error) {
+	res, err := s.db.Exec(
+		`DELETE FROM api_request_counts WHERE date < date('now', '-' || ? || ' days')`,
 		retentionDays,
 	)
 	if err != nil {
