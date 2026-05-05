@@ -1379,20 +1379,17 @@ func TestTombstoneSweep(t *testing.T) {
 }
 
 func TestUserCapabilities_DefaultUnlimited(t *testing.T) {
-	ts, _ := setupTestServer(t)
-	token, _, userID := login(t, ts.URL)
-	_ = token
-
-	// A brand-new user has no capabilities row — should return zero struct (unlimited).
 	store, err := relay.NewStore(":memory:")
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}
 	defer store.Close()
+	userID := "no-caps-user"
 	if err := store.CreateUser(userID); err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
 
+	// A user with no capabilities row should return zero struct (unlimited).
 	cap, err := store.GetUserCapabilities(userID)
 	if err != nil {
 		t.Fatalf("GetUserCapabilities: %v", err)

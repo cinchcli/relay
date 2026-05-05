@@ -1807,9 +1807,10 @@ func (s *Store) IncrementDailyRequestCount(userID string) (int, error) {
 
 // SweepOldRequestCounts deletes daily request count rows older than retentionDays.
 func (s *Store) SweepOldRequestCounts(retentionDays int) (int, error) {
+	cutoff := time.Now().UTC().AddDate(0, 0, -retentionDays).Format("2006-01-02")
 	res, err := s.db.Exec(
-		`DELETE FROM api_request_counts WHERE date < date('now', '-' || ? || ' days')`,
-		retentionDays,
+		`DELETE FROM api_request_counts WHERE date < ?`,
+		cutoff,
 	)
 	if err != nil {
 		return 0, err
