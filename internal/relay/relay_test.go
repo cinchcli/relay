@@ -1805,3 +1805,76 @@ func TestInternalQuota_UnavailableWhenNoSecret(t *testing.T) {
 		t.Fatalf("expected 503 when no secret configured, got %d", resp.StatusCode)
 	}
 }
+
+func TestInternalQuota_MissingUserID(t *testing.T) {
+	ts, _ := setupTestServerWithSecret(t, "test-secret")
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"device_limit": 3,
+		// user_id intentionally omitted
+	})
+	req, _ := http.NewRequest("POST", ts.URL+"/internal/quota", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-secret")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for missing user_id, got %d", resp.StatusCode)
+	}
+}
+
+func TestInternalQuota_GraceExpiresAt(t *testing.T) {
+	ts, store := setupTestServerWithSecret(t, "test-secret")
+
+	userID := "grace-quota-user"
+	if err := store.CreateUser(userID); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	// Valid grace_expires_at — should store correctly.
+	graceAt := time.Now().Add(7 * 24 * time.Hour).UTC().Format(time.RFC3339)
+	body, _ := json.Marshal(map[string]interface{}{
+		"user_id":          userID,
+		"device_limit":     3,
+		"grace_expires_at": graceAt,
+	})
+	req, _ := http.NewRequest("POST", ts.URL+"/internal/quota", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-secret")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", resp.StatusCode)
+	}
+
+	cap, err := store.GetUserCapabilities(userID)
+	if err != nil {
+		t.Fatalf("GetUserCapabilities: %v", err)
+	}
+	if cap.GraceExpiresAt.IsZero() {
+		t.Fatal("expected GraceExpiresAt to be set, got zero")
+	}
+
+	// Invalid grace_expires_at — should return 400.
+	body2, _ := json.Marshal(map[string]interface{}{
+		"user_id":          userID,
+		"grace_expires_at": "not-a-date",
+	})
+	req2, _ := http.NewRequest("POST", ts.URL+"/internal/quota", bytes.NewReader(body2))
+	req2.Header.Set("Authorization", "Bearer test-secret")
+	req2.Header.Set("Content-Type", "application/json")
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid grace_expires_at, got %d", resp2.StatusCode)
+	}
+}

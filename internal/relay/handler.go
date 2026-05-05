@@ -4,6 +4,7 @@ package relay
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -1824,7 +1825,7 @@ func (h *Handler) UpdateUserQuota(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if token != h.internalServiceSecret {
+	if subtle.ConstantTimeCompare([]byte(token), []byte(h.internalServiceSecret)) != 1 {
 		writeError(w, http.StatusForbidden, "forbidden", "Invalid service secret", "")
 		return
 	}
@@ -1836,6 +1837,7 @@ func (h *Handler) UpdateUserQuota(w http.ResponseWriter, r *http.Request) {
 		RateLimit      int     `json:"rate_limit"`
 		GraceExpiresAt *string `json:"grace_expires_at"` // RFC 3339, optional
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", "Could not parse request body", "")
 		return
