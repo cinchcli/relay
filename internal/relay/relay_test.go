@@ -1428,3 +1428,92 @@ func TestUserCapabilities_UpsertAndRead(t *testing.T) {
 		t.Fatalf("unexpected capabilities: %+v", got)
 	}
 }
+
+func TestDeviceLimit_BlocksNewDevice(t *testing.T) {
+	store, err := relay.NewStore(":memory:")
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	defer store.Close()
+
+	// First OAuth login: creates user + device 1.
+	userID, _, _, err := store.UpsertOAuthUser("github", "block-subject", "host1", "machine1")
+	if err != nil {
+		t.Fatalf("first login: %v", err)
+	}
+
+	// Set device_limit = 1 (user is now at the limit).
+	if err := store.UpsertUserCapabilities(relay.UserCapabilities{
+		UserID:      userID,
+		DeviceLimit: 1,
+	}); err != nil {
+		t.Fatalf("UpsertUserCapabilities: %v", err)
+	}
+
+	// Second OAuth login with a NEW machine — same user (same github subject), different machineID.
+	_, _, _, err = store.UpsertOAuthUser("github", "block-subject", "host2", "machine2")
+	if err == nil {
+		t.Fatal("expected device_limit_exceeded error, got nil")
+	}
+	if !strings.Contains(err.Error(), "device_limit_exceeded") {
+		t.Fatalf("expected device_limit_exceeded in error, got: %v", err)
+	}
+}
+
+func TestDeviceLimit_GracePeriodAllowsDevice(t *testing.T) {
+	store, err := relay.NewStore(":memory:")
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	defer store.Close()
+
+	// First OAuth login: creates user + device 1.
+	userID, _, _, err := store.UpsertOAuthUser("github", "grace-subject", "host1", "machine1")
+	if err != nil {
+		t.Fatalf("first login: %v", err)
+	}
+
+	// Set limit = 1 but grace expires in the future.
+	if err := store.UpsertUserCapabilities(relay.UserCapabilities{
+		UserID:         userID,
+		DeviceLimit:    1,
+		GraceExpiresAt: time.Now().Add(7 * 24 * time.Hour),
+	}); err != nil {
+		t.Fatalf("UpsertUserCapabilities: %v", err)
+	}
+
+	// Second device on new machine — should succeed because grace period is active.
+	_, _, _, err = store.UpsertOAuthUser("github", "grace-subject", "host2", "machine2")
+	if err != nil {
+		t.Fatalf("expected success during grace period, got: %v", err)
+	}
+}
+
+func TestDeviceLimit_ReauthAllowed(t *testing.T) {
+	store, err := relay.NewStore(":memory:")
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	defer store.Close()
+
+	machineID := "same-machine-123"
+	// First login on this machine: creates user + device.
+	userID, _, _, err := store.UpsertOAuthUser("github", "reauth-subject", "my-mac", machineID)
+	if err != nil {
+		t.Fatalf("first login: %v", err)
+	}
+
+	// Set limit = 1 (exactly at the limit).
+	if err := store.UpsertUserCapabilities(relay.UserCapabilities{
+		UserID:      userID,
+		DeviceLimit: 1,
+	}); err != nil {
+		t.Fatalf("UpsertUserCapabilities: %v", err)
+	}
+
+	// Re-auth from the SAME machine — should succeed (not a new device row).
+	_, _, _, err = store.UpsertOAuthUser("github", "reauth-subject", "my-mac", machineID)
+	if err != nil {
+		t.Fatalf("re-auth from same machine should succeed, got: %v", err)
+	}
+}
