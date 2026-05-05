@@ -1663,3 +1663,52 @@ func TestPushClip_RateLimitEnforced(t *testing.T) {
 		t.Fatalf("push 3: expected 429, got %d", sc)
 	}
 }
+
+func TestSweepUsesCapabilitiesRetention(t *testing.T) {
+	store, err := relay.NewStore(":memory:")
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	defer store.Close()
+
+	userID := "sweep-cap-user"
+	if err := store.CreateUser(userID); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	// Register a device with remote_retention_days = 30.
+	if err := store.RegisterDeviceWithToken(userID, "dev1", "host1", "tok1"); err != nil {
+		t.Fatalf("RegisterDeviceWithToken: %v", err)
+	}
+	if err := store.UpdateDeviceRetention("dev1", 30); err != nil {
+		t.Fatalf("UpdateDeviceRetention: %v", err)
+	}
+
+	// Push a clip and backdate it to 5 days ago.
+	_, err = store.DB().Exec(
+		`INSERT INTO clips (id, user_id, content, content_type, created_at)
+		 VALUES ('clip-old', ?, 'hello', 'text', datetime('now', '-5 days'))`, userID)
+	if err != nil {
+		t.Fatalf("insert clip: %v", err)
+	}
+
+	// Set capabilities retention_days = 3 (stricter than device's 30).
+	if err := store.UpsertUserCapabilities(relay.UserCapabilities{
+		UserID:        userID,
+		RetentionDays: 3,
+	}); err != nil {
+		t.Fatalf("UpsertUserCapabilities: %v", err)
+	}
+
+	// Sweep should use retention_days=3 from capabilities, not 30 from device.
+	// The 5-day-old clip should be swept.
+	_, err = store.SweepAllUsersRetentionReturningMedia()
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+
+	var count int
+	store.DB().QueryRow("SELECT COUNT(*) FROM clips WHERE id = 'clip-old'").Scan(&count)
+	if count != 0 {
+		t.Fatal("expected clip to be swept by capabilities retention_days=3, but it still exists")
+	}
+}
