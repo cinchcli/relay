@@ -818,6 +818,18 @@ func (s *Store) UpsertOAuthUser(provider, subject, hostname, machineID string) (
 		return userID, existingID, deviceToken, nil
 	}
 
+	// Device limit check — only for new device rows (re-auth always passes).
+	cap, capErr := s.GetUserCapabilities(userID)
+	if capErr == nil && cap.DeviceLimit > 0 {
+		count, cntErr := s.CountActiveDevices(userID)
+		if cntErr == nil && count >= cap.DeviceLimit {
+			// Allow if grace period is still active.
+			if cap.GraceExpiresAt.IsZero() || time.Now().After(cap.GraceExpiresAt) {
+				return "", "", "", fmt.Errorf("device_limit_exceeded: user has %d/%d active devices", count, cap.DeviceLimit)
+			}
+		}
+	}
+
 	// Fresh device row.
 	deviceID := ulid.Make().String()
 	var insertMachineID interface{}
