@@ -1377,3 +1377,57 @@ func TestTombstoneSweep(t *testing.T) {
 		t.Errorf("expected remaining tombstone clip_id %q, got %q", "new-clip", tombstones[0].ClipID)
 	}
 }
+
+func TestUserCapabilities_DefaultUnlimited(t *testing.T) {
+	ts, _ := setupTestServer(t)
+	token, _, userID := login(t, ts.URL)
+	_ = token
+
+	// A brand-new user has no capabilities row — should return zero struct (unlimited).
+	store, err := relay.NewStore(":memory:")
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	defer store.Close()
+	if err := store.CreateUser(userID); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	cap, err := store.GetUserCapabilities(userID)
+	if err != nil {
+		t.Fatalf("GetUserCapabilities: %v", err)
+	}
+	if cap.DeviceLimit != 0 || cap.RetentionDays != 0 || cap.RateLimit != 0 {
+		t.Fatalf("expected all-zero capabilities for user without row, got %+v", cap)
+	}
+}
+
+func TestUserCapabilities_UpsertAndRead(t *testing.T) {
+	store, err := relay.NewStore(":memory:")
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	defer store.Close()
+	userID := "test-user-cap"
+	if err := store.CreateUser(userID); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	want := relay.UserCapabilities{
+		UserID:        userID,
+		DeviceLimit:   3,
+		RetentionDays: 7,
+		RateLimit:     100,
+	}
+	if err := store.UpsertUserCapabilities(want); err != nil {
+		t.Fatalf("UpsertUserCapabilities: %v", err)
+	}
+
+	got, err := store.GetUserCapabilities(userID)
+	if err != nil {
+		t.Fatalf("GetUserCapabilities: %v", err)
+	}
+	if got.DeviceLimit != 3 || got.RetentionDays != 7 || got.RateLimit != 100 {
+		t.Fatalf("unexpected capabilities: %+v", got)
+	}
+}
