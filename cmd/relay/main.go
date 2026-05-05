@@ -88,6 +88,7 @@ func main() {
 	// Telemetry proxy — silently disabled when env vars are absent.
 	handler.TelemetryURL = strings.TrimRight(os.Getenv("TELEMETRY_URL"), "/")
 	handler.TelemetryAPIKey = os.Getenv("TELEMETRY_API_KEY")
+	handler.SetInternalServiceSecret(os.Getenv("INTERNAL_SERVICE_SECRET"))
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)

@@ -140,6 +140,8 @@ type Handler struct {
 
 	loginRateMu  sync.Mutex
 	loginRateMap map[string]time.Time
+
+	internalServiceSecret string // protects POST /internal/quota; empty = endpoint disabled
 }
 
 func NewHandler(store *Store, hub *Hub) *Handler {
@@ -153,6 +155,10 @@ func NewHandler(store *Store, hub *Hub) *Handler {
 
 // SetMediaStore attaches a media backend to the handler.
 func (h *Handler) SetMediaStore(s media.Store) { h.media = s }
+
+// SetInternalServiceSecret configures the bearer secret for POST /internal/quota.
+// When empty, the endpoint returns 503 (not silently open).
+func (h *Handler) SetInternalServiceSecret(s string) { h.internalServiceSecret = s }
 
 // RequireAuth wraps a handler with token authentication.
 // After the OAuth-only migration every active token lives on devices.token;
@@ -1808,6 +1814,63 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// UpdateUserQuota handles POST /internal/quota.
+// Called by Cloud API to write numeric plan limits for a user.
+// Protected by INTERNAL_SERVICE_SECRET bearer token.
+func (h *Handler) UpdateUserQuota(w http.ResponseWriter, r *http.Request) {
+	if h.internalServiceSecret == "" {
+		writeError(w, http.StatusServiceUnavailable, "not_configured",
+			"Internal quota endpoint is not configured on this relay", "")
+		return
+	}
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if token != h.internalServiceSecret {
+		writeError(w, http.StatusForbidden, "forbidden", "Invalid service secret", "")
+		return
+	}
+
+	var req struct {
+		UserID         string  `json:"user_id"`
+		DeviceLimit    int     `json:"device_limit"`
+		RetentionDays  int     `json:"retention_days"`
+		RateLimit      int     `json:"rate_limit"`
+		GraceExpiresAt *string `json:"grace_expires_at"` // RFC 3339, optional
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "Could not parse request body", "")
+		return
+	}
+	if req.UserID == "" {
+		writeError(w, http.StatusBadRequest, "missing_user_id", "user_id is required", "")
+		return
+	}
+	if req.DeviceLimit < 0 || req.RetentionDays < 0 || req.RateLimit < 0 {
+		writeError(w, http.StatusBadRequest, "invalid_limits", "Limits must be non-negative", "")
+		return
+	}
+
+	cap := UserCapabilities{
+		UserID:        req.UserID,
+		DeviceLimit:   req.DeviceLimit,
+		RetentionDays: req.RetentionDays,
+		RateLimit:     req.RateLimit,
+	}
+	if req.GraceExpiresAt != nil && *req.GraceExpiresAt != "" {
+		t, err := time.Parse(time.RFC3339, *req.GraceExpiresAt)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_grace", "grace_expires_at must be RFC 3339", "")
+			return
+		}
+		cap.GraceExpiresAt = t
+	}
+
+	if err := h.store.UpsertUserCapabilities(cap); err != nil {
+		writeError(w, http.StatusInternalServerError, "upsert_failed", err.Error(), "")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // RegisterRoutes registers all relay HTTP routes on the given mux.
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// Only register the legacy auth/login endpoint when no OAuth providers are
@@ -1840,6 +1903,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /ws", h.HandleWebSocket)
 	mux.HandleFunc("POST /ws/ticket", h.RequireAuth(h.IssueWsTicket))
 	mux.HandleFunc("GET /health", h.Health)
+	mux.HandleFunc("POST /internal/quota", h.UpdateUserQuota)
 
 	// Demo session endpoints (CORS-enabled for landing page)
 	mux.HandleFunc("POST /demo/session", h.DemoCORS(h.DemoSession))
