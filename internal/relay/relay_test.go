@@ -1712,3 +1712,96 @@ func TestSweepUsesCapabilitiesRetention(t *testing.T) {
 		t.Fatal("expected clip to be swept by capabilities retention_days=3, but it still exists")
 	}
 }
+
+func setupTestServerWithSecret(t *testing.T, secret string) (*httptest.Server, *relay.Store) {
+	t.Helper()
+	store, err := relay.NewStore(":memory:")
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+	hub := relay.NewHub()
+	go hub.Run()
+	handler := relay.NewHandler(store, hub)
+	handler.SetInternalServiceSecret(secret)
+	mux := http.NewServeMux()
+	handler.RegisterRoutes(mux)
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	return ts, store
+}
+
+func TestInternalQuota_WritesCapabilities(t *testing.T) {
+	ts, store := setupTestServerWithSecret(t, "test-secret")
+
+	// Create a user (quota endpoint requires user to exist in DB).
+	userID := "quota-user-1"
+	if err := store.CreateUser(userID); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"user_id":        userID,
+		"device_limit":   3,
+		"retention_days": 7,
+		"rate_limit":     100,
+	})
+	req, _ := http.NewRequest("POST", ts.URL+"/internal/quota", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-secret")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("quota request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 204, got %d: %s", resp.StatusCode, body)
+	}
+
+	// Verify capabilities were written.
+	cap, err := store.GetUserCapabilities(userID)
+	if err != nil {
+		t.Fatalf("GetUserCapabilities: %v", err)
+	}
+	if cap.DeviceLimit != 3 || cap.RetentionDays != 7 || cap.RateLimit != 100 {
+		t.Fatalf("unexpected capabilities: %+v", cap)
+	}
+}
+
+func TestInternalQuota_RejectsWrongSecret(t *testing.T) {
+	ts, _ := setupTestServerWithSecret(t, "correct-secret")
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"user_id":      "some-user",
+		"device_limit": 3,
+	})
+	req, _ := http.NewRequest("POST", ts.URL+"/internal/quota", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer wrong-secret")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", resp.StatusCode)
+	}
+}
+
+func TestInternalQuota_UnavailableWhenNoSecret(t *testing.T) {
+	ts, _ := setupTestServer(t) // no secret set
+
+	body, _ := json.Marshal(map[string]interface{}{"user_id": "x"})
+	req, _ := http.NewRequest("POST", ts.URL+"/internal/quota", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer anything")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when no secret configured, got %d", resp.StatusCode)
+	}
+}
