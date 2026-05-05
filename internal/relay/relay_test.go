@@ -43,6 +43,30 @@ func setupTestServer(t *testing.T) (*httptest.Server, *relay.Hub) {
 	return ts, hub
 }
 
+// setupTestServerWithStore is like setupTestServer but also returns the Store so
+// callers can configure per-user capabilities (e.g. rate limits) after setup.
+func setupTestServerWithStore(t *testing.T) (*httptest.Server, *relay.Hub, *relay.Store) {
+	t.Helper()
+
+	store, err := relay.NewStore(":memory:")
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	hub := relay.NewHub()
+	go hub.Run()
+
+	handler := relay.NewHandler(store, hub)
+	mux := http.NewServeMux()
+	handler.RegisterRoutes(mux)
+
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	return ts, hub, store
+}
+
 // login creates a user + first device row and returns the device token,
 // the (now-empty) pair token (kept in the signature for call-site
 // compatibility — proto field is reserved), and the user_id.
@@ -1598,5 +1622,44 @@ func TestPushClip_RateLimitHTTP(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestPushClip_RateLimitEnforced(t *testing.T) {
+	ts, _, store := setupTestServerWithStore(t)
+	token, _, userID := login(t, ts.URL)
+
+	// Set rate_limit = 2.
+	if err := store.UpsertUserCapabilities(relay.UserCapabilities{
+		UserID:    userID,
+		RateLimit: 2,
+	}); err != nil {
+		t.Fatalf("UpsertUserCapabilities: %v", err)
+	}
+
+	push := func() int {
+		body, _ := json.Marshal(map[string]interface{}{
+			"content":   "hello",
+			"encrypted": true,
+		})
+		req, _ := http.NewRequest("POST", ts.URL+"/clips", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("push: %v", err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if sc := push(); sc != http.StatusOK {
+		t.Fatalf("push 1: expected 200, got %d", sc)
+	}
+	if sc := push(); sc != http.StatusOK {
+		t.Fatalf("push 2: expected 200, got %d", sc)
+	}
+	if sc := push(); sc != http.StatusTooManyRequests {
+		t.Fatalf("push 3: expected 429, got %d", sc)
 	}
 }

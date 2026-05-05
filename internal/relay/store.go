@@ -1814,7 +1814,9 @@ func (s *Store) CountActiveDevices(userID string) (int, error) {
 }
 
 // IncrementDailyRequestCount atomically increments today's request count for a user
-// and returns the new total.
+// and returns the new total. The count includes the current request, so a blocked
+// push (count > limit) still registers in the DB — the raw count reflects all
+// attempts, not just successful ones.
 func (s *Store) IncrementDailyRequestCount(userID string) (int, error) {
 	today := time.Now().UTC().Format("2006-01-02")
 	var count int
