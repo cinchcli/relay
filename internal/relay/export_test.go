@@ -44,6 +44,9 @@ func (s *Store) InsertTombstoneAt(userID, clipID string, deletedAt time.Time) er
 	return err
 }
 
+// DB exposes the underlying *sql.DB for tests.
+func (s *Store) DB() *sql.DB { return s.db }
+
 // NewTestOAuthProvider creates an OAuthProvider with a fake token endpoint and
 // an injected subjectFetcher — no real OAuth round-trip needed in tests.
 func NewTestOAuthProvider(clientSecret, tokenURL, redirectURL string, fetcher func(string, *oauth2.Config, *oauth2.Token) (string, error)) *OAuthProvider {

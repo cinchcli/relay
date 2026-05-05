@@ -1835,9 +1835,6 @@ func (s *Store) IncrementDailyRequestCount(userID string) (int, error) {
 	return count, err
 }
 
-// DB returns the underlying *sql.DB. Only use in tests.
-func (s *Store) DB() *sql.DB { return s.db }
-
 // SweepOldRequestCounts deletes daily request count rows older than retentionDays.
 func (s *Store) SweepOldRequestCounts(retentionDays int) (int, error) {
 	cutoff := time.Now().UTC().AddDate(0, 0, -retentionDays).Format("2006-01-02")
