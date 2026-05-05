@@ -1878,3 +1878,50 @@ func TestInternalQuota_GraceExpiresAt(t *testing.T) {
 		t.Fatalf("expected 400 for invalid grace_expires_at, got %d", resp2.StatusCode)
 	}
 }
+
+func TestSweepOldRequestCounts(t *testing.T) {
+	store, err := relay.NewStore(":memory:")
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	defer store.Close()
+	uid := "sweep-count-user"
+	if err := store.CreateUser(uid); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	// Insert a count row for 10 days ago.
+	_, err = store.DB().Exec(
+		`INSERT INTO api_request_counts (user_id, date, count) VALUES (?, date('now', '-10 days'), 5)`,
+		uid,
+	)
+	if err != nil {
+		t.Fatalf("insert old count: %v", err)
+	}
+	// Insert today's count.
+	_, err = store.DB().Exec(
+		`INSERT INTO api_request_counts (user_id, date, count) VALUES (?, date('now'), 3)`,
+		uid,
+	)
+	if err != nil {
+		t.Fatalf("insert today count: %v", err)
+	}
+
+	// Sweep rows older than 7 days.
+	n, err := store.SweepOldRequestCounts(7)
+	if err != nil {
+		t.Fatalf("SweepOldRequestCounts: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 row swept, got %d", n)
+	}
+
+	// Today's row should remain.
+	var remaining int
+	store.DB().QueryRow(
+		`SELECT COUNT(*) FROM api_request_counts WHERE user_id = ?`, uid,
+	).Scan(&remaining)
+	if remaining != 1 {
+		t.Fatalf("expected 1 row remaining, got %d", remaining)
+	}
+}

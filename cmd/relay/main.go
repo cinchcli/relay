@@ -126,4 +126,10 @@ func runRetentionSweep(store *relay.Store, ms media.Store) {
 	} else if n > 0 {
 		log.Printf("tombstone sweep: removed %d tombstones", n)
 	}
+
+	if n, err := store.SweepOldRequestCounts(7); err != nil {
+		log.Printf("request count sweep: %v", err)
+	} else if n > 0 {
+		log.Printf("request count sweep: removed %d old rows", n)
+	}
 }
