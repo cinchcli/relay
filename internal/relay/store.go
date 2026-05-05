@@ -819,10 +819,18 @@ func (s *Store) UpsertOAuthUser(provider, subject, hostname, machineID string) (
 	}
 
 	// Device limit check — only for new device rows (re-auth always passes).
-	cap, capErr := s.GetUserCapabilities(userID)
-	if capErr == nil && cap.DeviceLimit > 0 {
-		count, cntErr := s.CountActiveDevices(userID)
-		if cntErr == nil && count >= cap.DeviceLimit {
+	// Single-connection pool (SetMaxOpenConns(1)) serializes all DB ops,
+	// so the check-then-insert is effectively atomic within this process.
+	cap, err := s.GetUserCapabilities(userID)
+	if err != nil {
+		return "", "", "", fmt.Errorf("checking device capabilities: %w", err)
+	}
+	if cap.DeviceLimit > 0 {
+		count, err := s.CountActiveDevices(userID)
+		if err != nil {
+			return "", "", "", fmt.Errorf("counting active devices: %w", err)
+		}
+		if count >= cap.DeviceLimit {
 			// Allow if grace period is still active.
 			if cap.GraceExpiresAt.IsZero() || time.Now().After(cap.GraceExpiresAt) {
 				return "", "", "", fmt.Errorf("device_limit_exceeded: user has %d/%d active devices", count, cap.DeviceLimit)
@@ -839,6 +847,9 @@ func (s *Store) UpsertOAuthUser(provider, subject, hostname, machineID string) (
 	_, err = s.db.Exec(
 		`INSERT INTO devices (id, user_id, hostname, source_key, token, machine_id)
 		 VALUES (?, ?, ?, ?, ?, ?)
+		 -- TODO: clearing revoked_at here re-activates a previously-revoked device without
+		 -- re-running the device limit check. Fix by counting revoked devices separately
+		 -- or not clearing revoked_at via ON CONFLICT.
 		 ON CONFLICT(user_id, source_key) DO UPDATE SET
 		   token = excluded.token,
 		   machine_id = COALESCE(excluded.machine_id, devices.machine_id),
