@@ -3,6 +3,7 @@ package relay
 import (
 	"database/sql"
 	"net/http"
+	"time"
 
 	"golang.org/x/oauth2"
 )
@@ -31,6 +32,16 @@ func IssueWsTicketForTest(userID, deviceID string) string {
 // ConsumeWsTicketForTest exposes consumeWsTicket for white-box unit tests.
 func ConsumeWsTicketForTest(ticket string) (userID, deviceID string, ok bool) {
 	return consumeWsTicket(ticket)
+}
+
+// InsertTombstoneAt inserts a tombstone with a specific deleted_at timestamp.
+// Used only in tests to simulate aged tombstones for sweep verification.
+func (s *Store) InsertTombstoneAt(userID, clipID string, deletedAt time.Time) error {
+	_, err := s.db.Exec(
+		`INSERT OR IGNORE INTO clip_tombstones (clip_id, user_id, deleted_at) VALUES (?, ?, ?)`,
+		clipID, userID, deletedAt.UTC().Format(time.RFC3339),
+	)
+	return err
 }
 
 // NewTestOAuthProvider creates an OAuthProvider with a fake token endpoint and

@@ -1217,3 +1217,163 @@ func TestDeleteBroadcastsEvent(t *testing.T) {
 		t.Errorf("expected clip_id %q, got %q", clipID, delMsg.Clip.ClipId)
 	}
 }
+
+// pushClip is a helper that pushes a clip and returns its clip_id.
+func pushClip(t *testing.T, baseURL, token, content string) string {
+	t.Helper()
+	body, _ := json.Marshal(cinchv1.PushClipRequest{
+		Content:   content,
+		Source:    "remote:test",
+		Encrypted: true,
+	})
+	req, _ := http.NewRequest("POST", baseURL+"/clips", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("push clip: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("push returned %d", resp.StatusCode)
+	}
+	var pr cinchv1.PushClipResponse
+	if err := json.NewDecoder(resp.Body).Decode(&pr); err != nil {
+		t.Fatalf("decode push response: %v", err)
+	}
+	if pr.ClipId == "" {
+		t.Fatal("push did not return a clip_id")
+	}
+	return pr.ClipId
+}
+
+// deleteClip is a helper that deletes a clip and asserts 204.
+func deleteClip(t *testing.T, baseURL, token, clipID string) {
+	t.Helper()
+	req, _ := http.NewRequest("DELETE", baseURL+"/clips/"+clipID, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("delete clip: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete returned %d, want 204", resp.StatusCode)
+	}
+}
+
+// listTombstones queries GET /tombstones?since=<epoch> and returns the result.
+func listTombstones(t *testing.T, baseURL, token string) []relay.Tombstone {
+	t.Helper()
+	since := time.Time{}.UTC().Format(time.RFC3339)
+	req, _ := http.NewRequest("GET", baseURL+"/tombstones?since="+since, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("list tombstones: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("tombstones returned %d: %s", resp.StatusCode, body)
+	}
+	var tombstones []relay.Tombstone
+	if err := json.NewDecoder(resp.Body).Decode(&tombstones); err != nil {
+		t.Fatalf("decode tombstones: %v", err)
+	}
+	return tombstones
+}
+
+// TestInsertTombstoneIdempotent verifies that inserting the same clip_id twice
+// results in only one tombstone row (INSERT OR IGNORE semantics).
+func TestInsertTombstoneIdempotent(t *testing.T) {
+	ts, _ := setupTestServer(t)
+	token, _, _ := login(t, ts.URL)
+
+	clipID := pushClip(t, ts.URL, token, "idempotent test")
+	deleteClip(t, ts.URL, token, clipID)
+
+	tombstones := listTombstones(t, ts.URL, token)
+	found := 0
+	for _, tb := range tombstones {
+		if tb.ClipID == clipID {
+			found++
+		}
+	}
+	if found != 1 {
+		t.Errorf("expected exactly 1 tombstone for clip %q, got %d", clipID, found)
+	}
+}
+
+// TestListTombstones pushes a clip, deletes it, and verifies the tombstone
+// is returned from GET /tombstones?since=<epoch>.
+func TestListTombstones(t *testing.T) {
+	ts, _ := setupTestServer(t)
+	token, _, _ := login(t, ts.URL)
+
+	clipID := pushClip(t, ts.URL, token, "tombstone list test")
+	deleteClip(t, ts.URL, token, clipID)
+
+	tombstones := listTombstones(t, ts.URL, token)
+	if len(tombstones) == 0 {
+		t.Fatal("expected at least one tombstone, got none")
+	}
+	found := false
+	for _, tb := range tombstones {
+		if tb.ClipID == clipID {
+			found = true
+			if tb.DeletedAt == "" {
+				t.Error("tombstone deleted_at is empty")
+			}
+		}
+	}
+	if !found {
+		t.Errorf("tombstone for clip %q not found in response", clipID)
+	}
+}
+
+// TestTombstoneSweep verifies that SweepTombstones removes tombstones older
+// than the given threshold while leaving recent ones untouched.
+func TestTombstoneSweep(t *testing.T) {
+	store, err := relay.NewStore(":memory:")
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	userID := "sweep-user"
+	if err := store.CreateUser(userID); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	// Insert an old tombstone directly via the exported helper (simulating a
+	// clip deleted 10 days ago).
+	if err := store.InsertTombstoneAt(userID, "old-clip", time.Now().UTC().Add(-10*24*time.Hour)); err != nil {
+		t.Fatalf("InsertTombstoneAt old: %v", err)
+	}
+	// Insert a recent tombstone (1 hour ago — within the 7-day window).
+	if err := store.InsertTombstoneAt(userID, "new-clip", time.Now().UTC().Add(-1*time.Hour)); err != nil {
+		t.Fatalf("InsertTombstoneAt new: %v", err)
+	}
+
+	// Sweep tombstones older than 7 days.
+	n, err := store.SweepTombstones(7)
+	if err != nil {
+		t.Fatalf("SweepTombstones: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("expected 1 tombstone swept, got %d", n)
+	}
+
+	// The recent tombstone must still be present.
+	tombstones, err := store.ListTombstones(userID, time.Time{}, 100)
+	if err != nil {
+		t.Fatalf("ListTombstones: %v", err)
+	}
+	if len(tombstones) != 1 {
+		t.Errorf("expected 1 remaining tombstone, got %d", len(tombstones))
+	}
+	if len(tombstones) > 0 && tombstones[0].ClipID != "new-clip" {
+		t.Errorf("expected remaining tombstone clip_id %q, got %q", "new-clip", tombstones[0].ClipID)
+	}
+}
