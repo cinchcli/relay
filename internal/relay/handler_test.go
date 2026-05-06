@@ -295,6 +295,53 @@ func TestCompleteDeviceCode_IgnoresBodyCredentials(t *testing.T) {
 	}
 }
 
+func TestCompleteDeviceCode_AlreadyUsedFails(t *testing.T) {
+	ts, _ := setupTestServer(t)
+
+	resp, _ := http.Post(ts.URL+"/auth/device-code", "application/json", strings.NewReader(`{"hostname":"remote"}`))
+	var dc cinchv1.DeviceCodeStartResponse
+	json.NewDecoder(resp.Body).Decode(&dc)
+	resp.Body.Close()
+
+	token, _, _ := login(t, ts.URL)
+	body, _ := json.Marshal(map[string]string{"user_code": dc.UserCode})
+	for i := 0; i < 2; i++ {
+		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/auth/device-code/complete", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		completeResp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("complete request %d failed: %v", i, err)
+		}
+		if i == 0 && completeResp.StatusCode != http.StatusOK {
+			t.Fatalf("first complete returned %d", completeResp.StatusCode)
+		}
+		if i == 1 && completeResp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("second complete returned %d, want 400", completeResp.StatusCode)
+		}
+		completeResp.Body.Close()
+	}
+}
+
+func TestCompleteDeviceCode_InvalidCodeFails(t *testing.T) {
+	ts, _ := setupTestServer(t)
+	token, _, _ := login(t, ts.URL)
+
+	body, _ := json.Marshal(map[string]string{"user_code": "NOPE-NOPE"})
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/auth/device-code/complete", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("complete request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("complete returned %d, want 400", resp.StatusCode)
+	}
+}
+
 // TestIssueWsTicket_RequiresAuth verifies that POST /ws/ticket returns 401
 // when called without an auth token.
 func TestIssueWsTicket_RequiresAuth(t *testing.T) {
