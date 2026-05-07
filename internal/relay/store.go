@@ -1313,6 +1313,35 @@ func (s *Store) CreateDeviceCode(hostname, machineID string) (*cinchv1.DeviceCod
 	}, nil
 }
 
+// CreateDeviceForUser provisions a brand-new device row for an existing user and
+// returns its fresh deviceID and bearer token. Used by the approve path so the
+// incoming machine gets its own credentials, not the approving device's.
+func (s *Store) CreateDeviceForUser(userID, hostname, machineID string) (deviceID, token string, err error) {
+	deviceID = ulid.Make().String()
+	token = generateStoreToken()
+	if hostname == "" {
+		hostname = "unknown"
+	}
+	// Use the deviceID itself as the source_key so every approval creates a
+	// distinct row — no ON CONFLICT dedup intended here.
+	sourceKey := "approve:" + deviceID
+
+	var mi interface{}
+	if machineID != "" {
+		mi = machineID
+	}
+
+	_, err = s.db.Exec(
+		`INSERT INTO devices (id, user_id, hostname, source_key, token, machine_id)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		deviceID, userID, hostname, sourceKey, token, mi,
+	)
+	if err != nil {
+		return "", "", fmt.Errorf("creating device for approve: %w", err)
+	}
+	return deviceID, token, nil
+}
+
 // CompleteDeviceCode marks a device code as complete with the provided credentials.
 // Called when browser auth succeeds for a device-code flow.
 func (s *Store) CompleteDeviceCode(userCode, userID, deviceID, token string) error {

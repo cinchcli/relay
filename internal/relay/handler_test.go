@@ -222,22 +222,20 @@ func TestAuthBrowser_ServesHTML(t *testing.T) {
 	}
 }
 
-func TestCompleteDeviceCode_IgnoresBodyCredentials(t *testing.T) {
+func TestCompleteDeviceCode_IssuesFreshCredentials(t *testing.T) {
 	ts, _ := setupTestServer(t)
 
-	// Issue a device code
+	// Issue a device code for a new CLI session
 	dcBody := `{"hostname":"victim-cli"}`
 	resp, _ := http.Post(ts.URL+"/auth/device-code", "application/json", strings.NewReader(dcBody))
 	var dcResp cinchv1.DeviceCodeStartResponse
 	json.NewDecoder(resp.Body).Decode(&dcResp)
 	resp.Body.Close()
 
-	// Attacker has their own credentials — capture the real device_id
+	// Approver logs in with their own credentials
 	attackerToken, _, _ := login(t, ts.URL)
 
-	// We need the attacker's real device_id to verify it was stored.
-	// Fetch it by hitting the /devices endpoint which returns cinchv1.Device
-	// objects; Device.Id is the JSON "id" field.
+	// Fetch the approver's real device_id — the new CLI must NOT receive this
 	devReq, _ := http.NewRequest("GET", ts.URL+"/devices", nil)
 	devReq.Header.Set("Authorization", "Bearer "+attackerToken)
 	devResp, err := http.DefaultClient.Do(devReq)
@@ -250,15 +248,16 @@ func TestCompleteDeviceCode_IgnoresBodyCredentials(t *testing.T) {
 	json.NewDecoder(devResp.Body).Decode(&devList)
 	devResp.Body.Close()
 	if len(devList) == 0 {
-		t.Fatalf("expected at least one device for attacker, got none")
+		t.Fatalf("expected at least one device for approver, got none")
 	}
-	attackerDeviceID := devList[0].ID
+	approverDeviceID := devList[0].ID
 
-	// Attacker posts victim's user_code with a fake device_id in the body
+	// Approver completes the device code, also including a fake device_id in the
+	// body to confirm body credentials are ignored entirely
 	fakeDeviceID := "attacker-device-FAKE"
 	completeBody, _ := json.Marshal(map[string]string{
 		"user_code": dcResp.UserCode,
-		"device_id": fakeDeviceID, // should be ignored
+		"device_id": fakeDeviceID, // must be ignored
 	})
 	req, _ := http.NewRequest("POST", ts.URL+"/auth/device-code/complete", bytes.NewReader(completeBody))
 	req.Header.Set("Content-Type", "application/json")
@@ -273,7 +272,7 @@ func TestCompleteDeviceCode_IgnoresBodyCredentials(t *testing.T) {
 		t.Fatalf("complete returned %d: %s", completeResp.StatusCode, body)
 	}
 
-	// Poll — must get the attacker's real device_id, not the fake one
+	// Poll — new CLI must receive fresh credentials, not the approver's
 	pollResp, _ := http.Get(ts.URL + "/auth/device-code/poll?code=" + dcResp.DeviceCode)
 	var pollResult cinchv1.DeviceCodePollResponse
 	json.NewDecoder(pollResp.Body).Decode(&pollResult)
@@ -285,13 +284,19 @@ func TestCompleteDeviceCode_IgnoresBodyCredentials(t *testing.T) {
 	if pollResult.DeviceId == nil {
 		t.Fatal("expected device_id in poll response, got nil")
 	}
-	// Strong positive assertion: stored device_id must be the attacker's authenticated device
-	if *pollResult.DeviceId != attackerDeviceID {
-		t.Errorf("stored device_id = %q, want attacker's real device_id %q", *pollResult.DeviceId, attackerDeviceID)
+	if pollResult.Token == nil || *pollResult.Token == "" {
+		t.Fatal("expected token in poll response, got nil/empty")
 	}
-	// Also confirm the fake body value was NOT stored
+	// Fresh device_id — must not be the approver's device nor the fake body value
 	if *pollResult.DeviceId == fakeDeviceID {
-		t.Errorf("SECURITY: body device_id was stored — credential binding is broken")
+		t.Errorf("SECURITY: body device_id was stored — credential isolation is broken")
+	}
+	if *pollResult.DeviceId == approverDeviceID {
+		t.Errorf("SECURITY: approver's device_id was forwarded — new CLI shares device with approver")
+	}
+	// Fresh token — must not be the approver's bearer token
+	if *pollResult.Token == attackerToken {
+		t.Errorf("SECURITY: approver's token was forwarded — new CLI can impersonate approver")
 	}
 }
 
