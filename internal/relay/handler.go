@@ -1677,14 +1677,18 @@ p{color:#8a8a8a;font-size:.875rem;margin-bottom:1.75rem}
 </html>`
 
 // CompleteDeviceCodeHTTP is the HTTP handler for POST /auth/device-code/complete.
-// Called by the browser auth page to bridge device-code flow completion.
-// Credentials (user_id, device_id, token) are derived from the authenticated
-// session — NOT from the request body — to prevent session-swap attacks.
+// Called by `cinch auth approve` to let an already-authenticated device mint
+// fresh credentials for the machine that initiated the device-code flow.
+//
+// Security: the approving device's identity is used only to determine the
+// user account. A brand-new deviceID and token are created for the incoming
+// machine via CreateDeviceForUser — the approving device's token is never
+// shared with or forwarded to the requesting machine.
 func (h *Handler) CompleteDeviceCodeHTTP(w http.ResponseWriter, r *http.Request) {
-	// RequireAuth sets these headers from the verified auth token.
-	userID := r.Header.Get("X-User-ID")
-	deviceID := r.Header.Get("X-Device-ID")
-	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	// RequireAuth sets X-User-ID from the verified auth token.
+	// We need the user account but must NOT pass the approving device's
+	// deviceID or token to the new machine.
+	approverUserID := r.Header.Get("X-User-ID")
 
 	var req struct {
 		UserCode string `json:"user_code"`
@@ -1697,7 +1701,21 @@ func (h *Handler) CompleteDeviceCodeHTTP(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "missing_user_code", "user_code is required", "")
 		return
 	}
-	if err := h.store.CompleteDeviceCode(req.UserCode, userID, deviceID, token); err != nil {
+
+	// Fetch the requesting machine's hostname and machine_id so the new
+	// device row is labelled correctly (best-effort; falls back to "unknown").
+	hostname, machineID, _ := h.store.DeviceCodeContext(req.UserCode)
+
+	// Provision a fresh device for the incoming machine under the approving
+	// user's account.
+	newDeviceID, newToken, err := h.store.CreateDeviceForUser(approverUserID, hostname, machineID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "device_create_failed", err.Error(), "")
+		return
+	}
+
+	// Mark the device code complete with the new machine's own credentials.
+	if err := h.store.CompleteDeviceCode(req.UserCode, approverUserID, newDeviceID, newToken); err != nil {
 		writeError(w, http.StatusBadRequest, "complete_failed", err.Error(), "")
 		return
 	}
