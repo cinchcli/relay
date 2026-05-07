@@ -29,6 +29,16 @@
       "byte_size": 10240,
       "media_path": "media/01HIMG.png",
       "created_at": "2026-04-30T12:34:56Z"
+    },
+    "encrypted_real": {
+      "clip_id": "vec-encrypted-real",
+      "user_id": "u1",
+      "content": "AAAAAAAAAAAAAAAApsIsUSKLkI9_Yv_Opqkvq-85v02T",
+      "content_type": "text",
+      "source": "test",
+      "byte_size": 5,
+      "encrypted": true,
+      "created_at": "2026-05-07T00:00:00Z"
     }
   },
 
