@@ -33,21 +33,17 @@ func setupOAuthTestServer(t *testing.T, fakeSubject string, bothProviders bool) 
 	}))
 	t.Cleanup(tokenServer.Close)
 
-	store, err := relay.NewStore(":memory:")
-	if err != nil {
-		t.Fatalf("store: %v", err)
-	}
-	t.Cleanup(func() { store.Close() })
+	store := relay.NewTestStore(t)
 
 	hub := relay.NewHub()
 	go hub.Run()
 
 	handler := relay.NewHandler(store, hub)
 
-	// Injected subjectFetcher returns the caller-supplied fakeSubject,
+	// Injected identityFetcher returns the caller-supplied fakeSubject,
 	// bypassing real GitHub/Google HTTP calls.
-	fetcher := func(_ string, _ *oauth2.Config, _ *oauth2.Token) (string, error) {
-		return fakeSubject, nil
+	fetcher := func(_ string, _ *oauth2.Config, _ *oauth2.Token) (string, string, bool, error) {
+		return fakeSubject, "", false, nil
 	}
 
 	mux := http.NewServeMux()

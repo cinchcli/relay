@@ -194,11 +194,11 @@ func (h *Handler) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 		// Demo TTL gate: demo sessions are bounded to 10 minutes; reject
 		// stale device tokens with a distinct error so the landing page
 		// can prompt the visitor to refresh for a fresh session.
-		var isDemo int
+		var isDemo bool
 		var createdAt time.Time
 		if err := h.store.db.QueryRow(
-			"SELECT is_demo, created_at FROM users WHERE id = ?", userID,
-		).Scan(&isDemo, &createdAt); err == nil && isDemo == 1 {
+			"SELECT is_demo, created_at FROM users WHERE id = $1", userID,
+		).Scan(&isDemo, &createdAt); err == nil && isDemo {
 			if time.Since(createdAt) > demoTTL {
 				writeError(w, http.StatusUnauthorized, "demo expired", "Demo session expired", "Refresh the page for a new session")
 				return

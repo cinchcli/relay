@@ -14,16 +14,12 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// keyExchangeTestServer mirrors buildRevokeTestServer — fresh in-memory
-// store/hub/handler/test server. Returned for direct access.
+// keyExchangeTestServer mirrors buildRevokeTestServer — fresh
+// store/hub/handler/test server backed by TEST_DATABASE_URL.
 func keyExchangeTestServer(t *testing.T) (*httptest.Server, *Store, *Hub) {
 	t.Helper()
 
-	store, err := NewStore(":memory:")
-	if err != nil {
-		t.Fatalf("store: %v", err)
-	}
-	t.Cleanup(func() { store.Close() })
+	store := newTestStore(t)
 
 	hub := NewHub()
 	go hub.Run()
@@ -131,7 +127,7 @@ func TestKeyBundleRetry_BroadcastsToUser(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bearer owner: %v", err)
 	}
-	if _, err := store.db.Exec("UPDATE devices SET user_id = ? WHERE id = ?", bearerUserID, newcomerID); err != nil {
+	if _, err := store.db.Exec("UPDATE devices SET user_id = $1 WHERE id = $2", bearerUserID, newcomerID); err != nil {
 		t.Fatalf("re-parent: %v", err)
 	}
 	if err := store.SetDevicePublicKey(newcomerID, "newcomer-pubkey-b64", "deadbeef"); err != nil {

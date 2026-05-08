@@ -3,6 +3,7 @@ package relay
 import (
 	"database/sql"
 	"net/http"
+	"testing"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -38,18 +39,22 @@ func ConsumeWsTicketForTest(ticket string) (userID, deviceID string, ok bool) {
 // Used only in tests to simulate aged tombstones for sweep verification.
 func (s *Store) InsertTombstoneAt(userID, clipID string, deletedAt time.Time) error {
 	_, err := s.db.Exec(
-		`INSERT OR IGNORE INTO clip_tombstones (clip_id, user_id, deleted_at) VALUES (?, ?, ?)`,
-		clipID, userID, deletedAt.UTC().Format(time.RFC3339),
+		`INSERT INTO clip_tombstones (clip_id, user_id, deleted_at) VALUES ($1, $2, $3) ON CONFLICT(clip_id) DO NOTHING`,
+		clipID, userID, deletedAt.UTC(),
 	)
 	return err
 }
+
+// NewTestStore creates a Store backed by TEST_DATABASE_URL for external package tests.
+// Skips the test if TEST_DATABASE_URL is not set.
+func NewTestStore(t *testing.T) *Store { return newTestStore(t) }
 
 // DB exposes the underlying *sql.DB for tests.
 func (s *Store) DB() *sql.DB { return s.db }
 
 // NewTestOAuthProvider creates an OAuthProvider with a fake token endpoint and
-// an injected subjectFetcher — no real OAuth round-trip needed in tests.
-func NewTestOAuthProvider(clientSecret, tokenURL, redirectURL string, fetcher func(string, *oauth2.Config, *oauth2.Token) (string, error)) *OAuthProvider {
+// an injected identityFetcher — no real OAuth round-trip needed in tests.
+func NewTestOAuthProvider(clientSecret, tokenURL, redirectURL string, fetcher func(string, *oauth2.Config, *oauth2.Token) (string, string, bool, error)) *OAuthProvider {
 	return &OAuthProvider{
 		clientSecret: clientSecret,
 		cfg: &oauth2.Config{
@@ -62,6 +67,6 @@ func NewTestOAuthProvider(clientSecret, tokenURL, redirectURL string, fetcher fu
 			},
 			RedirectURL: redirectURL,
 		},
-		subjectFetcher: fetcher,
+		identityFetcher: fetcher,
 	}
 }

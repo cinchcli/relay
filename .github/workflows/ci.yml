@@ -32,6 +32,22 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_DB: cinch_test
+          POSTGRES_USER: cinch
+          POSTGRES_PASSWORD: cinch
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TEST_DATABASE_URL: postgres://cinch:cinch@localhost:5432/cinch_test?sslmode=disable
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # ratchet:actions/checkout@v4
 
@@ -170,3 +186,33 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: docker
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: production
+    steps:
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            docker pull ghcr.io/cinchcli/relay:latest
+            sudo systemctl restart cinch-relay
+
+      - name: Wait for relay to be healthy
+        run: |
+          for i in $(seq 1 12); do
+            status=$(curl -sf -o /dev/null -w "%{http_code}" https://api.cinchcli.com/health 2>/dev/null || echo "000")
+            if [ "$status" = "200" ]; then
+              echo "Relay healthy after ${i}x5s"
+              exit 0
+            fi
+            echo "Attempt $i: status=$status, retrying..."
+            sleep 5
+          done
+          echo "Relay did not become healthy within 60s"
+          exit 1
