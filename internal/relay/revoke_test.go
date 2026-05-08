@@ -23,11 +23,7 @@ func stringPtr(s string) *string { return &s }
 func buildRevokeTestServer(t *testing.T) (*httptest.Server, *Store, *Hub) {
 	t.Helper()
 
-	store, err := NewStore(":memory:")
-	if err != nil {
-		t.Fatalf("store: %v", err)
-	}
-	t.Cleanup(func() { store.Close() })
+	store := newTestStore(t)
 
 	hub := NewHub()
 	go hub.Run()

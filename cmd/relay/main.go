@@ -30,12 +30,12 @@ func main() {
 		port = "8080"
 	}
 
-	dbPath := os.Getenv("DB_PATH")
-	if dbPath == "" {
-		dbPath = "cinch.db"
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		log.Fatal("DATABASE_URL is required")
 	}
 
-	store, err := relay.NewStore(dbPath)
+	store, err := relay.NewStore(dsn)
 	if err != nil {
 		log.Fatalf("failed to open database: %v", err)
 	}

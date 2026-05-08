@@ -1,13 +1,31 @@
 services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: cinch
+      POSTGRES_USER: cinch
+      POSTGRES_PASSWORD: cinch
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cinch"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   relay:
     image: ghcr.io/cinchcli/relay:latest
     ports:
       - "8080:8080"
-    volumes:
-      - relay-data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment:
       - PORT=8080
-      - DB_PATH=/data/cinch.db
+      - DATABASE_URL=postgres://cinch:cinch@postgres:5432/cinch?sslmode=disable
       # BASE_URL is required for OAuth sign-in (leave unset to use username form)
       # BASE_URL=https://relay.example.com
       #
@@ -30,4 +48,4 @@ services:
     restart: unless-stopped
 
 volumes:
-  relay-data:
+  postgres-data:

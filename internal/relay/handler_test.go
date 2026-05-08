@@ -149,11 +149,7 @@ func TestPollDeviceCode_Expired(t *testing.T) {
 	ts, _ := setupTestServer(t)
 
 	// Create a store directly to access ExecForTest
-	store, err := relay.NewStore(":memory:")
-	if err != nil {
-		t.Fatalf("failed to create store: %v", err)
-	}
-	defer store.Close()
+	store := relay.NewTestStore(t)
 
 	hub := relay.NewHub()
 	go hub.Run()
@@ -172,7 +168,7 @@ func TestPollDeviceCode_Expired(t *testing.T) {
 
 	// Manually set expires_at to the past
 	_, err = store.ExecForTest(
-		"UPDATE device_codes SET expires_at = datetime('now', '-10 minutes') WHERE device_code = ?",
+		"UPDATE device_codes SET expires_at = NOW() - INTERVAL '10 minutes' WHERE device_code = $1",
 		dcResp.DeviceCode,
 	)
 	if err != nil {
