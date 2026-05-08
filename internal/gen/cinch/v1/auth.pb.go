@@ -312,13 +312,15 @@ func (x *DeviceCodePollRequest) GetCode() string {
 }
 
 type DeviceCodePollResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Status        string                 `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
-	Token         *string                `protobuf:"bytes,2,opt,name=token,proto3,oneof" json:"token,omitempty"`
-	UserId        *string                `protobuf:"bytes,3,opt,name=user_id,json=userId,proto3,oneof" json:"user_id,omitempty"`
-	DeviceId      *string                `protobuf:"bytes,4,opt,name=device_id,json=deviceId,proto3,oneof" json:"device_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Status           string                 `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
+	Token            *string                `protobuf:"bytes,2,opt,name=token,proto3,oneof" json:"token,omitempty"`
+	UserId           *string                `protobuf:"bytes,3,opt,name=user_id,json=userId,proto3,oneof" json:"user_id,omitempty"`
+	DeviceId         *string                `protobuf:"bytes,4,opt,name=device_id,json=deviceId,proto3,oneof" json:"device_id,omitempty"`
+	Email            *string                `protobuf:"bytes,5,opt,name=email,proto3,oneof" json:"email,omitempty"`
+	IdentityProvider *string                `protobuf:"bytes,6,opt,name=identity_provider,json=identityProvider,proto3,oneof" json:"identity_provider,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *DeviceCodePollResponse) Reset() {
@@ -375,6 +377,20 @@ func (x *DeviceCodePollResponse) GetUserId() string {
 func (x *DeviceCodePollResponse) GetDeviceId() string {
 	if x != nil && x.DeviceId != nil {
 		return *x.DeviceId
+	}
+	return ""
+}
+
+func (x *DeviceCodePollResponse) GetEmail() string {
+	if x != nil && x.Email != nil {
+		return *x.Email
+	}
+	return ""
+}
+
+func (x *DeviceCodePollResponse) GetIdentityProvider() string {
+	if x != nil && x.IdentityProvider != nil {
+		return *x.IdentityProvider
 	}
 	return ""
 }
@@ -1064,17 +1080,21 @@ const file_cinch_v1_auth_proto_rawDesc = "" +
 	"intervalMs\x88\x01\x01B\x0e\n" +
 	"\f_interval_ms\"+\n" +
 	"\x15DeviceCodePollRequest\x12\x12\n" +
-	"\x04code\x18\x01 \x01(\tR\x04code\"\xaf\x01\n" +
+	"\x04code\x18\x01 \x01(\tR\x04code\"\x9c\x02\n" +
 	"\x16DeviceCodePollResponse\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12\x19\n" +
 	"\x05token\x18\x02 \x01(\tH\x00R\x05token\x88\x01\x01\x12\x1c\n" +
 	"\auser_id\x18\x03 \x01(\tH\x01R\x06userId\x88\x01\x01\x12 \n" +
-	"\tdevice_id\x18\x04 \x01(\tH\x02R\bdeviceId\x88\x01\x01B\b\n" +
+	"\tdevice_id\x18\x04 \x01(\tH\x02R\bdeviceId\x88\x01\x01\x12\x19\n" +
+	"\x05email\x18\x05 \x01(\tH\x03R\x05email\x88\x01\x01\x120\n" +
+	"\x11identity_provider\x18\x06 \x01(\tH\x04R\x10identityProvider\x88\x01\x01B\b\n" +
 	"\x06_tokenB\n" +
 	"\n" +
 	"\b_user_idB\f\n" +
 	"\n" +
-	"_device_id\"\x84\x01\n" +
+	"_device_idB\b\n" +
+	"\x06_emailB\x14\n" +
+	"\x12_identity_provider\"\x84\x01\n" +
 	"\x19DeviceCodeCompleteRequest\x12\x1b\n" +
 	"\tuser_code\x18\x01 \x01(\tR\buserCode\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x1b\n" +
