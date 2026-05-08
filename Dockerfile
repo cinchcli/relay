@@ -22,13 +22,13 @@ RUN apk add --no-cache ca-certificates
 
 COPY --from=builder /bin/cinch-relay /usr/local/bin/cinch-relay
 COPY --from=builder /bin/failover-listener /usr/local/bin/failover-listener
+COPY global-bundle.pem /etc/ssl/certs/rds-global-bundle.pem
 
 RUN adduser -D -h /data cinch
 USER cinch
 WORKDIR /data
 
 ENV PORT=8080
-ENV DB_PATH=/data/cinch.db
 
 EXPOSE 8080
 
