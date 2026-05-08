@@ -11,7 +11,7 @@ import (
 
 	cinchv1 "github.com/cinchcli/relay/internal/gen/cinch/v1"
 	"github.com/cinchcli/relay/internal/protocol"
-	_ "github.com/lib/pq"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/oklog/ulid/v2"
 )
 
@@ -36,7 +36,7 @@ type Store struct {
 }
 
 func NewStore(dsn string) (*Store, error) {
-	db, err := sql.Open("postgres", dsn)
+	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("opening db: %w", err)
 	}
