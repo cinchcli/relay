@@ -7,68 +7,120 @@ graph TD
         Desktop["cinch Desktop\n(macOS)"]
     end
 
-    subgraph Edge["Edge"]
-        CF["Cloudflare\napi.cinchcli.com\nTLS termination · proxied"]
+    subgraph Edge["Edge · Cloudflare"]
+        CF["api.cinchcli.com\nDNS proxied (orange cloud)\nSSL mode: Full Strict\nEdge cert: Let's Encrypt (to clients)\nOrigin cert: CF Origin Cert (to EC2)"]
     end
 
     subgraph AWS["AWS (us-east-1)"]
-        EIP["Elastic IP\n(static public IP)"]
+        EIP["Elastic IP\n100.55.222.248"]
 
-        subgraph EC2Box["EC2 t3.micro · Ubuntu 22.04"]
-            SG["Security Group\nTCP 8080 — Cloudflare IPs only\nTCP 22   — SSH (your IP)"]
-            Relay["Docker: ghcr.io/cinchcli/relay:latest\nPORT=8080  DB_PATH=/data/cinch.db\n--restart always"]
-            Cron["cron (daily 03:00 UTC)\naws s3 cp /data/cinch.db\ns3://cinch-backups/YYYY-MM-DD.db"]
+        subgraph EC2Box["EC2 t3.micro · Amazon Linux 2023 — PRIMARY"]
+            SG["Security Group cinch-relay-sg\nTCP 443 — Cloudflare IPv4/IPv6 ranges\nTCP 443 — home IP 115.31.118.143/32\nTCP 22  — home IP 115.31.118.143/32"]
+            Nginx["nginx 1.28.3\nlisten 443 ssl\nssl_certificate /etc/nginx/ssl/cinchcli.crt\nproxy_pass http://127.0.0.1:8080\nWebSocket Upgrade/Connection headers\nproxy_read_timeout 3600s"]
+            Relay["Docker: ghcr.io/cinchcli/relay:latest\n-p 127.0.0.1:8080:8080\nenv: relay.env + DATABASE_URL\nsystemd: cinch-relay.service"]
         end
 
-        EBS["EBS gp3 — 20 GB\nmounted at /data\n(cinch.db + media/)"]
-        IAM["IAM Instance Role\ns3:PutObject → cinch-backups/*"]
+        RDS["RDS db.t4g.micro\nPostgreSQL 16\n20 GiB gp2\nSingle AZ\nNo public access\nSG: port 5432 from cinch-relay-sg only"]
 
-        S3["S3 Bucket\ncinch-backups\nVersioning ON · lifecycle 30d"]
+        S3["S3 Bucket cinch-data\nmedia/  binary clips\nVersioning OFF"]
 
-        CW["CloudWatch\nBilling Alarm\n> $10 / month"]
-        SNS["SNS Topic\n→ jingmuio@gmail.com"]
+        IAM_ROLE["IAM Instance Role cinch-relay-ec2-role\ns3:* → cinch-data/*"]
+        CW["CloudWatch\nBilling Alarm $5 / $10\nSNS → jingmuio@gmail.com"]
+    end
+
+    subgraph OCI["OCI Always Free (planned)"]
+        VM1["OCI VM #1 · A1.Flex\ntelemetry.jinmu.me\nhealth.ping monitor"]
+        VM2["OCI VM #2 · A1.Flex\nStandby Relay (not yet provisioned)"]
     end
 
     subgraph External["External"]
         GHCR["GitHub Container Registry\nghcr.io/cinchcli/relay:latest"]
-        Uptime["telemetry.jinmu.me\nGET /health every 60s"]
     end
 
-    CLI     -->|"HTTPS  POST /clips\nHTTPS  GET  /v1/stream"| CF
-    Desktop -->|"WSS    /v1/stream\nHTTPS  POST /clips"| CF
-    CF      -->|"HTTP :8080 (plain)"| EIP
+    CLI     -->|"HTTPS POST /clips\nWSS GET /v1/stream"| CF
+    Desktop -->|"WSS /v1/stream\nHTTPS POST /clips"| CF
+    CF      -->|"HTTPS :443"| EIP
     EIP     --> SG
-    SG      --> Relay
-    Relay  <-->|"read / write"| EBS
-    Cron    -->|"aws s3 cp"| S3
-    Relay   -.->|"same instance"| Cron
-    IAM     -.->|"attached to EC2"| EC2Box
-    GHCR    -->|"docker pull on update"| Relay
-    CW      -->|"threshold exceeded"| SNS
-    Uptime  -->|"health ping"| CF
+    SG      --> Nginx
+    Nginx   -->|"HTTP :8080"| Relay
+    Relay   -->|"DATABASE_URL (SSL)"| RDS
+    Relay   -->|"media read/write"| S3
+    IAM_ROLE -.->|"attached"| EC2Box
+    GHCR    -->|"docker pull"| Relay
+    CW      -.->|"auto recovery (planned)"| EC2Box
+    VM1     -.->|"failover trigger (planned)"| VM2
 ```
 
-## Component notes
+## Components
 
-| Component | Detail |
-|---|---|
-| EC2 t3.micro | 2 vCPU / 1 GB RAM. Sufficient for personal + small-team load. |
-| EBS gp3 20 GB | Mounted at `/data`. Holds `cinch.db` (SQLite) and `media/` (binary clips). Resize with `resize2fs` if needed, no downtime. |
-| Elastic IP | Static IP attached to the instance so the Cloudflare A-record doesn't break on stop/start. |
-| Cloudflare | DNS-proxied A record → Elastic IP. SSL mode **Full** (Cloudflare ↔ origin is plain HTTP on :8080). Firewall rule: block requests missing `CF-Connecting-IP` to hide origin IP. |
-| Security Group | Inbound: TCP 8080 from [Cloudflare IP ranges](https://www.cloudflare.com/ips/), TCP 22 from your IP. Outbound: all (for docker pull, S3 backup, OAuth calls). |
-| IAM Instance Role | Attached at launch. Policy: `s3:PutObject` on `arn:aws:s3:::cinch-backups/*`. No access keys needed on the instance. |
-| S3 cinch-backups | Versioning ON for accidental-delete protection. Lifecycle rule: expire non-current versions after 30 days. |
-| CloudWatch Billing Alarm | Metric: `EstimatedCharges`, threshold `$10`, period 1 day. SNS → email. |
-| cron daily backup | `/etc/cron.d/cinch-backup`: `0 3 * * * root aws s3 cp /data/cinch.db s3://cinch-backups/$(date +\%F).db` |
+| Component | Status | Detail |
+|---|---|---|
+| EC2 t3.micro | ✅ Running | `i-01031829df0e1be6a`, Amazon Linux 2023, EIP `100.55.222.248` |
+| nginx 1.28.3 | ✅ Running | TLS terminator. Cloudflare Origin Cert at `/etc/nginx/ssl/cinchcli.crt`. Proxies to relay on `127.0.0.1:8080`. |
+| Cloudflare | ✅ Active | `api.cinchcli.com` DNS proxied. SSL mode Full Strict. SG allows CF IPv4/IPv6 ranges only (no `0.0.0.0/0`). |
+| cinch-relay Docker | ✅ Running | `cinch-relay-proc`. Systemd service `cinch-relay.service`. Bound to `127.0.0.1:8080` (nginx-only access). |
+| RDS db.t4g.micro | ✅ Created | PostgreSQL 16, 20 GiB gp2, Single AZ, no public access. `DATABASE_URL` pending in `relay.env`. |
+| S3 cinch-data | ✅ Active | `media/` prefix for binary clips. IAM instance role for EC2 access. |
+| IAM Instance Role | ✅ Active | `cinch-relay-ec2-role`. Attached to EC2. No static access keys on instance. |
+| CloudWatch Billing | ✅ Active | Alarms at $5 and $10 → SNS → `jingmuio@gmail.com`. |
+| CloudWatch Auto Recovery | ⏳ Planned | `StatusCheckFailed_System` → EC2 recover action. |
+| OCI VM #2 Standby | ⏳ Planned | Standby relay. Not yet provisioned. |
 
-## Monthly cost estimate (us-east-1, on-demand)
+## TLS Architecture
 
-| Resource | Cost |
-|---|---|
-| EC2 t3.micro | ~$8.47 |
-| EBS gp3 20 GB | ~$1.60 |
-| Elastic IP (attached) | $0.00 |
-| S3 (< 1 GB backups) | < $0.03 |
-| Data transfer out (< 1 GB) | < $0.10 |
-| **Total** | **~$10.20 / month** |
+```
+Client → [Let's Encrypt cert] → Cloudflare Edge → [Origin Cert] → nginx (EC2 :443) → relay (:8080)
+```
+
+- Clients see a valid Let's Encrypt certificate issued by Cloudflare.
+- Cloudflare validates the EC2 origin using a Cloudflare Origin Certificate (`Full Strict` mode).
+- nginx holds the origin cert at `/etc/nginx/ssl/cinchcli.crt`.
+- Relay never handles TLS directly; it only sees plain HTTP from nginx on localhost.
+
+## EC2 Service Layout
+
+```
+/etc/nginx/conf.d/cinch-relay.conf   — nginx reverse proxy config
+/etc/nginx/ssl/cinchcli.crt          — Cloudflare Origin Certificate
+/etc/nginx/ssl/cinchcli.key          — Origin Certificate private key
+/etc/cinch/relay.env                 — relay env vars (DATABASE_URL, OAuth keys, etc.)
+/etc/cinch/start-relay.sh            — Docker run script (invoked by systemd)
+/etc/systemd/system/cinch-relay.service
+```
+
+## relay.env required vars
+
+```bash
+DATABASE_URL=postgres://cinch:PASSWORD@ENDPOINT:5432/cinch?sslmode=require
+BASE_URL=https://api.cinchcli.com
+GITHUB_CLIENT_ID=...
+GITHUB_CLIENT_SECRET=...
+MEDIA_BACKEND=s3
+MEDIA_BUCKET=cinch-data
+MEDIA_ENDPOINT=s3.amazonaws.com
+MEDIA_REGION=us-east-1
+TELEMETRY_URL=https://telemetry.jinmu.me
+TELEMETRY_API_KEY=...
+INTERNAL_SERVICE_SECRET=...
+```
+
+## Monthly cost estimate (us-east-1)
+
+| Resource | 12 months (free tier) | After / month | Notes |
+|---|---|---|---|
+| EC2 t3.micro | $0 | $7.59 | 12-month free tier |
+| RDS db.t4g.micro | $0 | ~$12.41 | 12-month free tier, 20 GB gp2 |
+| S3 cinch-data (media) | $0 | ~$0.023/GB | Scales with usage |
+| CloudWatch + SNS | $0 | $0 | Always free |
+| OCI A1.Flex (×2) | $0 | $0 | Always Free, never expires |
+| Cloudflare | $0 | $0 | Always free |
+| **Total (base)** | **$0** | **~$20 + media** | Both EC2 and RDS free tiers expire at the same time |
+
+## Pending tasks
+
+- [ ] Add `DATABASE_URL` to `/etc/cinch/relay.env` on EC2
+- [ ] Update `/etc/cinch/start-relay.sh` — remove Litestream wrapper, direct `docker run`
+- [ ] `systemctl restart cinch-relay` after env update
+- [ ] Run `cinch auth login` + round-trip test (`cinch push` / `cinch pull`)
+- [ ] CloudWatch Auto Recovery alarm (`StatusCheckFailed_System` → EC2 recover)
+- [ ] OCI VM #2 standby relay provisioning

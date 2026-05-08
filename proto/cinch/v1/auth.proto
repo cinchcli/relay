@@ -91,10 +91,12 @@ message DeviceCodePollRequest {
 }
 
 message DeviceCodePollResponse {
-  string          status    = 1;
-  optional string token     = 2;
-  optional string user_id   = 3;
-  optional string device_id = 4;
+  string          status            = 1;
+  optional string token             = 2;
+  optional string user_id           = 3;
+  optional string device_id         = 4;
+  optional string email             = 5;
+  optional string identity_provider = 6;
 }
 
 message DeviceCodeCompleteRequest {
