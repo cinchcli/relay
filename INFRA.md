@@ -59,7 +59,7 @@ graph TD
 | nginx 1.28.3 | ✅ Running | TLS terminator. Cloudflare Origin Cert at `/etc/nginx/ssl/cinchcli.crt`. Proxies to relay on `127.0.0.1:8080`. |
 | Cloudflare | ✅ Active | `api.cinchcli.com` DNS proxied. SSL mode Full Strict. SG allows CF IPv4/IPv6 ranges only (no `0.0.0.0/0`). |
 | cinch-relay Docker | ✅ Running | `cinch-relay-proc`. Systemd service `cinch-relay.service`. Bound to `127.0.0.1:8080` (nginx-only access). |
-| RDS db.t4g.micro | ✅ Created | PostgreSQL 16, 20 GiB gp2, Single AZ, no public access. `DATABASE_URL` pending in `relay.env`. |
+| RDS db.t4g.micro | ✅ Created | PostgreSQL 16, 20 GiB gp2, Single AZ, no public access. Endpoint: `cinch-db.c2rcmg0giknp.us-east-1.rds.amazonaws.com`. User: `cinchdb`, DB: `postgres`. |
 | S3 cinch-data | ✅ Active | `media/` prefix for binary clips. IAM instance role for EC2 access. |
 | IAM Instance Role | ✅ Active | `cinch-relay-ec2-role`. Attached to EC2. No static access keys on instance. |
 | CloudWatch Billing | ✅ Active | Alarms at $5 and $10 → SNS → `jingmuio@gmail.com`. |
@@ -91,7 +91,7 @@ Client → [Let's Encrypt cert] → Cloudflare Edge → [Origin Cert] → nginx 
 ## relay.env required vars
 
 ```bash
-DATABASE_URL=postgres://cinch:PASSWORD@ENDPOINT:5432/cinch?sslmode=require
+DATABASE_URL=postgres://cinchdb:PASSWORD@cinch-db.c2rcmg0giknp.us-east-1.rds.amazonaws.com:5432/postgres?sslmode=require
 BASE_URL=https://api.cinchcli.com
 GITHUB_CLIENT_ID=...
 GITHUB_CLIENT_SECRET=...
