@@ -29,6 +29,10 @@ on:
 env:
   GONOSUMDB: github.com/cinchcli
 
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -197,10 +201,11 @@ jobs:
       contents: read
     steps:
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v6.1.0
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: us-east-1
+          role-session-name: ${{ github.run_id }}
 
       - name: Deploy via SSM
         run: |
@@ -209,30 +214,29 @@ jobs:
             --instance-ids i-01031829df0e1be6a \
             --document-name "AWS-RunShellScript" \
             --parameters 'commands=["docker pull ghcr.io/cinchcli/relay:latest && sudo systemctl restart cinch-relay"]' \
+            --comment "deploy ${{ github.sha }}" \
             --query 'Command.CommandId' \
             --output text)
           echo "SSM command: $COMMAND_ID"
 
-          for i in $(seq 1 24); do
-            STATUS=$(aws ssm get-command-invocation \
+          aws ssm wait command-executed \
+            --command-id "$COMMAND_ID" \
+            --instance-id i-01031829df0e1be6a
+
+          STATUS=$(aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id i-01031829df0e1be6a \
+            --query 'Status' \
+            --output text)
+          echo "Status: $STATUS"
+          if [ "$STATUS" != "Success" ]; then
+            aws ssm get-command-invocation \
               --command-id "$COMMAND_ID" \
               --instance-id i-01031829df0e1be6a \
-              --query 'Status' \
-              --output text 2>/dev/null || echo "Pending")
-            echo "Attempt $i: $STATUS"
-            if [ "$STATUS" = "Success" ]; then
-              echo "Deploy succeeded"
-              break
-            elif [ "$STATUS" = "Failed" ] || [ "$STATUS" = "Cancelled" ] || [ "$STATUS" = "TimedOut" ]; then
-              aws ssm get-command-invocation \
-                --command-id "$COMMAND_ID" \
-                --instance-id i-01031829df0e1be6a \
-                --query 'StandardErrorContent' \
-                --output text
-              exit 1
-            fi
-            sleep 5
-          done
+              --query 'StandardErrorContent' \
+              --output text
+            exit 1
+          fi
 
       - name: Wait for relay to be healthy
         run: |
