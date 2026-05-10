@@ -192,16 +192,47 @@ jobs:
     needs: docker
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     environment: production
+    permissions:
+      id-token: write
+      contents: read
     steps:
-      - name: Deploy to EC2
-        uses: appleboy/ssh-action@v1.0.3
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          script: |
-            docker pull ghcr.io/cinchcli/relay:latest
-            sudo systemctl restart cinch-relay
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Deploy via SSM
+        run: |
+          COMMAND_ID=$(aws ssm send-command \
+            --region us-east-1 \
+            --instance-ids i-01031829df0e1be6a \
+            --document-name "AWS-RunShellScript" \
+            --parameters 'commands=["docker pull ghcr.io/cinchcli/relay:latest && sudo systemctl restart cinch-relay"]' \
+            --query 'Command.CommandId' \
+            --output text)
+          echo "SSM command: $COMMAND_ID"
+
+          for i in $(seq 1 24); do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id i-01031829df0e1be6a \
+              --query 'Status' \
+              --output text 2>/dev/null || echo "Pending")
+            echo "Attempt $i: $STATUS"
+            if [ "$STATUS" = "Success" ]; then
+              echo "Deploy succeeded"
+              break
+            elif [ "$STATUS" = "Failed" ] || [ "$STATUS" = "Cancelled" ] || [ "$STATUS" = "TimedOut" ]; then
+              aws ssm get-command-invocation \
+                --command-id "$COMMAND_ID" \
+                --instance-id i-01031829df0e1be6a \
+                --query 'StandardErrorContent' \
+                --output text
+              exit 1
+            fi
+            sleep 5
+          done
 
       - name: Wait for relay to be healthy
         run: |
