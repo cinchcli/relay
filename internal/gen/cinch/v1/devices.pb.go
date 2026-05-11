@@ -33,6 +33,7 @@ type Device struct {
 	Nickname             string                 `protobuf:"bytes,8,opt,name=nickname,proto3" json:"nickname,omitempty"`
 	PublicKey            string                 `protobuf:"bytes,9,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`
 	PublicKeyFingerprint string                 `protobuf:"bytes,10,opt,name=public_key_fingerprint,json=publicKeyFingerprint,proto3" json:"public_key_fingerprint,omitempty"`
+	MachineId            *string                `protobuf:"bytes,11,opt,name=machine_id,json=machineId,proto3,oneof" json:"machine_id,omitempty"`
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache
 }
@@ -133,6 +134,13 @@ func (x *Device) GetPublicKey() string {
 func (x *Device) GetPublicKeyFingerprint() string {
 	if x != nil {
 		return x.PublicKeyFingerprint
+	}
+	return ""
+}
+
+func (x *Device) GetMachineId() string {
+	if x != nil && x.MachineId != nil {
+		return *x.MachineId
 	}
 	return ""
 }
@@ -493,7 +501,7 @@ var File_cinch_v1_devices_proto protoreflect.FileDescriptor
 
 const file_cinch_v1_devices_proto_rawDesc = "" +
 	"\n" +
-	"\x16cinch/v1/devices.proto\x12\bcinch.v1\"\xd0\x02\n" +
+	"\x16cinch/v1/devices.proto\x12\bcinch.v1\"\x83\x03\n" +
 	"\x06Device\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n" +
 	"\bhostname\x18\x02 \x01(\tR\bhostname\x12\x1d\n" +
@@ -509,8 +517,11 @@ const file_cinch_v1_devices_proto_rawDesc = "" +
 	"\n" +
 	"public_key\x18\t \x01(\tR\tpublicKey\x124\n" +
 	"\x16public_key_fingerprint\x18\n" +
-	" \x01(\tR\x14publicKeyFingerprintB\x0f\n" +
-	"\r_last_push_at\"\x14\n" +
+	" \x01(\tR\x14publicKeyFingerprint\x12\"\n" +
+	"\n" +
+	"machine_id\x18\v \x01(\tH\x01R\tmachineId\x88\x01\x01B\x0f\n" +
+	"\r_last_push_atB\r\n" +
+	"\v_machine_id\"\x14\n" +
 	"\x12ListDevicesRequest\"A\n" +
 	"\x13ListDevicesResponse\x12*\n" +
 	"\adevices\x18\x01 \x03(\v2\x10.cinch.v1.DeviceR\adevices\"M\n" +
