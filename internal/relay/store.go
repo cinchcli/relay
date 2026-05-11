@@ -394,12 +394,28 @@ func (s *Store) UpsertOAuthUser(provider, subject, email string, emailVerified b
 			userID, sourceKey,
 		).Scan(&existingID)
 	}
+	// Heal legacy rows that have machine_id IS NULL — typically desktop rows created
+	// before machine_id support, which landed with source_key='remote:unknown' because
+	// the desktop's env-var hostname detection always produced "unknown" on macOS.
+	// Match by the current source_key (same hostname) OR the sentinel 'remote:unknown'
+	// so that a re-login from either the fixed desktop or the CLI can claim the row.
+	if existingID == "" && machineID != "" {
+		_ = s.db.QueryRow(
+			`SELECT id FROM devices
+			 WHERE user_id = $1
+			   AND machine_id IS NULL
+			   AND revoked_at IS NULL
+			   AND source_key IN ($2, 'remote:unknown')
+			 ORDER BY paired_at DESC LIMIT 1`,
+			userID, sourceKey,
+		).Scan(&existingID)
+	}
 
 	if existingID != "" {
 		var args []interface{}
-		query := `UPDATE devices SET token = $1, hostname = $2`
-		args = append(args, deviceToken, hostname)
-		paramIdx := 3
+		query := `UPDATE devices SET token = $1, hostname = $2, source_key = $3`
+		args = append(args, deviceToken, hostname, sourceKey)
+		paramIdx := 4
 		if machineID != "" {
 			query += fmt.Sprintf(`, machine_id = $%d`, paramIdx)
 			args = append(args, machineID)
@@ -747,7 +763,7 @@ func (s *Store) GetClipMediaPath(userID, clipID string) (string, error) {
 // ListDevices returns all non-revoked devices for a user.
 func (s *Store) ListDevices(userID string) ([]*cinchv1.Device, error) {
 	rows, err := s.db.Query(
-		`SELECT id, hostname, source_key, clip_count, paired_at, last_push_at, COALESCE(public_key, ''), COALESCE(nickname, '')
+		`SELECT id, hostname, source_key, clip_count, paired_at, last_push_at, COALESCE(public_key, ''), COALESCE(nickname, ''), machine_id
 		 FROM devices WHERE user_id = $1 AND revoked_at IS NULL ORDER BY last_push_at DESC NULLS LAST`,
 		userID,
 	)
@@ -762,13 +778,17 @@ func (s *Store) ListDevices(userID string) ([]*cinchv1.Device, error) {
 		var pairedAt time.Time
 		var lastPush sql.NullTime
 		var clipCount int
-		if err := rows.Scan(&d.Id, &d.Hostname, &d.SourceKey, &clipCount, &pairedAt, &lastPush, &d.PublicKey, &d.Nickname); err != nil {
+		var machineID sql.NullString
+		if err := rows.Scan(&d.Id, &d.Hostname, &d.SourceKey, &clipCount, &pairedAt, &lastPush, &d.PublicKey, &d.Nickname, &machineID); err != nil {
 			return nil, err
 		}
 		d.ClipCount = int32(clipCount)
 		d.PairedAt = protocol.FormatRFC3339(pairedAt)
 		if lastPush.Valid {
 			d.LastPushAt = protocol.FormatRFC3339Ptr(&lastPush.Time)
+		}
+		if machineID.Valid {
+			d.MachineId = &machineID.String
 		}
 		devices = append(devices, d)
 	}

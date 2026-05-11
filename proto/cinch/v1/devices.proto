@@ -40,6 +40,7 @@ message Device {
   string          nickname               = 8;
   string          public_key             = 9;
   string          public_key_fingerprint = 10;
+  optional string machine_id             = 11;
 }
 
 // ─── ListDevices ─────────────────────────────────────────────

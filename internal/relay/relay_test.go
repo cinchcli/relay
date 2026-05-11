@@ -1569,6 +1569,114 @@ func TestUpsertOAuthUser_EmailUpdate(t *testing.T) {
 	}
 }
 
+// ── Legacy-heal tests ────────────────────────────────────────────────────────
+// These tests verify that UpsertOAuthUser claims (rather than duplicates) an
+// existing device row that was created before machine_id support — i.e. rows
+// with machine_id IS NULL and source_key = 'remote:unknown' (the desktop
+// env-var fallback before the hostname normalization fix).
+
+// TestUpsertOAuthUser_LegacyHeal_RemoteUnknown: a legacy row with
+// machine_id=NULL and source_key='remote:unknown' must be claimed when a new
+// login provides a real machine_id.  No second device row should appear.
+func TestUpsertOAuthUser_LegacyHeal_RemoteUnknown(t *testing.T) {
+	store := relay.NewTestStore(t)
+
+	// Simulate a pre-fix desktop login: hostname="unknown", machineID="" (empty).
+	userID, legacyDevID, _, err := store.UpsertOAuthUser("github", "heal-sub-1", "", false, "unknown", "")
+	if err != nil {
+		t.Fatalf("legacy login: %v", err)
+	}
+
+	// Now the fixed desktop (or CLI) re-logs in with the real hostname and machine_id.
+	uid2, dev2, _, err := store.UpsertOAuthUser("github", "heal-sub-1", "", false, "my-mac", "machine-abc")
+	if err != nil {
+		t.Fatalf("healed login: %v", err)
+	}
+	if uid2 != userID {
+		t.Fatalf("user_id changed after heal: was %s, got %s", userID, uid2)
+	}
+	if dev2 != legacyDevID {
+		t.Fatalf("heal created a new device row instead of claiming the legacy one: legacy=%s new=%s", legacyDevID, dev2)
+	}
+
+	// Exactly one device row must exist for this user.
+	var count int
+	store.DB().QueryRow(`SELECT COUNT(*) FROM devices WHERE user_id = $1 AND revoked_at IS NULL`, userID).Scan(&count)
+	if count != 1 {
+		t.Fatalf("expected 1 device row after heal, got %d", count)
+	}
+}
+
+// TestUpsertOAuthUser_LegacyHeal_SourceKeyUpdated: after the heal the device
+// row's hostname and source_key must reflect the real host, not "unknown".
+func TestUpsertOAuthUser_LegacyHeal_SourceKeyUpdated(t *testing.T) {
+	store := relay.NewTestStore(t)
+
+	_, devID, _, err := store.UpsertOAuthUser("github", "heal-sub-2", "", false, "unknown", "")
+	if err != nil {
+		t.Fatalf("legacy login: %v", err)
+	}
+
+	_, dev2, _, err := store.UpsertOAuthUser("github", "heal-sub-2", "", false, "real-host", "machine-xyz")
+	if err != nil {
+		t.Fatalf("healed login: %v", err)
+	}
+	if dev2 != devID {
+		t.Fatalf("expected same device after heal, got new device %s", dev2)
+	}
+
+	var hostname, sourceKey string
+	var machineID *string
+	err = store.DB().QueryRow(
+		`SELECT hostname, source_key, machine_id FROM devices WHERE id = $1`, devID,
+	).Scan(&hostname, &sourceKey, &machineID)
+	if err != nil {
+		t.Fatalf("querying healed device: %v", err)
+	}
+	if hostname != "real-host" {
+		t.Errorf("hostname not updated: got %q, want %q", hostname, "real-host")
+	}
+	if sourceKey != "remote:real-host" {
+		t.Errorf("source_key not updated: got %q, want %q", sourceKey, "remote:real-host")
+	}
+	if machineID == nil || *machineID != "machine-xyz" {
+		t.Errorf("machine_id not backfilled: got %v, want %q", machineID, "machine-xyz")
+	}
+}
+
+// TestUpsertOAuthUser_LegacyHeal_NoCrossUserPollution: healing must never
+// claim a NULL-machine_id row belonging to a different user.
+func TestUpsertOAuthUser_LegacyHeal_NoCrossUserPollution(t *testing.T) {
+	store := relay.NewTestStore(t)
+
+	// User A has a legacy row.
+	userA, devA, _, err := store.UpsertOAuthUser("github", "heal-sub-A", "", false, "unknown", "")
+	if err != nil {
+		t.Fatalf("user A legacy login: %v", err)
+	}
+
+	// User B logs in for the first time with a real machine_id.
+	userB, devB, _, err := store.UpsertOAuthUser("github", "heal-sub-B", "", false, "real-host", "machine-xyz")
+	if err != nil {
+		t.Fatalf("user B first login: %v", err)
+	}
+	if userA == userB {
+		t.Fatalf("test setup error: A and B got same user_id")
+	}
+
+	// User A's legacy device must not have been claimed by user B.
+	var claimedBy string
+	store.DB().QueryRow(`SELECT user_id FROM devices WHERE id = $1`, devA).Scan(&claimedBy)
+	if claimedBy != userA {
+		t.Errorf("user A's legacy device was stolen by user B: user_id=%s devA=%s devB=%s", claimedBy, devA, devB)
+	}
+
+	// User B must have its own distinct device row.
+	if devA == devB {
+		t.Fatalf("user B reused user A's device instead of creating its own")
+	}
+}
+
 func TestRateLimit_BlocksAfterLimit(t *testing.T) {
 	store := relay.NewTestStore(t)
 	uid := "rate-user"
