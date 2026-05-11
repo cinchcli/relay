@@ -1,0 +1,16 @@
+# Override for local integration tests.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.test.yml up -d
+#
+# Builds the relay image from local source instead of pulling from registry,
+# and speeds up the health check so tests don't wait 90 s for startup.
+services:
+  relay:
+    build:
+      context: .
+    pull_policy: never
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
