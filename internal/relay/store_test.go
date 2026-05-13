@@ -3,8 +3,10 @@ package relay
 import (
 	"database/sql"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // newTestStore connects to TEST_DATABASE_URL and skips if it is not set.
@@ -475,5 +477,64 @@ func TestCreateDeviceCode_PersistsRequesterIP(t *testing.T) {
 	}
 	if ip.String != "203.0.113.10" {
 		t.Errorf("requester_ip mismatch: got %q want %q", ip.String, "203.0.113.10")
+	}
+}
+
+// mustInsertClip inserts a clip row directly into the database for testing.
+func mustInsertClip(t *testing.T, store *Store, userID, clipID, content, contentType, source string, createdAt time.Time) {
+	t.Helper()
+	if err := store.CreateUser(userID); err != nil {
+		// Ignore duplicate user errors — multiple clips may share the same userID.
+		if !strings.Contains(err.Error(), "duplicate") && !strings.Contains(err.Error(), "unique") {
+			t.Fatalf("mustInsertClip CreateUser %q: %v", userID, err)
+		}
+	}
+	_, err := store.db.Exec(
+		`INSERT INTO clips (id, user_id, content, content_type, source, byte_size, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		clipID, userID, content, contentType, source, len(content), createdAt.UTC(),
+	)
+	if err != nil {
+		t.Fatalf("mustInsertClip %q: %v", clipID, err)
+	}
+}
+
+func TestListClipsFiltered_AllFilters(t *testing.T) {
+	store := newTestStore(t)
+	uid := "user1"
+
+	// Three clips: two text from distinct sources, one image.
+	mustInsertClip(t, store, uid, "c1", "hello", "text", "remote:desktop", time.Now().Add(-3*time.Minute))
+	mustInsertClip(t, store, uid, "c2", "world", "text", "remote:phone", time.Now().Add(-2*time.Minute))
+	mustInsertClip(t, store, uid, "c3", "<image-bytes>", "image", "remote:phone", time.Now().Add(-1*time.Minute))
+
+	cases := []struct {
+		name string
+		opts ListFilter
+		want []string // expected clip IDs in returned order (newest first)
+	}{
+		{"all", ListFilter{Limit: 50}, []string{"c3", "c2", "c1"}},
+		{"source filter", ListFilter{Limit: 50, SourceFilter: "remote:phone"}, []string{"c3", "c2"}},
+		{"exclude source", ListFilter{Limit: 50, ExcludeSource: "remote:phone"}, []string{"c1"}},
+		{"text only", ListFilter{Limit: 50, ExcludeImage: true}, []string{"c2", "c1"}},
+		{"image only", ListFilter{Limit: 50, ExcludeText: true}, []string{"c3"}},
+		{"clip ids", ListFilter{Limit: 50, ClipIDs: []string{"c2"}}, []string{"c2"}},
+		{"clip ids miss", ListFilter{Limit: 50, ClipIDs: []string{"nope"}}, []string{}},
+		{"limit", ListFilter{Limit: 2}, []string{"c3", "c2"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := store.ListClipsFiltered(uid, tc.opts)
+			if err != nil {
+				t.Fatalf("ListClipsFiltered: %v", err)
+			}
+			ids := make([]string, 0, len(got))
+			for _, c := range got {
+				ids = append(ids, c.ClipId)
+			}
+			if !reflect.DeepEqual(ids, tc.want) {
+				t.Fatalf("want %v, got %v", tc.want, ids)
+			}
+		})
 	}
 }

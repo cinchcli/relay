@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	cinchv1 "github.com/cinchcli/relay/internal/gen/cinch/v1"
@@ -614,22 +615,13 @@ func (s *Store) SaveClip(userID string, req *cinchv1.PushClipRequest) (*cinchv1.
 	return clip, nil
 }
 
-// ListClips returns recent clips for a user.
-func (s *Store) ListClips(userID string, limit int) ([]*cinchv1.Clip, error) {
-	if limit <= 0 || limit > 100 {
-		limit = 50
-	}
-
-	rows, err := s.db.Query(
-		`SELECT id, user_id, content, content_type, source, label, byte_size, media_path, created_at, encrypted, is_pinned, pin_note
-		 FROM clips WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2`,
-		userID, limit,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
+// scanClips reads clip rows produced by a query that selects:
+//
+//	id, user_id, content, content_type, source, label, byte_size,
+//	media_path, created_at, encrypted, is_pinned, pin_note
+//
+// (in that order). Used by ListClips, ListClipsSince, and ListClipsFiltered.
+func scanClips(rows *sql.Rows) ([]*cinchv1.Clip, error) {
 	clips := make([]*cinchv1.Clip, 0)
 	for rows.Next() {
 		c := &cinchv1.Clip{}
@@ -653,6 +645,24 @@ func (s *Store) ListClips(userID string, limit int) ([]*cinchv1.Clip, error) {
 	return clips, rows.Err()
 }
 
+// ListClips returns recent clips for a user.
+func (s *Store) ListClips(userID string, limit int) ([]*cinchv1.Clip, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+
+	rows, err := s.db.Query(
+		`SELECT id, user_id, content, content_type, source, label, byte_size, media_path, created_at, encrypted, is_pinned, pin_note
+		 FROM clips WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2`,
+		userID, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanClips(rows)
+}
+
 // ListClipsSince returns clips newer than `since` (exclusive), ordered oldest-first.
 func (s *Store) ListClipsSince(userID string, since time.Time, limit int) ([]*cinchv1.Clip, error) {
 	if since.IsZero() {
@@ -671,28 +681,73 @@ func (s *Store) ListClipsSince(userID string, since time.Time, limit int) ([]*ci
 		return nil, err
 	}
 	defer rows.Close()
+	return scanClips(rows)
+}
 
-	clips := make([]*cinchv1.Clip, 0)
-	for rows.Next() {
-		c := &cinchv1.Clip{}
-		var mediaPath sql.NullString
-		var pinNote sql.NullString
-		var createdAt time.Time
-		if err := rows.Scan(&c.ClipId, &c.UserId, &c.Content, &c.ContentType, &c.Source, &c.Label, &c.ByteSize, &mediaPath, &createdAt, &c.Encrypted, &c.IsPinned, &pinNote); err != nil {
-			return nil, err
-		}
-		if mediaPath.Valid && mediaPath.String != "" {
-			s := mediaPath.String
-			c.MediaPath = &s
-		}
-		if pinNote.Valid && pinNote.String != "" {
-			s := pinNote.String
-			c.PinNote = &s
-		}
-		c.CreatedAt = protocol.FormatRFC3339(createdAt)
-		clips = append(clips, c)
+// ListFilter is the query shape for ListClipsFiltered.
+type ListFilter struct {
+	Limit         int
+	SourceFilter  string
+	ExcludeSource string
+	ExcludeImage  bool
+	ExcludeText   bool
+	ClipIDs       []string
+}
+
+// ListClipsFiltered returns clips matching the filter, newest-first.
+// Limit is clamped to [1, 200]; 0 → 50.
+func (s *Store) ListClipsFiltered(userID string, f ListFilter) ([]*cinchv1.Clip, error) {
+	if f.Limit <= 0 {
+		f.Limit = 50
 	}
-	return clips, rows.Err()
+	if f.Limit > 200 {
+		f.Limit = 200
+	}
+
+	clauses := []string{"user_id = $1"}
+	args := []any{userID}
+	paramIdx := 2
+
+	if f.SourceFilter != "" {
+		clauses = append(clauses, fmt.Sprintf("source = $%d", paramIdx))
+		args = append(args, f.SourceFilter)
+		paramIdx++
+	}
+	if f.ExcludeSource != "" {
+		clauses = append(clauses, fmt.Sprintf("source != $%d", paramIdx))
+		args = append(args, f.ExcludeSource)
+		paramIdx++
+	}
+	if f.ExcludeImage {
+		clauses = append(clauses, "content_type != 'image'")
+	}
+	if f.ExcludeText {
+		clauses = append(clauses, "content_type = 'image'")
+	}
+	if len(f.ClipIDs) > 0 {
+		placeholders := make([]string, len(f.ClipIDs))
+		for i, id := range f.ClipIDs {
+			placeholders[i] = fmt.Sprintf("$%d", paramIdx)
+			args = append(args, id)
+			paramIdx++
+		}
+		clauses = append(clauses, "id IN ("+strings.Join(placeholders, ",")+")")
+	}
+
+	query := `SELECT id, user_id, content, content_type, source, label, byte_size,
+	                 media_path, created_at, encrypted, is_pinned, pin_note
+	          FROM clips
+	          WHERE ` + strings.Join(clauses, " AND ") + fmt.Sprintf(`
+	          ORDER BY created_at DESC
+	          LIMIT $%d`, paramIdx)
+	args = append(args, f.Limit)
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanClips(rows)
 }
 
 // DeleteClip removes a clip by ID, scoped to the user.
