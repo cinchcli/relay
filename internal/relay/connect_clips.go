@@ -149,19 +149,30 @@ func (s *connectClipsServer) PushClip(ctx context.Context, req *connect.Request[
 
 func (s *connectClipsServer) ListClips(ctx context.Context, req *connect.Request[cinchv1.ListClipsRequest]) (*connect.Response[cinchv1.ListClipsResponse], error) {
 	userID := req.Header().Get("X-User-ID")
+	msg := req.Msg
+	limit := clampLimit(int(msg.GetLimit()))
 
-	var sinceTime time.Time
-	if req.Msg.Since != "" {
-		t, err := time.Parse(time.RFC3339, req.Msg.Since)
+	// Backwards-compat path: when only `since` is set, preserve oldest-first replay semantics.
+	if msg.GetSince() != "" && msg.GetSourceFilter() == "" && msg.GetExcludeSource() == "" && !msg.GetExcludeImage() && !msg.GetExcludeText() && len(msg.GetClipIds()) == 0 {
+		sinceTime, err := time.Parse(time.RFC3339, msg.GetSince())
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, errMsg("invalid since parameter: must be RFC 3339"))
 		}
-		sinceTime = t
+		clips, err := s.h.store.ListClipsSince(userID, sinceTime, limit)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+		return connect.NewResponse(&cinchv1.ListClipsResponse{Clips: clips}), nil
 	}
 
-	limit := clampLimit(int(req.Msg.Limit))
-
-	clips, err := s.h.store.ListClipsSince(userID, sinceTime, limit)
+	clips, err := s.h.store.ListClipsFiltered(userID, ListFilter{
+		Limit:         limit,
+		SourceFilter:  msg.GetSourceFilter(),
+		ExcludeSource: msg.GetExcludeSource(),
+		ExcludeImage:  msg.GetExcludeImage(),
+		ExcludeText:   msg.GetExcludeText(),
+		ClipIDs:       msg.GetClipIds(),
+	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}

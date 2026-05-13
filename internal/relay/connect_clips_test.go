@@ -61,3 +61,44 @@ func isConnectError(err error, target **connect.Error) bool {
 	}
 	return ok
 }
+
+// connectPushClip pushes a clip via Connect-RPC and returns the assigned clip ID.
+func connectPushClip(t *testing.T, client cinchv1connect.ClipsServiceClient, token, content, contentType, source string) string {
+	t.Helper()
+	req := connect.NewRequest(&cinchv1.PushClipRequest{
+		Content:     content,
+		ContentType: contentType,
+		Source:      source,
+		Encrypted:   true,
+	})
+	req.Header().Set("Authorization", "Bearer "+token)
+	resp, err := client.PushClip(t.Context(), req)
+	if err != nil {
+		t.Fatalf("connectPushClip: %v", err)
+	}
+	return resp.Msg.ClipId
+}
+
+func TestListClips_HonoursFilters(t *testing.T) {
+	ts, _ := setupTestServer(t)
+	token, _, _ := login(t, ts.URL)
+
+	client := cinchv1connect.NewClipsServiceClient(http.DefaultClient, ts.URL)
+	connectPushClip(t, client, token, "hello", "text", "remote:desktop")
+	c2 := connectPushClip(t, client, token, "img", "image", "remote:phone")
+
+	req := connect.NewRequest(&cinchv1.ListClipsRequest{
+		Limit:        50,
+		SourceFilter: "remote:phone",
+	})
+	req.Header().Set("Authorization", "Bearer "+token)
+
+	resp, err := client.ListClips(t.Context(), req)
+	if err != nil {
+		t.Fatalf("ListClips: %v", err)
+	}
+	got := resp.Msg.GetClips()
+	if len(got) != 1 || got[0].ClipId != c2 {
+		t.Fatalf("expected only clip from remote:phone (id=%s), got %+v", c2, got)
+	}
+}
