@@ -22,6 +22,11 @@ service AuthService {
   // Mirrors POST /auth/device-code/complete — auth required.
   rpc DeviceCodeComplete(DeviceCodeCompleteRequest) returns (DeviceCodeCompleteResponse);
 
+  // DeviceCodeDeny rejects a pending device-code from an already-signed-in
+  // device. The remote CLI's next DeviceCodePoll returns status="denied".
+  // Mirrors POST /auth/device-code/deny — auth required.
+  rpc DeviceCodeDeny(DeviceCodeDenyRequest) returns (DeviceCodeDenyResponse);
+
   // RevokeDevice revokes a paired device by ID.
   // Mirrors POST /auth/device/revoke — auth required.
   rpc RevokeDevice(RevokeDeviceRequest) returns (RevokeDeviceResponse);
@@ -72,6 +77,9 @@ message DeviceCodeStartRequest {
   // an existing device row for the same (user_id, machine_id) instead of
   // creating a duplicate when the same Mac signs in via CLI and desktop.
   optional string machine_id = 2;
+  // Email or user_id — relay broadcasts device_code_pending to this user's
+  // WS sessions so already-signed-in devices can approve/deny.
+  optional string user_hint = 3;
 }
 
 message DeviceCodeStartResponse {
@@ -108,6 +116,14 @@ message DeviceCodeCompleteRequest {
 
 message DeviceCodeCompleteResponse {
   string status = 1;
+}
+
+message DeviceCodeDenyRequest {
+  string user_code = 1;
+}
+
+message DeviceCodeDenyResponse {
+  bool ok = 1;
 }
 
 // ─── Revoke Device ──────────────────────────────────────────

@@ -44,6 +44,9 @@ const (
 	// AuthServiceDeviceCodeCompleteProcedure is the fully-qualified name of the AuthService's
 	// DeviceCodeComplete RPC.
 	AuthServiceDeviceCodeCompleteProcedure = "/cinch.v1.AuthService/DeviceCodeComplete"
+	// AuthServiceDeviceCodeDenyProcedure is the fully-qualified name of the AuthService's
+	// DeviceCodeDeny RPC.
+	AuthServiceDeviceCodeDenyProcedure = "/cinch.v1.AuthService/DeviceCodeDeny"
 	// AuthServiceRevokeDeviceProcedure is the fully-qualified name of the AuthService's RevokeDevice
 	// RPC.
 	AuthServiceRevokeDeviceProcedure = "/cinch.v1.AuthService/RevokeDevice"
@@ -75,6 +78,10 @@ type AuthServiceClient interface {
 	// DeviceCodeComplete marks a device code as approved.
 	// Mirrors POST /auth/device-code/complete — auth required.
 	DeviceCodeComplete(context.Context, *connect.Request[v1.DeviceCodeCompleteRequest]) (*connect.Response[v1.DeviceCodeCompleteResponse], error)
+	// DeviceCodeDeny rejects a pending device-code from an already-signed-in
+	// device. The remote CLI's next DeviceCodePoll returns status="denied".
+	// Mirrors POST /auth/device-code/deny — auth required.
+	DeviceCodeDeny(context.Context, *connect.Request[v1.DeviceCodeDenyRequest]) (*connect.Response[v1.DeviceCodeDenyResponse], error)
 	// RevokeDevice revokes a paired device by ID.
 	// Mirrors POST /auth/device/revoke — auth required.
 	RevokeDevice(context.Context, *connect.Request[v1.RevokeDeviceRequest]) (*connect.Response[v1.RevokeDeviceResponse], error)
@@ -131,6 +138,12 @@ func NewAuthServiceClient(httpClient connect.HTTPClient, baseURL string, opts ..
 			connect.WithSchema(authServiceMethods.ByName("DeviceCodeComplete")),
 			connect.WithClientOptions(opts...),
 		),
+		deviceCodeDeny: connect.NewClient[v1.DeviceCodeDenyRequest, v1.DeviceCodeDenyResponse](
+			httpClient,
+			baseURL+AuthServiceDeviceCodeDenyProcedure,
+			connect.WithSchema(authServiceMethods.ByName("DeviceCodeDeny")),
+			connect.WithClientOptions(opts...),
+		),
 		revokeDevice: connect.NewClient[v1.RevokeDeviceRequest, v1.RevokeDeviceResponse](
 			httpClient,
 			baseURL+AuthServiceRevokeDeviceProcedure,
@@ -170,6 +183,7 @@ type authServiceClient struct {
 	deviceCodeStart         *connect.Client[v1.DeviceCodeStartRequest, v1.DeviceCodeStartResponse]
 	deviceCodePoll          *connect.Client[v1.DeviceCodePollRequest, v1.DeviceCodePollResponse]
 	deviceCodeComplete      *connect.Client[v1.DeviceCodeCompleteRequest, v1.DeviceCodeCompleteResponse]
+	deviceCodeDeny          *connect.Client[v1.DeviceCodeDenyRequest, v1.DeviceCodeDenyResponse]
 	revokeDevice            *connect.Client[v1.RevokeDeviceRequest, v1.RevokeDeviceResponse]
 	keyBundlePut            *connect.Client[v1.KeyBundlePutRequest, v1.KeyBundlePutResponse]
 	keyBundleGet            *connect.Client[v1.KeyBundleGetRequest, v1.KeyBundleGetResponse]
@@ -195,6 +209,11 @@ func (c *authServiceClient) DeviceCodePoll(ctx context.Context, req *connect.Req
 // DeviceCodeComplete calls cinch.v1.AuthService.DeviceCodeComplete.
 func (c *authServiceClient) DeviceCodeComplete(ctx context.Context, req *connect.Request[v1.DeviceCodeCompleteRequest]) (*connect.Response[v1.DeviceCodeCompleteResponse], error) {
 	return c.deviceCodeComplete.CallUnary(ctx, req)
+}
+
+// DeviceCodeDeny calls cinch.v1.AuthService.DeviceCodeDeny.
+func (c *authServiceClient) DeviceCodeDeny(ctx context.Context, req *connect.Request[v1.DeviceCodeDenyRequest]) (*connect.Response[v1.DeviceCodeDenyResponse], error) {
+	return c.deviceCodeDeny.CallUnary(ctx, req)
 }
 
 // RevokeDevice calls cinch.v1.AuthService.RevokeDevice.
@@ -236,6 +255,10 @@ type AuthServiceHandler interface {
 	// DeviceCodeComplete marks a device code as approved.
 	// Mirrors POST /auth/device-code/complete — auth required.
 	DeviceCodeComplete(context.Context, *connect.Request[v1.DeviceCodeCompleteRequest]) (*connect.Response[v1.DeviceCodeCompleteResponse], error)
+	// DeviceCodeDeny rejects a pending device-code from an already-signed-in
+	// device. The remote CLI's next DeviceCodePoll returns status="denied".
+	// Mirrors POST /auth/device-code/deny — auth required.
+	DeviceCodeDeny(context.Context, *connect.Request[v1.DeviceCodeDenyRequest]) (*connect.Response[v1.DeviceCodeDenyResponse], error)
 	// RevokeDevice revokes a paired device by ID.
 	// Mirrors POST /auth/device/revoke — auth required.
 	RevokeDevice(context.Context, *connect.Request[v1.RevokeDeviceRequest]) (*connect.Response[v1.RevokeDeviceResponse], error)
@@ -288,6 +311,12 @@ func NewAuthServiceHandler(svc AuthServiceHandler, opts ...connect.HandlerOption
 		connect.WithSchema(authServiceMethods.ByName("DeviceCodeComplete")),
 		connect.WithHandlerOptions(opts...),
 	)
+	authServiceDeviceCodeDenyHandler := connect.NewUnaryHandler(
+		AuthServiceDeviceCodeDenyProcedure,
+		svc.DeviceCodeDeny,
+		connect.WithSchema(authServiceMethods.ByName("DeviceCodeDeny")),
+		connect.WithHandlerOptions(opts...),
+	)
 	authServiceRevokeDeviceHandler := connect.NewUnaryHandler(
 		AuthServiceRevokeDeviceProcedure,
 		svc.RevokeDevice,
@@ -328,6 +357,8 @@ func NewAuthServiceHandler(svc AuthServiceHandler, opts ...connect.HandlerOption
 			authServiceDeviceCodePollHandler.ServeHTTP(w, r)
 		case AuthServiceDeviceCodeCompleteProcedure:
 			authServiceDeviceCodeCompleteHandler.ServeHTTP(w, r)
+		case AuthServiceDeviceCodeDenyProcedure:
+			authServiceDeviceCodeDenyHandler.ServeHTTP(w, r)
 		case AuthServiceRevokeDeviceProcedure:
 			authServiceRevokeDeviceHandler.ServeHTTP(w, r)
 		case AuthServiceKeyBundlePutProcedure:
@@ -361,6 +392,10 @@ func (UnimplementedAuthServiceHandler) DeviceCodePoll(context.Context, *connect.
 
 func (UnimplementedAuthServiceHandler) DeviceCodeComplete(context.Context, *connect.Request[v1.DeviceCodeCompleteRequest]) (*connect.Response[v1.DeviceCodeCompleteResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cinch.v1.AuthService.DeviceCodeComplete is not implemented"))
+}
+
+func (UnimplementedAuthServiceHandler) DeviceCodeDeny(context.Context, *connect.Request[v1.DeviceCodeDenyRequest]) (*connect.Response[v1.DeviceCodeDenyResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("cinch.v1.AuthService.DeviceCodeDeny is not implemented"))
 }
 
 func (UnimplementedAuthServiceHandler) RevokeDevice(context.Context, *connect.Request[v1.RevokeDeviceRequest]) (*connect.Response[v1.RevokeDeviceResponse], error) {
