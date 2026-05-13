@@ -722,7 +722,9 @@ func (s *Store) ListClipsFiltered(userID string, f ListFilter) ([]*cinchv1.Clip,
 		clauses = append(clauses, "content_type != 'image'")
 	}
 	if f.ExcludeText {
-		clauses = append(clauses, "content_type = 'image'")
+		// content_type can be one of text/url/code/image (see clips.proto). Excluding
+		// "text" must keep url/code/image — not collapse to image only.
+		clauses = append(clauses, "content_type != 'text'")
 	}
 	if len(f.ClipIDs) > 0 {
 		placeholders := make([]string, len(f.ClipIDs))
