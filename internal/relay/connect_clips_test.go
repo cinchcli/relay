@@ -101,6 +101,26 @@ func TestGetLatestClip_ExcludeSource(t *testing.T) {
 	}
 }
 
+func TestGetLatestClip_RejectsSourceAndExcludeSourceTogether(t *testing.T) {
+	ts, _ := setupTestServer(t)
+	token, _, _ := login(t, ts.URL)
+
+	client := cinchv1connect.NewClipsServiceClient(http.DefaultClient, ts.URL)
+	req := connect.NewRequest(&cinchv1.GetLatestClipRequest{
+		Source:        "remote:desktop",
+		ExcludeSource: "remote:phone",
+	})
+	req.Header().Set("Authorization", "Bearer "+token)
+
+	_, err := client.GetLatestClip(t.Context(), req)
+	if err == nil {
+		t.Fatal("expected error when both source and exclude_source are set, got nil")
+	}
+	if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
+		t.Fatalf("want CodeInvalidArgument, got %v: %v", got, err)
+	}
+}
+
 func TestListClips_HonoursFilters(t *testing.T) {
 	ts, _ := setupTestServer(t)
 	token, _, _ := login(t, ts.URL)
