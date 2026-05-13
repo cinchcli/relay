@@ -283,6 +283,84 @@ func TestDeviceCodeStart_UnknownHintSilent(t *testing.T) {
 	}
 }
 
+// TestDeviceCodeStart_PerUserRateLimit_DropsExcessBroadcast verifies the
+// per-pending-user rate limiter: after 5 device_code_pending broadcasts
+// in the rolling minute window, additional DeviceCodeStart calls still
+// succeed (HTTP 200) but the WS frame is dropped. The RPC response must
+// not change so callers cannot enumerate which emails match real users.
+func TestDeviceCodeStart_PerUserRateLimit_DropsExcessBroadcast(t *testing.T) {
+	ts, store, hub := keyExchangeTestServer(t)
+
+	aliceID, _, _, err := store.UpsertOAuthUser("google", "sub-1", "alice@example.com", true, "alice-mbp", "machine-1")
+	if err != nil {
+		t.Fatalf("seed alice: %v", err)
+	}
+
+	tokA, _, devA := keyExchangeLogin(t, ts, "alice-cli")
+	if _, err := store.db.Exec("UPDATE devices SET user_id = $1 WHERE id = $2", aliceID, devA); err != nil {
+		t.Fatalf("re-parent: %v", err)
+	}
+
+	wsURL := strings.Replace(ts.URL, "http://", "ws://", 1) + "/ws?token=" + tokA
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("ws dial: %v", err)
+	}
+	defer conn.Close()
+
+	// Wait for hub to register the connection under aliceID.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		hub.mu.RLock()
+		n := len(hub.conns[aliceID])
+		hub.mu.RUnlock()
+		if n == 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Share the Handler so the rate limiter state persists across calls.
+	h := NewHandler(store, hub)
+	srv := &connectAuthServer{h: h}
+
+	strPtr := func(s string) *string { return &s }
+
+	for i := 0; i < 5; i++ {
+		req := connect.NewRequest(&cinchv1.DeviceCodeStartRequest{
+			Hostname: strPtr("dev-box-3"),
+			UserHint: strPtr("alice@example.com"),
+		})
+		if _, err := srv.DeviceCodeStart(context.Background(), req); err != nil {
+			t.Fatalf("attempt %d: %v", i, err)
+		}
+		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		var msg protocol.WSMessage
+		if err := conn.ReadJSON(&msg); err != nil {
+			t.Fatalf("attempt %d frame: %v", i, err)
+		}
+		if msg.Action != protocol.ActionDeviceCodePending {
+			t.Fatalf("attempt %d: expected action %q, got %q", i, protocol.ActionDeviceCodePending, msg.Action)
+		}
+	}
+
+	// 6th call: must still return success (no error) — only the broadcast is dropped.
+	req6 := connect.NewRequest(&cinchv1.DeviceCodeStartRequest{
+		Hostname: strPtr("dev-box-3"),
+		UserHint: strPtr("alice@example.com"),
+	})
+	if _, err := srv.DeviceCodeStart(context.Background(), req6); err != nil {
+		t.Fatalf("6th call should still succeed: %v", err)
+	}
+
+	// No frame arrives on the WS connection.
+	conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+	var msg protocol.WSMessage
+	if err := conn.ReadJSON(&msg); err == nil {
+		t.Errorf("expected no frame on rate-limited 6th call, got %+v", msg)
+	}
+}
+
 // TestExtractRequesterIP_PrefersXFFFirstHop verifies the helper picks
 // the leftmost IP from X-Forwarded-For chains, falls back to X-Real-IP,
 // and trims whitespace.

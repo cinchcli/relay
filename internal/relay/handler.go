@@ -143,14 +143,25 @@ type Handler struct {
 	loginRateMap map[string]time.Time
 
 	internalServiceSecret string // protects POST /internal/quota; empty = endpoint disabled
+
+	// DeviceCodeStart rate limits.
+	// pendingLimit caps notification spam per pending user (5/min) — when
+	// exceeded, the WS broadcast is dropped but the RPC still succeeds so
+	// the response does not leak whether the hint matched a user.
+	// deviceCodeIPLimit caps abuse per requester IP (30/min) — when exceeded,
+	// the RPC returns CodeResourceExhausted (HTTP 429).
+	pendingLimit      *slidingWindowLimiter
+	deviceCodeIPLimit *slidingWindowLimiter
 }
 
 func NewHandler(store *Store, hub *Hub) *Handler {
 	return &Handler{
-		store:            store,
-		hub:              hub,
-		telemetryLimiter: newRateLimiter(5, time.Hour),
-		loginRateMap:     make(map[string]time.Time),
+		store:             store,
+		hub:               hub,
+		telemetryLimiter:  newRateLimiter(5, time.Hour),
+		loginRateMap:      make(map[string]time.Time),
+		pendingLimit:      newSlidingWindowLimiter(5, time.Minute),
+		deviceCodeIPLimit: newSlidingWindowLimiter(30, time.Minute),
 	}
 }
 
