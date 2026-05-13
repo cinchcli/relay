@@ -410,7 +410,12 @@ func httpPushClip(t *testing.T, baseURL, token, content, contentType, source str
 		"content_type": contentType,
 		"source":       source,
 		"byte_size":    int64(len(content)),
-		"encrypted":    false,
+		// Relay enforces E2EE on plaintext push. We do not actually encrypt
+		// the body here — the tests only assert routing/filter behaviour, and
+		// the source/content_type/byte_size fields are what the filters key on.
+		// Setting encrypted=true bypasses the 422 gate; the stored content
+		// stays as-is for assertion purposes.
+		"encrypted": true,
 	})
 	req, _ := http.NewRequest("POST", baseURL+"/clips", strings.NewReader(string(body)))
 	req.Header.Set("Authorization", "Bearer "+token)
