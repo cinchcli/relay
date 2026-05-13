@@ -124,11 +124,16 @@ func (s *connectAuthServer) DeviceCodeStart(ctx context.Context, req *connect.Re
 	if req.Msg.MachineId != nil {
 		machineID = *req.Msg.MachineId
 	}
-
-	resp, err := s.h.store.CreateDeviceCode(hostname, machineID)
+	userHint := ""
+	if req.Msg.UserHint != nil {
+		userHint = *req.Msg.UserHint
+	}
+	// requesterIP comes from a helper added in Task 1.5. For now pass "".
+	resp, pendingUserID, err := s.h.store.CreateDeviceCode(hostname, machineID, userHint, "")
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	_ = pendingUserID // wired up in Task 1.5
 
 	baseURL := s.h.BaseURL
 	verificationURI := baseURL + "/auth/browser?device_code=" + resp.UserCode
