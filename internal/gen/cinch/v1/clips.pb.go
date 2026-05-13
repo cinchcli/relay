@@ -33,7 +33,9 @@ type Clip struct {
 	MediaPath   *string                `protobuf:"bytes,8,opt,name=media_path,json=mediaPath,proto3,oneof" json:"media_path,omitempty"`
 	CreatedAt   string                 `protobuf:"bytes,9,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	// field 10 (ttl) removed — do not reuse
-	Encrypted     bool `protobuf:"varint,11,opt,name=encrypted,proto3" json:"encrypted,omitempty"`
+	Encrypted     bool    `protobuf:"varint,11,opt,name=encrypted,proto3" json:"encrypted,omitempty"`
+	IsPinned      bool    `protobuf:"varint,12,opt,name=is_pinned,json=isPinned,proto3" json:"is_pinned,omitempty"`
+	PinNote       *string `protobuf:"bytes,13,opt,name=pin_note,json=pinNote,proto3,oneof" json:"pin_note,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -136,6 +138,20 @@ func (x *Clip) GetEncrypted() bool {
 		return x.Encrypted
 	}
 	return false
+}
+
+func (x *Clip) GetIsPinned() bool {
+	if x != nil {
+		return x.IsPinned
+	}
+	return false
+}
+
+func (x *Clip) GetPinNote() string {
+	if x != nil && x.PinNote != nil {
+		return *x.PinNote
+	}
+	return ""
 }
 
 type PushClipRequest struct {
@@ -567,7 +583,7 @@ var File_cinch_v1_clips_proto protoreflect.FileDescriptor
 
 const file_cinch_v1_clips_proto_rawDesc = "" +
 	"\n" +
-	"\x14cinch/v1/clips.proto\x12\bcinch.v1\"\xb0\x02\n" +
+	"\x14cinch/v1/clips.proto\x12\bcinch.v1\"\xfa\x02\n" +
 	"\x04Clip\x12\x17\n" +
 	"\aclip_id\x18\x01 \x01(\tR\x06clipId\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x18\n" +
@@ -580,8 +596,11 @@ const file_cinch_v1_clips_proto_rawDesc = "" +
 	"media_path\x18\b \x01(\tH\x00R\tmediaPath\x88\x01\x01\x12\x1d\n" +
 	"\n" +
 	"created_at\x18\t \x01(\tR\tcreatedAt\x12\x1c\n" +
-	"\tencrypted\x18\v \x01(\bR\tencryptedB\r\n" +
-	"\v_media_path\"\xae\x02\n" +
+	"\tencrypted\x18\v \x01(\bR\tencrypted\x12\x1b\n" +
+	"\tis_pinned\x18\f \x01(\bR\bisPinned\x12\x1e\n" +
+	"\bpin_note\x18\r \x01(\tH\x01R\apinNote\x88\x01\x01B\r\n" +
+	"\v_media_pathB\v\n" +
+	"\t_pin_note\"\xae\x02\n" +
 	"\x0fPushClipRequest\x12\x18\n" +
 	"\acontent\x18\x01 \x01(\tR\acontent\x12!\n" +
 	"\fcontent_type\x18\x02 \x01(\tR\vcontentType\x12\x14\n" +

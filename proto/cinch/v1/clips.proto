@@ -47,6 +47,8 @@ message Clip {
   string          created_at   = 9;
   // field 10 (ttl) removed — do not reuse
   bool            encrypted    = 11;
+  bool            is_pinned    = 12;
+  optional string pin_note     = 13;
 }
 
 // ─── PushClip ────────────────────────────────────────────────
