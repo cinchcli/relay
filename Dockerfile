@@ -18,11 +18,13 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 FROM alpine:3.21
 
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates curl && \
+    curl -fsSL https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem \
+      -o /etc/ssl/certs/rds-global-bundle.pem && \
+    apk del curl
 
 COPY --from=builder /bin/cinch-relay /usr/local/bin/cinch-relay
 COPY --from=builder /bin/failover-listener /usr/local/bin/failover-listener
-COPY global-bundle.pem /etc/ssl/certs/rds-global-bundle.pem
 
 RUN adduser -D -h /data cinch
 USER cinch
