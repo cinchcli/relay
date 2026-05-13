@@ -144,13 +144,20 @@ func (s *connectAuthServer) DeviceCodeStart(ctx context.Context, req *connect.Re
 		userHint = *req.Msg.UserHint
 	}
 	requesterIP := extractRequesterIP(req.Header())
+	if requesterIP != "" && !s.h.deviceCodeIPLimit.Allow(requesterIP) {
+		return nil, connect.NewError(connect.CodeResourceExhausted, errMsg("rate limit exceeded"))
+	}
 
 	resp, pendingUserID, err := s.h.store.CreateDeviceCode(hostname, machineID, userHint, requesterIP)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	if pendingUserID != "" {
+	// Per-user broadcast suppression: when the pending user has already
+	// received 5 device_code_pending frames in the last minute, drop this
+	// broadcast. The RPC still succeeds so the response does not leak
+	// whether the hint matched a real user.
+	if pendingUserID != "" && s.h.pendingLimit.Allow(pendingUserID) {
 		s.h.hub.BroadcastWSToUser(pendingUserID, &protocol.WSMessage{
 			Action:      protocol.ActionDeviceCodePending,
 			UserCode:    resp.UserCode,
