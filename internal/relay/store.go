@@ -816,8 +816,11 @@ func (s *Store) GetLatestClipBySource(userID, source string) (*cinchv1.Clip, err
 		userID, source,
 	)
 	clip, err := scanClipRow(row)
-	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("no clips from source %s", source)
+	if errors.Is(err, sql.ErrNoRows) {
+		// Wrap with %w so callers can still match via errors.Is(err, sql.ErrNoRows).
+		// The handler relies on this to map the no-row case to CodeNotFound symmetrically
+		// with the GetLatestClipExcludingSource path.
+		return nil, fmt.Errorf("no clips from source %s: %w", source, err)
 	}
 	return clip, err
 }
