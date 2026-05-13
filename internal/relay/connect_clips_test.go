@@ -79,6 +79,28 @@ func connectPushClip(t *testing.T, client cinchv1connect.ClipsServiceClient, tok
 	return resp.Msg.ClipId
 }
 
+func TestGetLatestClip_ExcludeSource(t *testing.T) {
+	ts, _ := setupTestServer(t)
+	token, _, _ := login(t, ts.URL)
+
+	client := cinchv1connect.NewClipsServiceClient(http.DefaultClient, ts.URL)
+	connectPushClip(t, client, token, "from-desktop", "text", "remote:desktop")
+	connectPushClip(t, client, token, "from-phone", "text", "remote:phone")
+
+	req := connect.NewRequest(&cinchv1.GetLatestClipRequest{
+		ExcludeSource: "remote:phone",
+	})
+	req.Header().Set("Authorization", "Bearer "+token)
+
+	resp, err := client.GetLatestClip(t.Context(), req)
+	if err != nil {
+		t.Fatalf("GetLatestClip: %v", err)
+	}
+	if resp.Msg.GetClip().Content != "from-desktop" {
+		t.Fatalf("want from-desktop content, got %+v", resp.Msg.GetClip())
+	}
+}
+
 func TestListClips_HonoursFilters(t *testing.T) {
 	ts, _ := setupTestServer(t)
 	token, _, _ := login(t, ts.URL)

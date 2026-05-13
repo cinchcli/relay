@@ -499,6 +499,21 @@ func mustInsertClip(t *testing.T, store *Store, userID, clipID, content, content
 	}
 }
 
+func TestGetLatestClip_ExcludeSource(t *testing.T) {
+	store := newTestStore(t)
+	uid := "user1"
+	mustInsertClip(t, store, uid, "c1", "from-desktop", "text", "remote:desktop", time.Now().Add(-2*time.Minute))
+	mustInsertClip(t, store, uid, "c2", "from-phone", "text", "remote:phone", time.Now().Add(-1*time.Minute))
+
+	got, err := store.GetLatestClipExcludingSource(uid, "remote:phone")
+	if err != nil {
+		t.Fatalf("GetLatestClipExcludingSource: %v", err)
+	}
+	if got.ClipId != "c1" {
+		t.Fatalf("want c1, got %s", got.ClipId)
+	}
+}
+
 func TestListClipsFiltered_AllFilters(t *testing.T) {
 	store := newTestStore(t)
 	uid := "user1"

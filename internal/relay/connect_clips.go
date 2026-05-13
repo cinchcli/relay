@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log"
@@ -183,11 +184,28 @@ func (s *connectClipsServer) ListClips(ctx context.Context, req *connect.Request
 
 func (s *connectClipsServer) GetLatestClip(ctx context.Context, req *connect.Request[cinchv1.GetLatestClipRequest]) (*connect.Response[cinchv1.GetLatestClipResponse], error) {
 	userID := req.Header().Get("X-User-ID")
-	if req.Msg.Source == "" {
+	msg := req.Msg
+
+	if msg.GetSource() != "" && msg.GetExcludeSource() != "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errMsg("source and exclude_source are mutually exclusive"))
+	}
+	if msg.GetSource() == "" && msg.GetExcludeSource() == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errMsg("source is required"))
 	}
 
-	clip, err := s.h.store.GetLatestClipBySource(userID, req.Msg.Source)
+	var (
+		clip *cinchv1.Clip
+		err  error
+	)
+	switch {
+	case msg.GetExcludeSource() != "":
+		clip, err = s.h.store.GetLatestClipExcludingSource(userID, msg.GetExcludeSource())
+	default:
+		clip, err = s.h.store.GetLatestClipBySource(userID, msg.GetSource())
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, connect.NewError(connect.CodeNotFound, errMsg("no matching clip"))
+	}
 	if err != nil {
 		return nil, connect.NewError(connect.CodeNotFound, err)
 	}
