@@ -150,6 +150,11 @@ func TestListClipsRequestVectorsRoundTrip(t *testing.T) {
 	runGroup(t, root, "ListClipsRequest", func() any { return &ListClipsRequest{} })
 }
 
+func TestListClipsResponseVectorsRoundTrip(t *testing.T) {
+	root := loadVectors(t)
+	runGroup(t, root, "ListClipsResponse", func() any { return &ListClipsResponse{} })
+}
+
 func TestClipDeletedEventVectorsRoundTrip(t *testing.T) {
 	root := loadVectors(t)
 	runGroup(t, root, "ClipDeletedEvent", func() any { return &ClipDeletedEvent{} })

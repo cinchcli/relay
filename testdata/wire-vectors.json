@@ -148,6 +148,32 @@
     }
   },
 
+  "ListClipsResponse": {
+    "empty": {},
+    "mixed": {
+      "clips": [
+        {
+          "clip_id": "01J0Q0000000text000000000",
+          "user_id": "user_42",
+          "content": "hello world\n",
+          "content_type": "text",
+          "source": "remote:desktop-abc",
+          "byte_size": 12,
+          "created_at": "2026-05-13T08:14:22Z"
+        },
+        {
+          "clip_id": "01J0Q0000000image00000000",
+          "user_id": "user_42",
+          "content_type": "image",
+          "source": "remote:phone-xyz",
+          "byte_size": 1257840,
+          "media_path": "media/01J0Q0000000image.png",
+          "created_at": "2026-05-13T08:13:01Z"
+        }
+      ]
+    }
+  },
+
   "ClipDeletedEvent": {
     "basic": {
       "clip_id": "01HABC0000000000000000000"
