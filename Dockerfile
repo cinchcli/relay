@@ -8,6 +8,7 @@
 # BuildKit skips unused stages, so each path only runs what it needs.
 
 ARG GO_VERSION=1.26
+ARG BIN_SRC=builder
 
 FROM golang:${GO_VERSION}-alpine AS builder
 
