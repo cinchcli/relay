@@ -784,34 +784,55 @@ func (s *Store) DeleteClipReturningMedia(userID, clipID string) (mediaPath strin
 	return mediaPath, nil
 }
 
-// GetLatestClipBySource returns the most recent clip from a specific source.
-func (s *Store) GetLatestClipBySource(userID, source string) (*cinchv1.Clip, error) {
+// scanClipRow decodes a single clip row produced by a query that selects
+// the same columns as scanClips. Returns sql.ErrNoRows if the row is empty.
+func scanClipRow(row *sql.Row) (*cinchv1.Clip, error) {
 	c := &cinchv1.Clip{}
 	var mediaPath sql.NullString
 	var pinNote sql.NullString
 	var createdAt time.Time
-	err := s.db.QueryRow(
-		`SELECT id, user_id, content, content_type, source, label, byte_size, media_path, created_at, encrypted, is_pinned, pin_note
-		 FROM clips WHERE user_id = $1 AND source = $2
-		 ORDER BY created_at DESC LIMIT 1`,
-		userID, source,
-	).Scan(&c.ClipId, &c.UserId, &c.Content, &c.ContentType, &c.Source, &c.Label, &c.ByteSize, &mediaPath, &createdAt, &c.Encrypted, &c.IsPinned, &pinNote)
+	if err := row.Scan(&c.ClipId, &c.UserId, &c.Content, &c.ContentType, &c.Source, &c.Label, &c.ByteSize, &mediaPath, &createdAt, &c.Encrypted, &c.IsPinned, &pinNote); err != nil {
+		return nil, err
+	}
 	if mediaPath.Valid && mediaPath.String != "" {
-		mp := mediaPath.String
-		c.MediaPath = &mp
+		s := mediaPath.String
+		c.MediaPath = &s
 	}
 	if pinNote.Valid && pinNote.String != "" {
-		pn := pinNote.String
-		c.PinNote = &pn
-	}
-	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("no clips from source %s", source)
-	}
-	if err != nil {
-		return nil, err
+		s := pinNote.String
+		c.PinNote = &s
 	}
 	c.CreatedAt = protocol.FormatRFC3339(createdAt)
 	return c, nil
+}
+
+// GetLatestClipBySource returns the most recent clip from a specific source.
+func (s *Store) GetLatestClipBySource(userID, source string) (*cinchv1.Clip, error) {
+	row := s.db.QueryRow(
+		`SELECT id, user_id, content, content_type, source, label, byte_size,
+		        media_path, created_at, encrypted, is_pinned, pin_note
+		 FROM clips WHERE user_id = $1 AND source = $2
+		 ORDER BY created_at DESC LIMIT 1`,
+		userID, source,
+	)
+	clip, err := scanClipRow(row)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("no clips from source %s", source)
+	}
+	return clip, err
+}
+
+// GetLatestClipExcludingSource returns the newest clip for userID whose
+// source != excludeSource. Returns sql.ErrNoRows when no clip qualifies.
+func (s *Store) GetLatestClipExcludingSource(userID, excludeSource string) (*cinchv1.Clip, error) {
+	row := s.db.QueryRow(
+		`SELECT id, user_id, content, content_type, source, label, byte_size,
+		        media_path, created_at, encrypted, is_pinned, pin_note
+		 FROM clips WHERE user_id = $1 AND source != $2
+		 ORDER BY created_at DESC LIMIT 1`,
+		userID, excludeSource,
+	)
+	return scanClipRow(row)
 }
 
 // SetClipPin sets or clears the pin state for a clip owned by the caller.
