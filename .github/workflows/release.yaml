@@ -53,3 +53,67 @@ jobs:
           args: ${{ github.event_name == 'pull_request' && 'release --snapshot --skip=publish --clean' || 'release --clean' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: goreleaser
+    if: startsWith(github.ref, 'refs/tags/v')
+    environment: production
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v6.1.0
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+          role-session-name: ${{ github.run_id }}
+
+      - name: Deploy via SSM
+        run: |
+          COMMAND_ID=$(aws ssm send-command \
+            --region us-east-1 \
+            --instance-ids i-01031829df0e1be6a \
+            --document-name "AWS-RunShellScript" \
+            --parameters 'commands=["docker pull ghcr.io/cinchcli/relay:latest && sudo systemctl restart cinch-relay"]' \
+            --comment "deploy ${{ github.ref_name }}" \
+            --query 'Command.CommandId' \
+            --output text)
+          echo "SSM command: $COMMAND_ID"
+
+          aws ssm wait command-executed \
+            --command-id "$COMMAND_ID" \
+            --instance-id i-01031829df0e1be6a
+
+          STATUS=$(aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id i-01031829df0e1be6a \
+            --query 'Status' \
+            --output text)
+          echo "Status: $STATUS"
+          if [ "$STATUS" != "Success" ]; then
+            aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id i-01031829df0e1be6a \
+              --query 'StandardErrorContent' \
+              --output text
+            exit 1
+          fi
+
+      - name: Wait for relay to be healthy
+        run: |
+          for i in $(seq 1 12); do
+            status=$(curl -sf -o /dev/null -w "%{http_code}" https://api.cinchcli.com/health 2>/dev/null || echo "000")
+            if [ "$status" = "200" ]; then
+              echo "Relay healthy after ${i}x5s"
+              exit 0
+            fi
+            echo "Attempt $i: status=$status, retrying..."
+            sleep 5
+          done
+          echo "Relay did not become healthy within 60s"
+          exit 1
