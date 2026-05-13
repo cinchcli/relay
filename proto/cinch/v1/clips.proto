@@ -73,8 +73,13 @@ message PushClipResponse {
 // ─── ListClips ───────────────────────────────────────────────
 
 message ListClipsRequest {
-  string since = 1;  // RFC 3339 timestamp; empty = no filter (returns most recent)
-  int32  limit = 2;  // 0 = default (50), max 100
+  string          since           = 1;  // RFC 3339 timestamp; empty = no filter (returns most recent)
+  int32           limit           = 2;  // 0 = default (50), max 200
+  string          source_filter   = 3;  // resolved source key; empty = no filter
+  string          exclude_source  = 4;  // resolved source key to exclude; empty = no exclusion
+  bool            exclude_image   = 5;  // when true, drop image clips
+  bool            exclude_text    = 6;  // when true, drop text clips
+  repeated string clip_ids        = 7;  // when non-empty, return only these clips (max 200)
 }
 
 message ListClipsResponse {
@@ -84,7 +89,8 @@ message ListClipsResponse {
 // ─── GetLatestClip ───────────────────────────────────────────
 
 message GetLatestClipRequest {
-  string source = 1;
+  string source         = 1;
+  string exclude_source = 2;  // when set, return latest clip whose source != exclude_source
 }
 
 message GetLatestClipResponse {
