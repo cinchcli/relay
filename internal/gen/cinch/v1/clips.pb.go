@@ -309,8 +309,13 @@ func (x *PushClipResponse) GetByteSize() int64 {
 
 type ListClipsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Since         string                 `protobuf:"bytes,1,opt,name=since,proto3" json:"since,omitempty"`  // RFC 3339 timestamp; empty = no filter (returns most recent)
-	Limit         int32                  `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"` // 0 = default (50), max 100
+	Since         string                 `protobuf:"bytes,1,opt,name=since,proto3" json:"since,omitempty"`                                      // RFC 3339 timestamp; empty = no filter (returns most recent)
+	Limit         int32                  `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"`                                     // 0 = default (50), max 200
+	SourceFilter  string                 `protobuf:"bytes,3,opt,name=source_filter,json=sourceFilter,proto3" json:"source_filter,omitempty"`    // resolved source key; empty = no filter
+	ExcludeSource string                 `protobuf:"bytes,4,opt,name=exclude_source,json=excludeSource,proto3" json:"exclude_source,omitempty"` // resolved source key to exclude; empty = no exclusion
+	ExcludeImage  bool                   `protobuf:"varint,5,opt,name=exclude_image,json=excludeImage,proto3" json:"exclude_image,omitempty"`   // when true, drop image clips
+	ExcludeText   bool                   `protobuf:"varint,6,opt,name=exclude_text,json=excludeText,proto3" json:"exclude_text,omitempty"`      // when true, drop text clips
+	ClipIds       []string               `protobuf:"bytes,7,rep,name=clip_ids,json=clipIds,proto3" json:"clip_ids,omitempty"`                   // when non-empty, return only these clips (max 200)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -357,6 +362,41 @@ func (x *ListClipsRequest) GetLimit() int32 {
 		return x.Limit
 	}
 	return 0
+}
+
+func (x *ListClipsRequest) GetSourceFilter() string {
+	if x != nil {
+		return x.SourceFilter
+	}
+	return ""
+}
+
+func (x *ListClipsRequest) GetExcludeSource() string {
+	if x != nil {
+		return x.ExcludeSource
+	}
+	return ""
+}
+
+func (x *ListClipsRequest) GetExcludeImage() bool {
+	if x != nil {
+		return x.ExcludeImage
+	}
+	return false
+}
+
+func (x *ListClipsRequest) GetExcludeText() bool {
+	if x != nil {
+		return x.ExcludeText
+	}
+	return false
+}
+
+func (x *ListClipsRequest) GetClipIds() []string {
+	if x != nil {
+		return x.ClipIds
+	}
+	return nil
 }
 
 type ListClipsResponse struct {
@@ -406,6 +446,7 @@ func (x *ListClipsResponse) GetClips() []*Clip {
 type GetLatestClipRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Source        string                 `protobuf:"bytes,1,opt,name=source,proto3" json:"source,omitempty"`
+	ExcludeSource string                 `protobuf:"bytes,2,opt,name=exclude_source,json=excludeSource,proto3" json:"exclude_source,omitempty"` // when set, return latest clip whose source != exclude_source
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -443,6 +484,13 @@ func (*GetLatestClipRequest) Descriptor() ([]byte, []int) {
 func (x *GetLatestClipRequest) GetSource() string {
 	if x != nil {
 		return x.Source
+	}
+	return ""
+}
+
+func (x *GetLatestClipRequest) GetExcludeSource() string {
+	if x != nil {
+		return x.ExcludeSource
 	}
 	return ""
 }
@@ -615,14 +663,20 @@ const file_cinch_v1_clips_proto_rawDesc = "" +
 	"\v_media_path\"H\n" +
 	"\x10PushClipResponse\x12\x17\n" +
 	"\aclip_id\x18\x01 \x01(\tR\x06clipId\x12\x1b\n" +
-	"\tbyte_size\x18\x02 \x01(\x03R\bbyteSize\">\n" +
+	"\tbyte_size\x18\x02 \x01(\x03R\bbyteSize\"\xed\x01\n" +
 	"\x10ListClipsRequest\x12\x14\n" +
 	"\x05since\x18\x01 \x01(\tR\x05since\x12\x14\n" +
-	"\x05limit\x18\x02 \x01(\x05R\x05limit\"9\n" +
+	"\x05limit\x18\x02 \x01(\x05R\x05limit\x12#\n" +
+	"\rsource_filter\x18\x03 \x01(\tR\fsourceFilter\x12%\n" +
+	"\x0eexclude_source\x18\x04 \x01(\tR\rexcludeSource\x12#\n" +
+	"\rexclude_image\x18\x05 \x01(\bR\fexcludeImage\x12!\n" +
+	"\fexclude_text\x18\x06 \x01(\bR\vexcludeText\x12\x19\n" +
+	"\bclip_ids\x18\a \x03(\tR\aclipIds\"9\n" +
 	"\x11ListClipsResponse\x12$\n" +
-	"\x05clips\x18\x01 \x03(\v2\x0e.cinch.v1.ClipR\x05clips\".\n" +
+	"\x05clips\x18\x01 \x03(\v2\x0e.cinch.v1.ClipR\x05clips\"U\n" +
 	"\x14GetLatestClipRequest\x12\x16\n" +
-	"\x06source\x18\x01 \x01(\tR\x06source\";\n" +
+	"\x06source\x18\x01 \x01(\tR\x06source\x12%\n" +
+	"\x0eexclude_source\x18\x02 \x01(\tR\rexcludeSource\";\n" +
 	"\x15GetLatestClipResponse\x12\"\n" +
 	"\x04clip\x18\x01 \x01(\v2\x0e.cinch.v1.ClipR\x04clip\",\n" +
 	"\x11DeleteClipRequest\x12\x17\n" +
