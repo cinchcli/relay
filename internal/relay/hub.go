@@ -423,6 +423,26 @@ func (h *Hub) SendClipPinned(userID, clipID string, isPinned bool, pinNote *stri
 	h.sendToEventSubs(userID, event)
 }
 
+// BroadcastWSToUser fans a pre-built WSMessage out to every connected
+// WS device of userID. Generic counterpart to SendClip for non-clip
+// payloads (device_code_pending, future broadcast types). WS-only —
+// does not mirror to Connect-RPC event subs.
+func (h *Hub) BroadcastWSToUser(userID string, msg *protocol.WSMessage) {
+	h.mu.RLock()
+	devs := h.conns[userID]
+	conns := make([]*AgentConn, 0, len(devs))
+	for _, ac := range devs {
+		conns = append(conns, ac)
+	}
+	h.mu.RUnlock()
+
+	for _, ac := range conns {
+		if err := ac.Conn.WriteJSON(msg); err != nil {
+			log.Printf("BroadcastWSToUser write to %s/%s: %v", userID, ac.DeviceID, err)
+		}
+	}
+}
+
 // SendToUser sends an event to all connected devices for a user (WS + event stream).
 func (h *Hub) SendToUser(userID string, event *cinchv1.ServerEvent) {
 	h.mu.RLock()
