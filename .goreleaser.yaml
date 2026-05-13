@@ -36,15 +36,21 @@ dockers:
   - image_templates:
       - "ghcr.io/cinchcli/relay:{{ .Tag }}-amd64"
     use: buildx
-    dockerfile: Dockerfile.goreleaser
+    dockerfile: Dockerfile
     build_flag_templates:
       - "--platform=linux/amd64"
+      - "--target=runtime"
+      - "--build-arg=BIN_SRC=prebuilt"
+      - "--build-arg=VERSION={{ .Version }}"
   - image_templates:
       - "ghcr.io/cinchcli/relay:{{ .Tag }}-arm64"
     use: buildx
-    dockerfile: Dockerfile.goreleaser
+    dockerfile: Dockerfile
     build_flag_templates:
       - "--platform=linux/arm64"
+      - "--target=runtime"
+      - "--build-arg=BIN_SRC=prebuilt"
+      - "--build-arg=VERSION={{ .Version }}"
 
 docker_manifests:
   - name_template: "ghcr.io/cinchcli/relay:{{ .Tag }}"
