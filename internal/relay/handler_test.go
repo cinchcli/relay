@@ -401,6 +401,134 @@ func TestWsTicket_SingleUse(t *testing.T) {
 	}
 }
 
+// ─── REST /clips filter tests ────────────────────────────────────────────────
+
+func httpPushClip(t *testing.T, baseURL, token, content, contentType, source string) string {
+	t.Helper()
+	body, _ := json.Marshal(map[string]interface{}{
+		"content":      content,
+		"content_type": contentType,
+		"source":       source,
+		"byte_size":    int64(len(content)),
+		"encrypted":    false,
+	})
+	req, _ := http.NewRequest("POST", baseURL+"/clips", strings.NewReader(string(body)))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("push: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("push status %d: %s", resp.StatusCode, b)
+	}
+	var out struct {
+		ClipID string `json:"clip_id"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	return out.ClipID
+}
+
+func httpGetClips(t *testing.T, baseURL, token, pathAndQuery string) []*cinchv1.Clip {
+	t.Helper()
+	req, _ := http.NewRequest("GET", baseURL+pathAndQuery, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s: %v", pathAndQuery, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d: %s", resp.StatusCode, b)
+	}
+	var clips []*cinchv1.Clip
+	if err := json.NewDecoder(resp.Body).Decode(&clips); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	return clips
+}
+
+func httpGetLatestClip(t *testing.T, baseURL, token, pathAndQuery string) *cinchv1.Clip {
+	t.Helper()
+	req, _ := http.NewRequest("GET", baseURL+pathAndQuery, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s: %v", pathAndQuery, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status %d: %s", resp.StatusCode, b)
+	}
+	var clip cinchv1.Clip
+	if err := json.NewDecoder(resp.Body).Decode(&clip); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	return &clip
+}
+
+func TestGETClips_SourceFilter(t *testing.T) {
+	ts, _ := setupTestServer(t)
+	token, _, _ := login(t, ts.URL)
+
+	httpPushClip(t, ts.URL, token, "hello", "text", "remote:desktop")
+	httpPushClip(t, ts.URL, token, "world", "text", "remote:phone")
+
+	clips := httpGetClips(t, ts.URL, token, "/clips?source=remote:phone&limit=50")
+	if len(clips) != 1 {
+		t.Fatalf("want 1 clip, got %d: %+v", len(clips), clips)
+	}
+	if clips[0].Source != "remote:phone" {
+		t.Fatalf("want source remote:phone, got %s", clips[0].Source)
+	}
+}
+
+func TestGETClips_ExcludeSource(t *testing.T) {
+	ts, _ := setupTestServer(t)
+	token, _, _ := login(t, ts.URL)
+
+	httpPushClip(t, ts.URL, token, "hello", "text", "remote:desktop")
+	httpPushClip(t, ts.URL, token, "world", "text", "remote:phone")
+
+	clips := httpGetClips(t, ts.URL, token, "/clips?exclude_source=remote:phone&limit=50")
+	if len(clips) != 1 || clips[0].Source != "remote:desktop" {
+		t.Fatalf("want only remote:desktop clip, got %+v", clips)
+	}
+}
+
+func TestGETClipsLatest_ExcludeSource(t *testing.T) {
+	ts, _ := setupTestServer(t)
+	token, _, _ := login(t, ts.URL)
+
+	httpPushClip(t, ts.URL, token, "from-desktop", "text", "remote:desktop")
+	httpPushClip(t, ts.URL, token, "from-phone", "text", "remote:phone")
+
+	clip := httpGetLatestClip(t, ts.URL, token, "/clips/latest?exclude_source=remote:phone")
+	if clip.Content != "from-desktop" {
+		t.Fatalf("want from-desktop, got %+v", clip)
+	}
+}
+
+func TestGETClipsLatest_RejectsSourceAndExcludeSourceTogether(t *testing.T) {
+	ts, _ := setupTestServer(t)
+	token, _, _ := login(t, ts.URL)
+
+	req, _ := http.NewRequest("GET", ts.URL+"/clips/latest?source=remote:desktop&exclude_source=remote:phone", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d", resp.StatusCode)
+	}
+}
+
 // TestRemovedEndpoints guards against accidental re-introduction of the
 // pair-token routes. Both must return 404 from the mux — the handlers
 // themselves were deleted in the OAuth-only migration.

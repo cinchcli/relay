@@ -563,36 +563,59 @@ func (h *Handler) PushClip(w http.ResponseWriter, r *http.Request) {
 }
 
 // ListClips returns recent clips for the authenticated user.
-// Accepts optional query params: ?since=<RFC3339> and ?limit=<int>.
+// Accepts optional query params: ?since=<RFC3339>, ?limit=<int>, ?source=<string>,
+// ?exclude_source=<string>, ?exclude_image=true, ?exclude_text=true, and repeated ?clip_id=<id>.
 func (h *Handler) ListClips(w http.ResponseWriter, r *http.Request) {
 	userID := r.Header.Get("X-User-ID")
-
-	var sinceTime time.Time
-	if sinceStr := r.URL.Query().Get("since"); sinceStr != "" {
-		t, err := time.Parse(time.RFC3339, sinceStr)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_since", "invalid since parameter", "")
-			return
-		}
-		sinceTime = t
-	}
+	q := r.URL.Query()
 
 	limit := 50
-	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+	if limitStr := q.Get("limit"); limitStr != "" {
 		n, err := strconv.Atoi(limitStr)
 		if err != nil || n < 0 {
 			writeError(w, http.StatusBadRequest, "invalid_limit", "invalid limit parameter", "")
 			return
 		}
-		if n > 100 {
-			n = 100
+		if n > 200 {
+			n = 200
 		}
 		if n > 0 {
 			limit = n
 		}
 	}
 
-	clips, err := h.store.ListClipsSince(userID, sinceTime, limit)
+	sourceFilter := q.Get("source")
+	excludeSource := q.Get("exclude_source")
+	excludeImage := q.Get("exclude_image") == "true"
+	excludeText := q.Get("exclude_text") == "true"
+	clipIDs := q["clip_id"]
+
+	// Backwards-compat: when only `since` is set, preserve oldest-first replay semantics.
+	if sinceStr := q.Get("since"); sinceStr != "" &&
+		sourceFilter == "" && excludeSource == "" &&
+		!excludeImage && !excludeText && len(clipIDs) == 0 {
+		sinceTime, err := time.Parse(time.RFC3339, sinceStr)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_since", "invalid since parameter", "")
+			return
+		}
+		clips, err := h.store.ListClipsSince(userID, sinceTime, limit)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "list failed", err.Error(), "")
+			return
+		}
+		writeJSON(w, http.StatusOK, clips)
+		return
+	}
+
+	clips, err := h.store.ListClipsFiltered(userID, ListFilter{
+		Limit:         limit,
+		SourceFilter:  sourceFilter,
+		ExcludeSource: excludeSource,
+		ExcludeImage:  excludeImage,
+		ExcludeText:   excludeText,
+		ClipIDs:       clipIDs,
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "list failed", err.Error(), "")
 		return
@@ -701,21 +724,41 @@ func (h *Handler) PullClipboard(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GetLatestClip returns the most recent clip from a specific source.
+// GetLatestClip returns the most recent clip for the authenticated user,
+// filtered by source or excluding a source. Exactly one of source or
+// exclude_source must be provided.
 func (h *Handler) GetLatestClip(w http.ResponseWriter, r *http.Request) {
 	userID := r.Header.Get("X-User-ID")
-	source := r.URL.Query().Get("source")
-	if source == "" {
-		writeError(w, http.StatusBadRequest, "missing source", "source query parameter is required", "Usage: cinch pull --from <hostname>")
+	q := r.URL.Query()
+	source := q.Get("source")
+	excludeSource := q.Get("exclude_source")
+
+	if source != "" && excludeSource != "" {
+		writeError(w, http.StatusBadRequest, "invalid_arguments", "source and exclude_source are mutually exclusive", "")
+		return
+	}
+	if source == "" && excludeSource == "" {
+		writeError(w, http.StatusBadRequest, "missing source", "source or exclude_source query parameter is required", "Usage: cinch pull --from <hostname>")
 		return
 	}
 
-	clip, err := h.store.GetLatestClipBySource(userID, source)
+	var (
+		clip *cinchv1.Clip
+		err  error
+	)
+	if excludeSource != "" {
+		clip, err = h.store.GetLatestClipExcludingSource(userID, excludeSource)
+	} else {
+		clip, err = h.store.GetLatestClipBySource(userID, source)
+	}
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "not found", "no matching clip", "")
+			return
+		}
 		writeError(w, http.StatusNotFound, "not found", err.Error(), "No clips from this source yet")
 		return
 	}
-
 	writeJSON(w, http.StatusOK, clip)
 }
 
