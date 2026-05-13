@@ -115,16 +115,18 @@ func migrate(db *sql.DB) error {
 		);
 
 		CREATE TABLE IF NOT EXISTS device_codes (
-			device_code TEXT PRIMARY KEY,
-			user_code   TEXT UNIQUE NOT NULL,
-			hostname    TEXT DEFAULT '',
-			machine_id  TEXT,
-			user_id     TEXT,
-			device_id   TEXT,
-			token       TEXT,
-			status      TEXT DEFAULT 'pending',
-			created_at  TIMESTAMPTZ DEFAULT NOW(),
-			expires_at  TIMESTAMPTZ NOT NULL
+			device_code     TEXT PRIMARY KEY,
+			user_code       TEXT UNIQUE NOT NULL,
+			hostname        TEXT DEFAULT '',
+			machine_id      TEXT,
+			user_id         TEXT,
+			device_id       TEXT,
+			token           TEXT,
+			status          TEXT DEFAULT 'pending',
+			created_at      TIMESTAMPTZ DEFAULT NOW(),
+			expires_at      TIMESTAMPTZ NOT NULL,
+			pending_user_id TEXT,
+			requester_ip    TEXT
 		);
 
 		CREATE TABLE IF NOT EXISTS clip_tombstones (
@@ -254,6 +256,16 @@ func migrate(db *sql.DB) error {
 	} {
 		if _, err := db.Exec(stmt); err != nil {
 			return fmt.Errorf("adding pin columns to clips: %w", err)
+		}
+	}
+
+	// Add desktop-approval push columns to device_codes for existing databases.
+	for _, stmt := range []string{
+		`ALTER TABLE device_codes ADD COLUMN IF NOT EXISTS pending_user_id TEXT`,
+		`ALTER TABLE device_codes ADD COLUMN IF NOT EXISTS requester_ip TEXT`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("adding desktop-approval columns to device_codes: %w", err)
 		}
 	}
 
