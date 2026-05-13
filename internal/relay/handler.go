@@ -809,6 +809,25 @@ func (h *Handler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			}
 		}()
 
+		// Replay pending device-code approval requests for this user.
+		// Closes the UX gap where a desktop was offline at DeviceCodeStart
+		// fan-out time and would otherwise miss the prompt entirely.
+		go func() {
+			pendingCodes, err := h.store.ListPendingDeviceCodes(userID)
+			if err != nil {
+				log.Printf("ListPendingDeviceCodes: %v", err)
+				return
+			}
+			for _, p := range pendingCodes {
+				conn.WriteJSON(protocol.WSMessage{ //nolint:errcheck
+					Action:      protocol.ActionDeviceCodePending,
+					UserCode:    p.UserCode,
+					Hostname:    p.Hostname,
+					RequestedAt: p.RequestedAt.Unix(),
+				})
+			}
+		}()
+
 		// Read loop for agent messages.
 		go func() {
 			defer h.hub.Remove(userID, deviceID)
@@ -938,6 +957,25 @@ func (h *Handler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 				Action:   protocol.ActionKeyExchangeRequested,
 				DeviceID: d.Id,
 				Hostname: d.Hostname,
+			})
+		}
+	}()
+
+	// Replay pending device-code approval requests for this user.
+	// Closes the UX gap where a desktop was offline at DeviceCodeStart
+	// fan-out time and would otherwise miss the prompt entirely.
+	go func() {
+		pendingCodes, err := h.store.ListPendingDeviceCodes(userID)
+		if err != nil {
+			log.Printf("ListPendingDeviceCodes: %v", err)
+			return
+		}
+		for _, p := range pendingCodes {
+			conn.WriteJSON(protocol.WSMessage{ //nolint:errcheck
+				Action:      protocol.ActionDeviceCodePending,
+				UserCode:    p.UserCode,
+				Hostname:    p.Hostname,
+				RequestedAt: p.RequestedAt.Unix(),
 			})
 		}
 	}()

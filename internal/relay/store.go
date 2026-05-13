@@ -1407,6 +1407,42 @@ func (s *Store) ListPendingKeyExchanges(userID string) ([]*cinchv1.Device, error
 	return devices, rows.Err()
 }
 
+// PendingDeviceCodeRow is a single unexpired pending device-code row, used
+// for the WS-connect sweep that replays device_code_pending broadcasts to
+// desktops that were offline at DeviceCodeStart time.
+type PendingDeviceCodeRow struct {
+	UserCode    string
+	Hostname    string
+	RequesterIP string
+	RequestedAt time.Time
+}
+
+// ListPendingDeviceCodes returns unexpired 'pending' device_codes whose
+// pending_user_id matches userID. Used to replay device_code_pending
+// broadcasts when a desktop reconnects after the initial DeviceCodeStart
+// fan-out, so an offline desktop still sees the approval prompt.
+func (s *Store) ListPendingDeviceCodes(userID string) ([]PendingDeviceCodeRow, error) {
+	rows, err := s.db.Query(
+		`SELECT user_code, COALESCE(hostname, ''), COALESCE(requester_ip, ''), created_at
+		 FROM device_codes
+		 WHERE pending_user_id = $1 AND status = 'pending' AND expires_at > NOW()`,
+		userID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("listing pending device codes: %w", err)
+	}
+	defer rows.Close()
+	var out []PendingDeviceCodeRow
+	for rows.Next() {
+		var p PendingDeviceCodeRow
+		if err := rows.Scan(&p.UserCode, &p.Hostname, &p.RequesterIP, &p.RequestedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 // ── Tombstone methods ────────────────────────────────────────────────────────
 
 // InsertTombstone records that a clip was deleted. Idempotent.

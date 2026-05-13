@@ -361,6 +361,145 @@ func TestDeviceCodeStart_PerUserRateLimit_DropsExcessBroadcast(t *testing.T) {
 	}
 }
 
+// TestWSConnect_ReplaysPendingDeviceCodes verifies the on-connect sweep:
+// when a desktop is offline at DeviceCodeStart broadcast time, the next
+// WS connection still receives a device_code_pending frame so the
+// approval prompt is not lost. This mirrors the existing key-exchange
+// pending replay at both WS attach sites in handler.go.
+func TestWSConnect_ReplaysPendingDeviceCodes(t *testing.T) {
+	ts, store, hub := keyExchangeTestServer(t)
+
+	// Seed verified-email user "alice" — DeviceCodeStart will resolve
+	// alice@example.com to her user_id and mark the pending row.
+	aliceID, _, _, err := store.UpsertOAuthUser("google", "sub-1", "alice@example.com", true, "alice-mbp", "machine-1")
+	if err != nil {
+		t.Fatalf("seed alice: %v", err)
+	}
+
+	// Insert a pending device code BEFORE any desktop is connected.
+	strPtr := func(s string) *string { return &s }
+	srv := &connectAuthServer{h: NewHandler(store, hub)}
+	startResp, err := srv.DeviceCodeStart(context.Background(),
+		connect.NewRequest(&cinchv1.DeviceCodeStartRequest{
+			Hostname: strPtr("remote-dev-box"),
+			UserHint: strPtr("alice@example.com"),
+		}))
+	if err != nil {
+		t.Fatalf("DeviceCodeStart: %v", err)
+	}
+
+	// Sanity: confirm the store sees a pending row for alice.
+	pending, err := store.ListPendingDeviceCodes(aliceID)
+	if err != nil {
+		t.Fatalf("ListPendingDeviceCodes: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("expected 1 pending row, got %d", len(pending))
+	}
+	if pending[0].UserCode != startResp.Msg.UserCode {
+		t.Fatalf("pending user_code mismatch: got %q want %q", pending[0].UserCode, startResp.Msg.UserCode)
+	}
+
+	// Now connect alice's desktop AFTER the broadcast already fired.
+	tokA, _, devA := keyExchangeLogin(t, ts, "alice-desktop")
+	if _, err := store.db.Exec("UPDATE devices SET user_id = $1 WHERE id = $2", aliceID, devA); err != nil {
+		t.Fatalf("re-parent: %v", err)
+	}
+
+	wsURL := strings.Replace(ts.URL, "http://", "ws://", 1) + "/ws?token=" + tokA
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("ws dial: %v", err)
+	}
+	defer conn.Close()
+
+	// Expect a device_code_pending replay. The key-exchange sweep also runs
+	// but alice has no pending key-exchange rows (no public_key registered),
+	// so the device_code frame should be the first/only message.
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var msg protocol.WSMessage
+	if err := conn.ReadJSON(&msg); err != nil {
+		t.Fatalf("read ws: %v", err)
+	}
+	if msg.Action != protocol.ActionDeviceCodePending {
+		t.Errorf("expected action %q, got %q", protocol.ActionDeviceCodePending, msg.Action)
+	}
+	if msg.UserCode != startResp.Msg.UserCode {
+		t.Errorf("user_code mismatch: got %q want %q", msg.UserCode, startResp.Msg.UserCode)
+	}
+	if msg.Hostname != "remote-dev-box" {
+		t.Errorf("hostname mismatch: got %q want %q", msg.Hostname, "remote-dev-box")
+	}
+	if msg.RequestedAt == 0 {
+		t.Error("expected requested_at to be set")
+	}
+}
+
+// TestListPendingDeviceCodes_FiltersByUserAndStatus verifies the store
+// query: only rows whose pending_user_id matches AND status='pending' AND
+// expires_at > NOW() are returned. Other users' rows, completed/denied
+// rows, and expired rows are all excluded.
+func TestListPendingDeviceCodes_FiltersByUserAndStatus(t *testing.T) {
+	_, store, _ := keyExchangeTestServer(t)
+
+	aliceID, _, _, err := store.UpsertOAuthUser("google", "sub-a", "alice@example.com", true, "alice-mac", "m1")
+	if err != nil {
+		t.Fatalf("seed alice: %v", err)
+	}
+	bobID, _, _, err := store.UpsertOAuthUser("google", "sub-b", "bob@example.com", true, "bob-mac", "m2")
+	if err != nil {
+		t.Fatalf("seed bob: %v", err)
+	}
+
+	// Pending row for alice.
+	if _, _, err := store.CreateDeviceCode("alice-box", "machine-a", "alice@example.com", "203.0.113.10"); err != nil {
+		t.Fatalf("create alice pending: %v", err)
+	}
+	// Pending row for bob — must not appear in alice's listing.
+	if _, _, err := store.CreateDeviceCode("bob-box", "machine-b", "bob@example.com", "198.51.100.7"); err != nil {
+		t.Fatalf("create bob pending: %v", err)
+	}
+	// Already-denied row for alice — must not appear.
+	deniedResp, _, err := store.CreateDeviceCode("alice-denied-box", "machine-c", "alice@example.com", "")
+	if err != nil {
+		t.Fatalf("create alice denied: %v", err)
+	}
+	if err := store.DenyDeviceCode(deniedResp.UserCode, aliceID); err != nil {
+		t.Fatalf("deny: %v", err)
+	}
+	// Expired pending row for alice — must not appear.
+	expiredResp, _, err := store.CreateDeviceCode("alice-expired-box", "machine-d", "alice@example.com", "")
+	if err != nil {
+		t.Fatalf("create alice expired: %v", err)
+	}
+	if _, err := store.db.Exec("UPDATE device_codes SET expires_at = NOW() - INTERVAL '1 hour' WHERE user_code = $1", expiredResp.UserCode); err != nil {
+		t.Fatalf("expire row: %v", err)
+	}
+
+	got, err := store.ListPendingDeviceCodes(aliceID)
+	if err != nil {
+		t.Fatalf("ListPendingDeviceCodes: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 row for alice, got %d", len(got))
+	}
+	if got[0].Hostname != "alice-box" {
+		t.Errorf("hostname: got %q want alice-box", got[0].Hostname)
+	}
+	if got[0].RequesterIP != "203.0.113.10" {
+		t.Errorf("requester_ip: got %q want 203.0.113.10", got[0].RequesterIP)
+	}
+
+	// Bob's listing must see exactly his pending row.
+	gotBob, err := store.ListPendingDeviceCodes(bobID)
+	if err != nil {
+		t.Fatalf("ListPendingDeviceCodes(bob): %v", err)
+	}
+	if len(gotBob) != 1 || gotBob[0].Hostname != "bob-box" {
+		t.Errorf("bob listing: got %+v", gotBob)
+	}
+}
+
 // TestExtractRequesterIP_PrefersXFFFirstHop verifies the helper picks
 // the leftmost IP from X-Forwarded-For chains, falls back to X-Real-IP,
 // and trims whitespace.
