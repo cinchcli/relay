@@ -10,9 +10,10 @@ service ClipsService {
   // Mirrors POST /clips — auth required.
   rpc PushClip(PushClipRequest) returns (PushClipResponse);
 
-  // ListClips returns clips for the caller, filtered by `since` (RFC 3339, exclusive)
-  // and bounded by `limit` (default 50, max 100). When `since` is set results are
-  // oldest-first for delta replay; without `since`, newest-first.
+  // ListClips returns clips for the caller, filtered by `since` (RFC 3339, exclusive),
+  // by `source_filter` / `exclude_source`, by content-type filters, or by `clip_ids`,
+  // and bounded by `limit` (default 50, max 200). When only `since` is set results
+  // are oldest-first for delta replay; otherwise newest-first.
   // Mirrors GET /clips — auth required.
   rpc ListClips(ListClipsRequest) returns (ListClipsResponse);
 
