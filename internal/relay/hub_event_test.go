@@ -1,10 +1,12 @@
 package relay
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	cinchv1 "github.com/cinchcli/relay/internal/gen/cinch/v1"
 	"github.com/cinchcli/relay/internal/protocol"
 	"github.com/gorilla/websocket"
@@ -151,5 +153,166 @@ func TestBroadcastWSToUser_ReachesAllUserDevices(t *testing.T) {
 		if msg.SourceRegion != "us-west-1" {
 			t.Fatalf("conn %d: expected source_region us-west-1, got %q", i, msg.SourceRegion)
 		}
+	}
+}
+
+// TestDeviceCodeStart_BroadcastsPendingToHintedUser verifies the
+// happy path: when DeviceCodeStart receives a user_hint matching a
+// verified-email OAuth user, every WS-connected device of that user
+// receives a device_code_pending frame populated from the request.
+func TestDeviceCodeStart_BroadcastsPendingToHintedUser(t *testing.T) {
+	ts, store, hub := keyExchangeTestServer(t)
+
+	// Seed verified-email user "alice" and capture her user_id so we can
+	// re-parent the WS-connected device onto her account.
+	aliceID, _, _, err := store.UpsertOAuthUser("google", "sub-1", "alice@example.com", true, "alice-mbp", "machine-1")
+	if err != nil {
+		t.Fatalf("seed alice: %v", err)
+	}
+
+	tokA, _, devA := keyExchangeLogin(t, ts, "alice-cli")
+	// Re-parent the freshly-logged-in anonymous device onto alice so the
+	// broadcast (which targets alice's user_id) reaches a live connection.
+	if _, err := store.db.Exec("UPDATE devices SET user_id = $1 WHERE id = $2", aliceID, devA); err != nil {
+		t.Fatalf("re-parent: %v", err)
+	}
+
+	wsURL := strings.Replace(ts.URL, "http://", "ws://", 1) + "/ws?token=" + tokA
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("ws dial: %v", err)
+	}
+	defer conn.Close()
+
+	// Wait for the hub to register the connection under aliceID.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		hub.mu.RLock()
+		n := len(hub.conns[aliceID])
+		hub.mu.RUnlock()
+		if n == 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	srv := &connectAuthServer{h: NewHandler(store, hub)}
+	hostname := "remote-dev-box"
+	userHint := "alice@example.com"
+	req := connect.NewRequest(&cinchv1.DeviceCodeStartRequest{
+		Hostname: &hostname,
+		UserHint: &userHint,
+	})
+	req.Header().Set("X-Forwarded-For", "203.0.113.10, 10.0.0.1")
+
+	resp, err := srv.DeviceCodeStart(context.Background(), req)
+	if err != nil {
+		t.Fatalf("DeviceCodeStart: %v", err)
+	}
+	wantUserCode := resp.Msg.UserCode
+	if wantUserCode == "" {
+		t.Fatal("empty UserCode in response")
+	}
+
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var msg protocol.WSMessage
+	if err := conn.ReadJSON(&msg); err != nil {
+		t.Fatalf("read ws: %v", err)
+	}
+	if msg.Action != protocol.ActionDeviceCodePending {
+		t.Fatalf("expected action %q, got %q", protocol.ActionDeviceCodePending, msg.Action)
+	}
+	if msg.UserCode != wantUserCode {
+		t.Fatalf("expected user_code %q, got %q", wantUserCode, msg.UserCode)
+	}
+	if msg.Hostname != hostname {
+		t.Fatalf("expected hostname %q, got %q", hostname, msg.Hostname)
+	}
+	if msg.RequestedAt == 0 {
+		t.Fatal("expected requested_at to be set")
+	}
+}
+
+// TestDeviceCodeStart_UnknownHintSilent verifies that DeviceCodeStart
+// with a user_hint that does not match any verified-email user does
+// NOT broadcast a device_code_pending frame to any connected device.
+func TestDeviceCodeStart_UnknownHintSilent(t *testing.T) {
+	ts, store, hub := keyExchangeTestServer(t)
+
+	// Connect a device for some user — it must NOT receive a frame.
+	tokA, _, devA := keyExchangeLogin(t, ts, "host-a")
+	userA, err := store.DeviceOwner(devA)
+	if err != nil {
+		t.Fatalf("device owner: %v", err)
+	}
+
+	wsURL := strings.Replace(ts.URL, "http://", "ws://", 1) + "/ws?token=" + tokA
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("ws dial: %v", err)
+	}
+	defer conn.Close()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		hub.mu.RLock()
+		n := len(hub.conns[userA])
+		hub.mu.RUnlock()
+		if n == 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	srv := &connectAuthServer{h: NewHandler(store, hub)}
+	hostname := "remote-dev-box"
+	userHint := "nobody@nowhere.com"
+	req := connect.NewRequest(&cinchv1.DeviceCodeStartRequest{
+		Hostname: &hostname,
+		UserHint: &userHint,
+	})
+
+	if _, err := srv.DeviceCodeStart(context.Background(), req); err != nil {
+		t.Fatalf("DeviceCodeStart: %v", err)
+	}
+
+	conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+	var msg protocol.WSMessage
+	if err := conn.ReadJSON(&msg); err == nil {
+		t.Fatalf("expected timeout, but received frame: %+v", msg)
+	}
+}
+
+// TestExtractRequesterIP_PrefersXFFFirstHop verifies the helper picks
+// the leftmost IP from X-Forwarded-For chains, falls back to X-Real-IP,
+// and trims whitespace.
+func TestExtractRequesterIP_PrefersXFFFirstHop(t *testing.T) {
+	cases := []struct {
+		name string
+		xff  string
+		real string
+		want string
+	}{
+		{"xff single", "203.0.113.10", "", "203.0.113.10"},
+		{"xff chain", "203.0.113.10, 10.0.0.1, 172.16.0.1", "", "203.0.113.10"},
+		{"xff whitespace", "  203.0.113.10  ", "", "203.0.113.10"},
+		{"real ip fallback", "", "198.51.100.7", "198.51.100.7"},
+		{"xff wins over real", "203.0.113.10", "198.51.100.7", "203.0.113.10"},
+		{"empty", "", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := make(map[string][]string)
+			if tc.xff != "" {
+				h["X-Forwarded-For"] = []string{tc.xff}
+			}
+			if tc.real != "" {
+				h["X-Real-Ip"] = []string{tc.real}
+			}
+			got := extractRequesterIP(h)
+			if got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

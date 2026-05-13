@@ -12,7 +12,22 @@ import (
 
 	cinchv1 "github.com/cinchcli/relay/internal/gen/cinch/v1"
 	"github.com/cinchcli/relay/internal/gen/cinch/v1/cinchv1connect"
+	"github.com/cinchcli/relay/internal/protocol"
 )
+
+// extractRequesterIP returns the client IP from request headers, preferring
+// X-Forwarded-For (first hop), falling back to X-Real-IP, then empty. Used
+// for audit logging on device_codes rows; the reverse proxy is responsible
+// for setting these headers.
+func extractRequesterIP(h http.Header) string {
+	if xff := h.Get("X-Forwarded-For"); xff != "" {
+		if i := strings.IndexByte(xff, ','); i >= 0 {
+			return strings.TrimSpace(xff[:i])
+		}
+		return strings.TrimSpace(xff)
+	}
+	return h.Get("X-Real-IP")
+}
 
 // connectAuthServer implements cinchv1connect.AuthServiceHandler.
 // Mirrors AuthLogin handler logic — same store calls, same token generation.
@@ -128,12 +143,22 @@ func (s *connectAuthServer) DeviceCodeStart(ctx context.Context, req *connect.Re
 	if req.Msg.UserHint != nil {
 		userHint = *req.Msg.UserHint
 	}
-	// requesterIP comes from a helper added in Task 1.5. For now pass "".
-	resp, pendingUserID, err := s.h.store.CreateDeviceCode(hostname, machineID, userHint, "")
+	requesterIP := extractRequesterIP(req.Header())
+
+	resp, pendingUserID, err := s.h.store.CreateDeviceCode(hostname, machineID, userHint, requesterIP)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	_ = pendingUserID // wired up in Task 1.5
+
+	if pendingUserID != "" {
+		s.h.hub.BroadcastWSToUser(pendingUserID, &protocol.WSMessage{
+			Action:      protocol.ActionDeviceCodePending,
+			UserCode:    resp.UserCode,
+			Hostname:    hostname,
+			RequestedAt: time.Now().Unix(),
+			// SourceRegion left blank; GeoIP lookup is a future enhancement.
+		})
+	}
 
 	baseURL := s.h.BaseURL
 	verificationURI := baseURL + "/auth/browser?device_code=" + resp.UserCode
