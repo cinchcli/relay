@@ -43,6 +43,13 @@ type WSMessage struct {
 	// device's public key for out-of-band verification before completing
 	// the ECDH key exchange.
 	DeviceKeyFingerprint string `json:"device_key_fingerprint,omitempty"`
+
+	// device_code_pending (relay → desktop) — push-approval notification
+	// for a remote machine that just initiated DeviceCodeStart.
+	// Hostname (above) is reused to carry the requester's hostname.
+	UserCode     string `json:"user_code,omitempty"`
+	RequestedAt  int64  `json:"requested_at,omitempty"`  // unix seconds
+	SourceRegion string `json:"source_region,omitempty"` // best-effort GeoIP, empty if unavailable
 }
 
 // WebSocket action constants.
@@ -63,6 +70,10 @@ const (
 
 	// Pin sync — relay broadcasts pin state changes to all connected clients.
 	ActionClipPinned = "clip_pinned"
+
+	// Remote-login push approval (relay → desktop) — a CLI device-code
+	// flow that resolved a user_hint to this user is awaiting approval.
+	ActionDeviceCodePending = "device_code_pending"
 )
 
 // ContentType is the app-level enum for clip classification. The wire uses
