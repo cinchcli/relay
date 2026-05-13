@@ -71,6 +71,7 @@ func (h *Handler) requireConnectAuth(req connect.AnyRequest) error {
 func (h *Handler) authConnectInterceptor() connect.UnaryInterceptorFunc {
 	authedProcedures := map[string]bool{
 		cinchv1connect.AuthServiceDeviceCodeCompleteProcedure:      true,
+		cinchv1connect.AuthServiceDeviceCodeDenyProcedure:          true,
 		cinchv1connect.AuthServiceRevokeDeviceProcedure:            true,
 		cinchv1connect.AuthServiceKeyBundlePutProcedure:            true,
 		cinchv1connect.AuthServiceKeyBundleGetProcedure:            true,
@@ -192,18 +193,17 @@ func (s *connectAuthServer) DeviceCodePoll(ctx context.Context, req *connect.Req
 		return nil, connect.NewError(connect.CodeNotFound, err)
 	}
 
-	if resp.Status == "expired" {
+	switch resp.Status {
+	case "expired":
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errMsg("device code expired"))
-	}
-
-	if resp.Status == "complete" {
+	case "complete":
 		// Store now returns the proto type natively, so we can pass through.
 		return connect.NewResponse(resp), nil
+	case "denied":
+		return connect.NewResponse(&cinchv1.DeviceCodePollResponse{Status: "denied"}), nil
+	default:
+		return connect.NewResponse(&cinchv1.DeviceCodePollResponse{Status: "pending"}), nil
 	}
-
-	return connect.NewResponse(&cinchv1.DeviceCodePollResponse{
-		Status: "pending",
-	}), nil
 }
 
 // ─── DeviceCodeComplete ──────────────────────────────────────
@@ -226,10 +226,21 @@ func (s *connectAuthServer) DeviceCodeComplete(ctx context.Context, req *connect
 
 // DeviceCodeDeny rejects a pending device-code from an already-signed-in
 // device. The remote CLI's next DeviceCodePoll returns status="denied".
-// Real implementation arrives in Task 1.7; for now this stub satisfies the
-// generated AuthServiceHandler interface so the relay continues to build.
+// Requires auth: the caller's X-User-ID must match the pending row's
+// pending_user_id, so only the targeted user (set by user_hint matching at
+// CreateDeviceCode time) can deny their own pending login requests.
 func (s *connectAuthServer) DeviceCodeDeny(ctx context.Context, req *connect.Request[cinchv1.DeviceCodeDenyRequest]) (*connect.Response[cinchv1.DeviceCodeDenyResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errMsg("not implemented yet"))
+	callerUserID := req.Header().Get("X-User-ID")
+	if callerUserID == "" {
+		return nil, connect.NewError(connect.CodeUnauthenticated, errMsg("auth required"))
+	}
+	if req.Msg.UserCode == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errMsg("user_code is required"))
+	}
+	if err := s.h.store.DenyDeviceCode(req.Msg.UserCode, callerUserID); err != nil {
+		return nil, connect.NewError(connect.CodeNotFound, err)
+	}
+	return connect.NewResponse(&cinchv1.DeviceCodeDenyResponse{Ok: true}), nil
 }
 
 // ─── RevokeDevice ────────────────────────────────────────────
