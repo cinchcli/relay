@@ -162,5 +162,15 @@
         }
       }
     }
+  },
+
+  "WSMessage": {
+    "device_code_pending": {
+      "action": "device_code_pending",
+      "hostname": "dev-box-3",
+      "user_code": "ABCD-1234",
+      "requested_at": 1747171200,
+      "source_region": "us-west"
+    }
   }
 }
