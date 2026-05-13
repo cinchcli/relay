@@ -39,18 +39,14 @@ dockers:
     dockerfile: Dockerfile
     build_flag_templates:
       - "--platform=linux/amd64"
-      - "--target=runtime"
-      - "--build-arg=BIN_SRC=prebuilt"
-      - "--build-arg=VERSION={{ .Version }}"
+      - "--target=runtime-prebuilt"
   - image_templates:
       - "ghcr.io/cinchcli/relay:{{ .Tag }}-arm64"
     use: buildx
     dockerfile: Dockerfile
     build_flag_templates:
       - "--platform=linux/arm64"
-      - "--target=runtime"
-      - "--build-arg=BIN_SRC=prebuilt"
-      - "--build-arg=VERSION={{ .Version }}"
+      - "--target=runtime-prebuilt"
 
 docker_manifests:
   - name_template: "ghcr.io/cinchcli/relay:{{ .Tag }}"
