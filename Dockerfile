@@ -37,7 +37,6 @@ RUN apk add --no-cache ca-certificates curl && \
       -o /etc/ssl/certs/rds-global-bundle.pem && \
     apk del curl
 
-ARG BIN_SRC=builder
 COPY --from=${BIN_SRC} /out/cinch-relay /usr/local/bin/cinch-relay
 
 RUN adduser -D -h /data cinch
