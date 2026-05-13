@@ -916,7 +916,10 @@ func generateUserCode() string {
 }
 
 // CreateDeviceCode generates a device code and user code, inserts into device_codes.
-func (s *Store) CreateDeviceCode(hostname, machineID string) (*cinchv1.DeviceCodeStartResponse, error) {
+// If userHint is a known user email (verified) or user_id, returns that user_id so
+// the caller can broadcast a device_code_pending event. Unknown hints are silently
+// ignored (no enumeration leak).
+func (s *Store) CreateDeviceCode(hostname, machineID, userHint, requesterIP string) (*cinchv1.DeviceCodeStartResponse, string, error) {
 	deviceCode := generateStoreToken()
 	userCode := generateUserCode()
 	expiresAt := time.Now().UTC().Add(5 * time.Minute)
@@ -926,13 +929,42 @@ func (s *Store) CreateDeviceCode(hostname, machineID string) (*cinchv1.DeviceCod
 		mi = machineID
 	}
 
+	var pendingUserID string
+	if userHint != "" {
+		// Email lookup goes through oauth_identities (verified-only, to avoid
+		// spam by an unverified attacker-claimed email). Falls back to a raw
+		// users.id lookup when the hint isn't an email.
+		var uid sql.NullString
+		_ = s.db.QueryRow(
+			`SELECT user_id FROM oauth_identities
+			 WHERE email = $1 AND email_verified = TRUE
+			 ORDER BY last_seen_at DESC LIMIT 1`,
+			userHint,
+		).Scan(&uid)
+		if !uid.Valid {
+			_ = s.db.QueryRow(`SELECT id FROM users WHERE id = $1`, userHint).Scan(&uid)
+		}
+		if uid.Valid {
+			pendingUserID = uid.String
+		}
+	}
+
+	var pendingNullable sql.NullString
+	if pendingUserID != "" {
+		pendingNullable = sql.NullString{String: pendingUserID, Valid: true}
+	}
+	var ipNullable sql.NullString
+	if requesterIP != "" {
+		ipNullable = sql.NullString{String: requesterIP, Valid: true}
+	}
+
 	_, err := s.db.Exec(
-		`INSERT INTO device_codes (device_code, user_code, hostname, machine_id, expires_at)
-		 VALUES ($1, $2, $3, $4, $5)`,
-		deviceCode, userCode, hostname, mi, expiresAt,
+		`INSERT INTO device_codes (device_code, user_code, hostname, machine_id, expires_at, pending_user_id, requester_ip)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		deviceCode, userCode, hostname, mi, expiresAt, pendingNullable, ipNullable,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("creating device code: %w", err)
+		return nil, "", fmt.Errorf("creating device code: %w", err)
 	}
 
 	intervalMs := int64(1000)
@@ -942,7 +974,7 @@ func (s *Store) CreateDeviceCode(hostname, machineID string) (*cinchv1.DeviceCod
 		ExpiresIn:  300,
 		Interval:   3,
 		IntervalMs: &intervalMs,
-	}, nil
+	}, pendingUserID, nil
 }
 
 // CreateDeviceForUser provisions a brand-new device row for an existing user.

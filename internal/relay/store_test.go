@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"database/sql"
 	"os"
 	"strings"
 	"testing"
@@ -423,4 +424,56 @@ func columnExists(t *testing.T, s *Store, table, col string) bool {
 		t.Fatalf("information_schema query: %v", err)
 	}
 	return count > 0
+}
+
+func TestCreateDeviceCode_KnownEmailSetsPendingUserID(t *testing.T) {
+	store := newTestStore(t)
+
+	userID, _, _, err := store.UpsertOAuthUser("google", "sub-123", "alice@example.com", true, "alice-mbp", "machine-1")
+	if err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+
+	resp, gotUserID, err := store.CreateDeviceCode("dev-box-3", "machine-2", "alice@example.com", "203.0.113.10")
+	if err != nil {
+		t.Fatalf("CreateDeviceCode: %v", err)
+	}
+	if resp.DeviceCode == "" || resp.UserCode == "" {
+		t.Fatalf("missing codes")
+	}
+	if gotUserID != userID {
+		t.Errorf("pending_user_id mismatch: got %q want %q", gotUserID, userID)
+	}
+}
+
+func TestCreateDeviceCode_UnknownEmailReturnsEmptyUserID(t *testing.T) {
+	store := newTestStore(t)
+
+	_, gotUserID, err := store.CreateDeviceCode("dev-box-3", "machine-2", "nobody@nowhere.com", "203.0.113.10")
+	if err != nil {
+		t.Fatalf("CreateDeviceCode: %v", err)
+	}
+	if gotUserID != "" {
+		t.Errorf("expected empty pending_user_id for unknown email, got %q", gotUserID)
+	}
+}
+
+func TestCreateDeviceCode_PersistsRequesterIP(t *testing.T) {
+	store := newTestStore(t)
+
+	resp, _, err := store.CreateDeviceCode("dev-box-3", "machine-2", "", "203.0.113.10")
+	if err != nil {
+		t.Fatalf("CreateDeviceCode: %v", err)
+	}
+
+	var ip sql.NullString
+	err = store.DB().QueryRow(
+		`SELECT requester_ip FROM device_codes WHERE user_code = $1`, resp.UserCode,
+	).Scan(&ip)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if ip.String != "203.0.113.10" {
+		t.Errorf("requester_ip mismatch: got %q want %q", ip.String, "203.0.113.10")
+	}
 }

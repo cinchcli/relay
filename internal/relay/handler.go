@@ -1786,11 +1786,12 @@ func (h *Handler) IssueDeviceCode(w http.ResponseWriter, r *http.Request) {
 		machineID = *req.MachineId
 	}
 
-	resp, err := h.store.CreateDeviceCode(hostname, machineID)
+	resp, pendingUserID, err := h.store.CreateDeviceCode(hostname, machineID, "", "")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "device_code_failed", err.Error(), "")
 		return
 	}
+	_ = pendingUserID // legacy HTTP path stays unchanged; broadcast wiring lives on the Connect-RPC route
 
 	// Build verification URI from BaseURL or derive from request
 	baseURL := h.BaseURL

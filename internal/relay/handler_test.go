@@ -161,7 +161,7 @@ func TestPollDeviceCode_Expired(t *testing.T) {
 	_ = ts // keep the original for reference
 
 	// Issue a device code, then manually expire it
-	dcResp, err := store.CreateDeviceCode("test-cli", "")
+	dcResp, _, err := store.CreateDeviceCode("test-cli", "", "", "")
 	if err != nil {
 		t.Fatalf("create device code failed: %v", err)
 	}
