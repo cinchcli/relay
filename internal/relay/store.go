@@ -1019,6 +1019,28 @@ func (s *Store) CompleteDeviceCode(userCode, userID, deviceID, token string) err
 	return nil
 }
 
+// DenyDeviceCode marks a pending device-code row as 'denied', provided the row's
+// pending_user_id matches the supplied userID. Used by an already-signed-in
+// device to reject a pending remote-login request before the 5-minute expiry.
+// Returns an error if no matching pending row exists (not yours, expired,
+// already used, or wrong code).
+func (s *Store) DenyDeviceCode(userCode, userID string) error {
+	res, err := s.db.Exec(
+		`UPDATE device_codes SET status='denied'
+		 WHERE user_code = $1 AND status='pending'
+		   AND expires_at > NOW() AND pending_user_id = $2`,
+		userCode, userID,
+	)
+	if err != nil {
+		return fmt.Errorf("denying device code: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("device code not found, already used, expired, or not yours")
+	}
+	return nil
+}
+
 // PollDeviceCode checks the status of a device code.
 func (s *Store) PollDeviceCode(deviceCode string) (*cinchv1.DeviceCodePollResponse, error) {
 	var status, userID, deviceID, token sql.NullString
@@ -1037,6 +1059,10 @@ func (s *Store) PollDeviceCode(deviceCode string) (*cinchv1.DeviceCodePollRespon
 
 	if time.Now().UTC().After(expiresAt) {
 		return &cinchv1.DeviceCodePollResponse{Status: "expired"}, nil
+	}
+
+	if status.String == "denied" {
+		return &cinchv1.DeviceCodePollResponse{Status: "denied"}, nil
 	}
 
 	if status.String == "complete" {
