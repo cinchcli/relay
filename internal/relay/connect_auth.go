@@ -185,6 +185,16 @@ func (s *connectAuthServer) DeviceCodeComplete(ctx context.Context, req *connect
 	}), nil
 }
 
+// ─── DeviceCodeDeny ──────────────────────────────────────────
+
+// DeviceCodeDeny rejects a pending device-code from an already-signed-in
+// device. The remote CLI's next DeviceCodePoll returns status="denied".
+// Real implementation arrives in Task 1.7; for now this stub satisfies the
+// generated AuthServiceHandler interface so the relay continues to build.
+func (s *connectAuthServer) DeviceCodeDeny(ctx context.Context, req *connect.Request[cinchv1.DeviceCodeDenyRequest]) (*connect.Response[cinchv1.DeviceCodeDenyResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errMsg("not implemented yet"))
+}
+
 // ─── RevokeDevice ────────────────────────────────────────────
 
 func (s *connectAuthServer) RevokeDevice(ctx context.Context, req *connect.Request[cinchv1.RevokeDeviceRequest]) (*connect.Response[cinchv1.RevokeDeviceResponse], error) {
