@@ -39,6 +39,16 @@
       "byte_size": 5,
       "encrypted": true,
       "created_at": "2026-05-07T00:00:00Z"
+    },
+    "pinned_with_note": {
+      "clip_id": "01HPIN0000000000000000000",
+      "user_id": "user_42",
+      "content": "important snippet",
+      "content_type": "text",
+      "source": "remote:laptop",
+      "created_at": "2026-05-12T10:00:00Z",
+      "is_pinned": true,
+      "pin_note": "remember this"
     }
   },
 
@@ -125,7 +135,8 @@
       "online": true,
       "nickname": "main",
       "public_key": "abc123base64",
-      "public_key_fingerprint": "deadbeef"
+      "public_key_fingerprint": "deadbeef",
+      "machine_id": "23856754c515bc5a"
     }
   },
 

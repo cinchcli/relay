@@ -74,6 +74,8 @@ func migrate(db *sql.DB) error {
 			media_path   TEXT,
 			created_at   TIMESTAMPTZ DEFAULT NOW(),
 			encrypted    BOOLEAN DEFAULT FALSE,
+			is_pinned    BOOLEAN NOT NULL DEFAULT FALSE,
+			pin_note     TEXT,
 			FOREIGN KEY (user_id) REFERENCES users(id)
 		);
 
@@ -242,6 +244,16 @@ func migrate(db *sql.DB) error {
 	for _, col := range []string{"pair_token", "token", "token_migrated_at"} {
 		if _, err := db.Exec(fmt.Sprintf("ALTER TABLE users DROP COLUMN IF EXISTS %s", col)); err != nil {
 			return fmt.Errorf("dropping users.%s: %w", col, err)
+		}
+	}
+
+	// Add pin columns to clips table for existing databases.
+	for _, stmt := range []string{
+		`ALTER TABLE clips ADD COLUMN IF NOT EXISTS is_pinned BOOLEAN NOT NULL DEFAULT FALSE`,
+		`ALTER TABLE clips ADD COLUMN IF NOT EXISTS pin_note TEXT`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("adding pin columns to clips: %w", err)
 		}
 	}
 
@@ -597,7 +609,7 @@ func (s *Store) ListClips(userID string, limit int) ([]*cinchv1.Clip, error) {
 	}
 
 	rows, err := s.db.Query(
-		`SELECT id, user_id, content, content_type, source, label, byte_size, media_path, created_at, encrypted
+		`SELECT id, user_id, content, content_type, source, label, byte_size, media_path, created_at, encrypted, is_pinned, pin_note
 		 FROM clips WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2`,
 		userID, limit,
 	)
@@ -610,13 +622,18 @@ func (s *Store) ListClips(userID string, limit int) ([]*cinchv1.Clip, error) {
 	for rows.Next() {
 		c := &cinchv1.Clip{}
 		var mediaPath sql.NullString
+		var pinNote sql.NullString
 		var createdAt time.Time
-		if err := rows.Scan(&c.ClipId, &c.UserId, &c.Content, &c.ContentType, &c.Source, &c.Label, &c.ByteSize, &mediaPath, &createdAt, &c.Encrypted); err != nil {
+		if err := rows.Scan(&c.ClipId, &c.UserId, &c.Content, &c.ContentType, &c.Source, &c.Label, &c.ByteSize, &mediaPath, &createdAt, &c.Encrypted, &c.IsPinned, &pinNote); err != nil {
 			return nil, err
 		}
 		if mediaPath.Valid && mediaPath.String != "" {
 			s := mediaPath.String
 			c.MediaPath = &s
+		}
+		if pinNote.Valid && pinNote.String != "" {
+			s := pinNote.String
+			c.PinNote = &s
 		}
 		c.CreatedAt = protocol.FormatRFC3339(createdAt)
 		clips = append(clips, c)
@@ -632,7 +649,7 @@ func (s *Store) ListClipsSince(userID string, since time.Time, limit int) ([]*ci
 
 	rows, err := s.db.Query(`
 		SELECT id, user_id, content, content_type, source, label, byte_size,
-		       media_path, created_at, encrypted
+		       media_path, created_at, encrypted, is_pinned, pin_note
 		FROM clips
 		WHERE user_id = $1 AND created_at > $2
 		ORDER BY created_at ASC
@@ -647,13 +664,18 @@ func (s *Store) ListClipsSince(userID string, since time.Time, limit int) ([]*ci
 	for rows.Next() {
 		c := &cinchv1.Clip{}
 		var mediaPath sql.NullString
+		var pinNote sql.NullString
 		var createdAt time.Time
-		if err := rows.Scan(&c.ClipId, &c.UserId, &c.Content, &c.ContentType, &c.Source, &c.Label, &c.ByteSize, &mediaPath, &createdAt, &c.Encrypted); err != nil {
+		if err := rows.Scan(&c.ClipId, &c.UserId, &c.Content, &c.ContentType, &c.Source, &c.Label, &c.ByteSize, &mediaPath, &createdAt, &c.Encrypted, &c.IsPinned, &pinNote); err != nil {
 			return nil, err
 		}
 		if mediaPath.Valid && mediaPath.String != "" {
 			s := mediaPath.String
 			c.MediaPath = &s
+		}
+		if pinNote.Valid && pinNote.String != "" {
+			s := pinNote.String
+			c.PinNote = &s
 		}
 		c.CreatedAt = protocol.FormatRFC3339(createdAt)
 		clips = append(clips, c)
@@ -697,16 +719,21 @@ func (s *Store) DeleteClipReturningMedia(userID, clipID string) (mediaPath strin
 func (s *Store) GetLatestClipBySource(userID, source string) (*cinchv1.Clip, error) {
 	c := &cinchv1.Clip{}
 	var mediaPath sql.NullString
+	var pinNote sql.NullString
 	var createdAt time.Time
 	err := s.db.QueryRow(
-		`SELECT id, user_id, content, content_type, source, label, byte_size, media_path, created_at, encrypted
+		`SELECT id, user_id, content, content_type, source, label, byte_size, media_path, created_at, encrypted, is_pinned, pin_note
 		 FROM clips WHERE user_id = $1 AND source = $2
 		 ORDER BY created_at DESC LIMIT 1`,
 		userID, source,
-	).Scan(&c.ClipId, &c.UserId, &c.Content, &c.ContentType, &c.Source, &c.Label, &c.ByteSize, &mediaPath, &createdAt, &c.Encrypted)
+	).Scan(&c.ClipId, &c.UserId, &c.Content, &c.ContentType, &c.Source, &c.Label, &c.ByteSize, &mediaPath, &createdAt, &c.Encrypted, &c.IsPinned, &pinNote)
 	if mediaPath.Valid && mediaPath.String != "" {
-		s := mediaPath.String
-		c.MediaPath = &s
+		mp := mediaPath.String
+		c.MediaPath = &mp
+	}
+	if pinNote.Valid && pinNote.String != "" {
+		pn := pinNote.String
+		c.PinNote = &pn
 	}
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("no clips from source %s", source)
@@ -716,6 +743,22 @@ func (s *Store) GetLatestClipBySource(userID, source string) (*cinchv1.Clip, err
 	}
 	c.CreatedAt = protocol.FormatRFC3339(createdAt)
 	return c, nil
+}
+
+// SetClipPin sets or clears the pin state for a clip owned by the caller.
+func (s *Store) SetClipPin(userID, clipID string, isPinned bool, pinNote *string) error {
+	res, err := s.db.Exec(
+		`UPDATE clips SET is_pinned = $1, pin_note = $2 WHERE id = $3 AND user_id = $4`,
+		isPinned, pinNote, clipID, userID,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("clip not found")
+	}
+	return nil
 }
 
 // UpdateDeviceActivity increments clip count and updates last_push_at.

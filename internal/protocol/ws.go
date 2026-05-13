@@ -60,6 +60,9 @@ const (
 
 	// Phase 4.5 — E2EE key exchange.
 	ActionKeyExchangeRequested = "key_exchange_requested"
+
+	// Pin sync — relay broadcasts pin state changes to all connected clients.
+	ActionClipPinned = "clip_pinned"
 )
 
 // ContentType is the app-level enum for clip classification. The wire uses

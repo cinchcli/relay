@@ -708,6 +708,37 @@ func (h *Handler) GetLatestClip(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, clip)
 }
 
+// SetClipPin sets or clears the pin state for a clip owned by the caller.
+func (h *Handler) SetClipPin(w http.ResponseWriter, r *http.Request) {
+	userID := r.Header.Get("X-User-ID")
+	clipID := r.PathValue("id")
+	if clipID == "" {
+		writeError(w, http.StatusBadRequest, "missing_id", "Clip ID required", "")
+		return
+	}
+
+	var req struct {
+		IsPinned bool    `json:"is_pinned"`
+		PinNote  *string `json:"pin_note,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "Could not parse request body", "")
+		return
+	}
+
+	if err := h.store.SetClipPin(userID, clipID, req.IsPinned, req.PinNote); err != nil {
+		if err.Error() == "clip not found" {
+			writeError(w, http.StatusNotFound, "clip_not_found", "Clip not found", "")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "update_failed", err.Error(), "")
+		return
+	}
+
+	h.hub.SendClipPinned(userID, clipID, req.IsPinned, req.PinNote)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
 // ListDevices returns paired devices with online status.
 func (h *Handler) ListDevices(w http.ResponseWriter, r *http.Request) {
 	userID := r.Header.Get("X-User-ID")
@@ -1908,6 +1939,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("OPTIONS /clips", h.DemoCORS(func(w http.ResponseWriter, r *http.Request) {}))
 	mux.HandleFunc("GET /clips", h.RequireAuth(h.ListClips))
 	mux.HandleFunc("DELETE /clips/{id}", h.RequireAuth(h.DeleteClip))
+	mux.HandleFunc("POST /clips/{id}/pin", h.RequireAuth(h.SetClipPin))
 	mux.HandleFunc("GET /tombstones", h.RequireAuth(h.ListTombstones))
 	mux.HandleFunc("POST /pull", h.RequireAuth(h.PullClipboard))
 	mux.HandleFunc("GET /clips/latest", h.RequireAuth(h.GetLatestClip))

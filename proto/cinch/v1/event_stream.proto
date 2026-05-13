@@ -26,6 +26,12 @@ message ClipDeletedEvent {
   string clip_id = 1;
 }
 
+message ClipPinnedEvent {
+  string          clip_id   = 1;
+  bool            is_pinned = 2;
+  optional string pin_note  = 3;
+}
+
 message ServerEvent {
   oneof event {
     NewClipEvent       new_clip       = 1;
@@ -34,6 +40,7 @@ message ServerEvent {
     TokenRotatedEvent  token_rotated  = 4;
     KeyExchangeEvent   key_exchange   = 5;
     ClipDeletedEvent   clip_deleted   = 6;
+    ClipPinnedEvent    clip_pinned    = 7;
   }
 }
 

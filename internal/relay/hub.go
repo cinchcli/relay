@@ -73,6 +73,15 @@ func serverEventToWSMessage(e *cinchv1.ServerEvent) *protocol.WSMessage {
 			Action: protocol.ActionClipDeleted,
 			Clip:   &cinchv1.Clip{ClipId: ev.ClipDeleted.ClipId},
 		}
+	case *cinchv1.ServerEvent_ClipPinned:
+		return &protocol.WSMessage{
+			Action: protocol.ActionClipPinned,
+			Clip: &cinchv1.Clip{
+				ClipId:   ev.ClipPinned.ClipId,
+				IsPinned: ev.ClipPinned.IsPinned,
+				PinNote:  ev.ClipPinned.PinNote,
+			},
+		}
 	default:
 		return nil
 	}
@@ -378,6 +387,36 @@ func (h *Hub) SendClipDeleted(userID, clipID string) {
 	for _, ac := range conns {
 		if err := ac.Conn.WriteJSON(wsMsg); err != nil {
 			log.Printf("SendClipDeleted write error for device %s: %v", ac.DeviceID, err)
+		}
+	}
+
+	h.sendToEventSubs(userID, event)
+}
+
+// SendClipPinned broadcasts a clip_pinned event to all connected devices of the user.
+// Delivers to both WS conns and Connect event stream subscribers.
+func (h *Hub) SendClipPinned(userID, clipID string, isPinned bool, pinNote *string) {
+	h.mu.RLock()
+	devs := h.conns[userID]
+	conns := make([]*AgentConn, 0, len(devs))
+	for _, ac := range devs {
+		conns = append(conns, ac)
+	}
+	h.mu.RUnlock()
+
+	wsMsg := &protocol.WSMessage{
+		Action: protocol.ActionClipPinned,
+		Clip:   &cinchv1.Clip{ClipId: clipID, IsPinned: isPinned, PinNote: pinNote},
+	}
+	event := &cinchv1.ServerEvent{
+		Event: &cinchv1.ServerEvent_ClipPinned{
+			ClipPinned: &cinchv1.ClipPinnedEvent{ClipId: clipID, IsPinned: isPinned, PinNote: pinNote},
+		},
+	}
+
+	for _, ac := range conns {
+		if err := ac.Conn.WriteJSON(wsMsg); err != nil {
+			log.Printf("SendClipPinned write error for device %s: %v", ac.DeviceID, err)
 		}
 	}
 
