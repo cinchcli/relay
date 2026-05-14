@@ -95,3 +95,14 @@ func (s *S3CompatStore) Delete(ctx context.Context, key string) error {
 	}
 	return nil
 }
+
+func (s *S3CompatStore) HealthCheck(ctx context.Context) error {
+	exists, err := s.client.BucketExists(ctx, s.bucket)
+	if err != nil {
+		return fmt.Errorf("media(s3): bucket %q: %w", s.bucket, err)
+	}
+	if !exists {
+		return fmt.Errorf("media(s3): bucket %q not found or not accessible", s.bucket)
+	}
+	return nil
+}

@@ -71,3 +71,14 @@ func (s *LocalStore) Delete(_ context.Context, key string) error {
 	}
 	return nil
 }
+
+func (s *LocalStore) HealthCheck(_ context.Context) error {
+	info, err := os.Stat(s.dir)
+	if err != nil {
+		return fmt.Errorf("media(local): stat %q: %w", s.dir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("media(local): %q is not a directory", s.dir)
+	}
+	return nil
+}
