@@ -19,15 +19,6 @@ type Hub struct {
 	pullMu   sync.Mutex
 	pullReqs map[string]chan string // pull_id → content channel
 
-	// Demo broadcast support — used by /demo/session and /demo/playground.
-	// streamIDs maps a public stream_id (returned to anonymous visitors) to its
-	// owning userID, so /demo/stream/{sid} can resolve subscribers.
-	// demoSubs is the per-userID list of broadcast channels; senders are
-	// non-blocking with default-drop to avoid stalling on slow consumers.
-	demoMu    sync.RWMutex
-	streamIDs map[string]string        // streamID -> userID
-	demoSubs  map[string][]chan string // userID -> subscriber channels
-
 	// eventSubs are Connect-RPC streaming subscribers (parallel to WS conns).
 	// Keyed by userID -> deviceID; fan-out mirrors the WS path.
 	eventSubsMu sync.RWMutex
@@ -91,74 +82,7 @@ func NewHub() *Hub {
 	return &Hub{
 		conns:     make(map[string]map[string]*AgentConn),
 		pullReqs:  make(map[string]chan string),
-		streamIDs: make(map[string]string),
-		demoSubs:  make(map[string][]chan string),
 		eventSubs: make(map[string]map[string]chan *cinchv1.ServerEvent),
-	}
-}
-
-// RegisterStreamID maps a public stream_id to the underlying userID so that
-// anonymous /demo/stream/{sid} subscribers can resolve which broadcast channel
-// to attach to. Idempotent: re-registering an existing streamID rebinds it.
-func (h *Hub) RegisterStreamID(streamID, userID string) {
-	h.demoMu.Lock()
-	h.streamIDs[streamID] = userID
-	h.demoMu.Unlock()
-}
-
-// LookupStreamID returns the userID for a given stream_id, or "" if unknown.
-func (h *Hub) LookupStreamID(streamID string) string {
-	h.demoMu.RLock()
-	defer h.demoMu.RUnlock()
-	return h.streamIDs[streamID]
-}
-
-// SubscribeDemoStream returns a buffered channel that receives every broadcast
-// for this userID until the caller calls UnsubscribeDemoStream. Buffer size 8
-// gives slow consumers headroom; senders drop on full to avoid blocking.
-func (h *Hub) SubscribeDemoStream(userID string) chan string {
-	ch := make(chan string, 8)
-	h.demoMu.Lock()
-	h.demoSubs[userID] = append(h.demoSubs[userID], ch)
-	h.demoMu.Unlock()
-	return ch
-}
-
-// UnsubscribeDemoStream removes a previously-subscribed channel and closes it.
-// Safe to call with a channel that was never registered (no-op).
-func (h *Hub) UnsubscribeDemoStream(userID string, ch chan string) {
-	h.demoMu.Lock()
-	defer h.demoMu.Unlock()
-	subs := h.demoSubs[userID]
-	for i, c := range subs {
-		if c == ch {
-			h.demoSubs[userID] = append(subs[:i], subs[i+1:]...)
-			close(ch)
-			if len(h.demoSubs[userID]) == 0 {
-				delete(h.demoSubs, userID)
-			}
-			return
-		}
-	}
-}
-
-// BroadcastDemoClip fans content out to every subscriber attached to userID's
-// demo stream. Non-blocking: if a subscriber's buffer is full, the message is
-// dropped for that subscriber so a slow client cannot stall the broadcast.
-func (h *Hub) BroadcastDemoClip(userID, content string) {
-	h.demoMu.RLock()
-	subs := h.demoSubs[userID]
-	// Copy slice to avoid holding the lock while sending.
-	snapshot := make([]chan string, len(subs))
-	copy(snapshot, subs)
-	h.demoMu.RUnlock()
-
-	for _, ch := range snapshot {
-		select {
-		case ch <- content:
-		default:
-			// Drop on full — slow consumer cannot stall the fan-out.
-		}
 	}
 }
 

@@ -1,5 +1,5 @@
 // Package protocol holds the relay's hand-written wire types — the WS
-// envelope and the demo/playground/status DTOs that aren't represented in
+// envelope and the demo/status DTOs that aren't represented in
 // `proto/cinch/v1`. Everything that IS in the proto comes from
 // `internal/gen/cinch/v1` directly; there is no more `github.com/cinchcli/protocol`
 // module dependency.

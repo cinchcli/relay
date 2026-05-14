@@ -39,34 +39,6 @@ const (
 	demoAllowOriginL = "http://localhost:4321" // astro dev server
 )
 
-const playgroundRecentMax = 20 // keep last N clips so refreshing visitors see history
-
-// Playground shared session — one session per hour, reset by goroutine.
-// userID = empty string indicates "not yet seeded" (StartPlaygroundReset must be called).
-type playgroundState struct {
-	mu          sync.RWMutex
-	userID      string
-	token       string
-	streamID    string
-	expiresAt   time.Time
-	recentClips []string // last playgroundRecentMax clips, newest last
-}
-
-var playground playgroundState
-
-// ipRateEntry tracks last-push timestamp for the in-memory IP rate limiter
-// for POST /demo/playground/push. Map is goroutine-safe via ipRateMu.
-// Memory bound: ~50 bytes per IP × ~1000 active IPs = trivial; no eviction needed
-// for v1 — entries simply remain after their 30s window expires.
-type ipRateEntry struct {
-	lastPush time.Time
-}
-
-var (
-	ipRateMu  sync.Mutex
-	ipRateMap = map[string]ipRateEntry{}
-)
-
 // loginRateWindow is the minimum interval between anonymous account creations
 // from the same IP. One new account per minute is generous for legitimate use
 // (smoke tests, demos) while blocking trivial DB-bloat attacks.
@@ -819,8 +791,8 @@ func (h *Handler) ListDevices(w http.ResponseWriter, r *http.Request) {
 //
 // Preferred auth path: ?ticket=<ticket> — a short-lived single-use ticket
 // obtained from POST /ws/ticket. The bearer token never appears in the URL.
-// Legacy path: ?token=<token> — kept for the playground and legacy clients
-// during the migration window.
+// Legacy path: ?token=<token> — kept for legacy clients during the
+// migration window.
 func (h *Handler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Ticket path: short-lived, single-use — bearer token not exposed in URL.
 	if ticket := r.URL.Query().Get("ticket"); ticket != "" {
@@ -892,69 +864,6 @@ func (h *Handler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if token == "" {
 		http.Error(w, "missing token", http.StatusUnauthorized)
 		return
-	}
-
-	// Playground shared session: validate against in-memory state before hitting the DB.
-	// The playground token is never written to SQLite, so DB lookups would always fail.
-	playground.mu.RLock()
-	pgToken := playground.token
-	pgUserID := playground.userID
-	pgExpiry := playground.expiresAt
-	playground.mu.RUnlock()
-	if token == pgToken && pgUserID != "" && time.Now().Before(pgExpiry) {
-		// Upgrade and subscribe to the demo broadcast channel.
-		// BroadcastDemoClip sends to demoSubs channels (not the agent conns map),
-		// so we must subscribe here and pump channel messages to the WS connection.
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			log.Printf("ws playground upgrade failed: %v", err)
-			return
-		}
-		// Replay recent clips so refreshing visitors see history immediately.
-		playground.mu.RLock()
-		recent := make([]string, len(playground.recentClips))
-		copy(recent, playground.recentClips)
-		playground.mu.RUnlock()
-		for _, content := range recent {
-			msg := map[string]any{
-				"action": "demo_clip",
-				"clip":   map[string]string{"content": content, "clip_id": ulid.Make().String()},
-			}
-			if err := conn.WriteJSON(msg); err != nil {
-				return
-			}
-		}
-
-		ch := h.hub.SubscribeDemoStream(pgUserID)
-		defer h.hub.UnsubscribeDemoStream(pgUserID, ch)
-		// Detect client disconnect by draining incoming frames in a goroutine.
-		closed := make(chan struct{})
-		go func() {
-			defer close(closed)
-			for {
-				if _, _, err := conn.ReadMessage(); err != nil {
-					return
-				}
-			}
-		}()
-		// Pump broadcast channel → WebSocket until client disconnects or channel closes.
-		for {
-			select {
-			case <-closed:
-				return
-			case content, ok := <-ch:
-				if !ok {
-					return
-				}
-				msg := map[string]any{
-					"action": "demo_clip",
-					"clip":   map[string]string{"content": content, "clip_id": ulid.Make().String()},
-				}
-				if err := conn.WriteJSON(msg); err != nil {
-					return
-				}
-			}
-		}
 	}
 
 	// Per-device token only. The legacy master-token (users.token) lookup
@@ -1208,212 +1117,6 @@ func (h *Handler) DemoSession(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// PlaygroundSession returns the shared playground session.
-// One session is active per hour; all anonymous visitors share it.
-// Per D-decisions: GET /demo/playground returns {token, stream_id, ws_url, relay_url, expires_at, region}.
-func (h *Handler) PlaygroundSession(w http.ResponseWriter, r *http.Request) {
-	playground.mu.RLock()
-	token := playground.token
-	streamID := playground.streamID
-	expiresAt := playground.expiresAt
-	playground.mu.RUnlock()
-
-	if token == "" {
-		writeError(w, http.StatusServiceUnavailable, "not_ready",
-			"Playground session not initialized", "")
-		return
-	}
-
-	wsURL := deriveWSURL(r)
-	relayURL := deriveRelayURL(r)
-	region := os.Getenv("RELAY_REGION")
-	if region == "" {
-		region = "us-east"
-	}
-
-	writeJSON(w, http.StatusOK, protocol.PlaygroundSessionResponse{
-		Token:     token,
-		StreamID:  streamID,
-		ExpiresAt: expiresAt,
-		RelayURL:  relayURL,
-		WSURL:     wsURL,
-		Region:    region,
-	})
-}
-
-// PlaygroundPush accepts unauthenticated text pushes for the shared playground.
-// No auth middleware — visitors are identified by IP for rate limiting (1 push per IP per 30s).
-// Per D-decisions: returns HTTP 429 {"error":"rate_limited","retry_after":30} on rate-limit hit,
-// HTTP 410 on expired session, HTTP 413 on >500 byte content.
-func (h *Handler) PlaygroundPush(w http.ResponseWriter, r *http.Request) {
-	// IP-based rate limit. Prefer X-Forwarded-For when behind a proxy.
-	// Strip port from RemoteAddr (format "IP:port") so all requests from the
-	// same IP share one rate-limit bucket regardless of ephemeral source port.
-	ip := r.RemoteAddr
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		ip = strings.TrimSpace(strings.SplitN(xff, ",", 2)[0])
-	} else if host, _, found := strings.Cut(ip, ":"); found && host != "" {
-		ip = host
-	}
-	ipRateMu.Lock()
-	entry := ipRateMap[ip]
-	if !entry.lastPush.IsZero() && time.Since(entry.lastPush) < 30*time.Second {
-		ipRateMu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusTooManyRequests)
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"error":       "rate_limited",
-			"retry_after": 30,
-		})
-		return
-	}
-	ipRateMap[ip] = ipRateEntry{lastPush: time.Now()}
-	ipRateMu.Unlock()
-
-	var req struct {
-		Content     string `json:"content"`
-		ContentType string `json:"content_type"`
-	}
-	r.Body = http.MaxBytesReader(w, r.Body, 4096) // hard cap before decode; 500-byte content check follows
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", "Could not parse request body", "")
-		return
-	}
-	if req.Content == "" {
-		writeError(w, http.StatusBadRequest, "empty_content", "content is required", "")
-		return
-	}
-	if req.ContentType != "" && req.ContentType != "text" {
-		writeError(w, http.StatusBadRequest, "invalid_content_type",
-			"Only content_type=text is accepted on the playground", "")
-		return
-	}
-	const playgroundMaxBytes = 500
-	if len(req.Content) > playgroundMaxBytes {
-		writeError(w, http.StatusRequestEntityTooLarge, "too_large",
-			fmt.Sprintf("Content exceeds %d bytes", playgroundMaxBytes), "")
-		return
-	}
-
-	// Validate session still active; return 410 if expired (frontend re-fetches on 410).
-	playground.mu.RLock()
-	userID := playground.userID
-	expiresAt := playground.expiresAt
-	playground.mu.RUnlock()
-
-	if userID == "" || time.Now().After(expiresAt) {
-		writeError(w, http.StatusGone, "session_expired",
-			"Playground session has reset. Fetch /demo/playground for a new session.", "")
-		return
-	}
-
-	// Store in recent history so refreshing visitors see the last N clips.
-	playground.mu.Lock()
-	playground.recentClips = append(playground.recentClips, req.Content)
-	if len(playground.recentClips) > playgroundRecentMax {
-		playground.recentClips = playground.recentClips[len(playground.recentClips)-playgroundRecentMax:]
-	}
-	playground.mu.Unlock()
-
-	h.hub.BroadcastDemoClip(userID, req.Content)
-
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
-}
-
-// StartPlaygroundReset seeds the first shared session and starts a goroutine
-// that resets it every hour. Safe to call exactly once at startup; subsequent
-// calls would create duplicate goroutines (they are not idempotent).
-func (h *Handler) StartPlaygroundReset() {
-	h.resetPlayground()
-	go func() {
-		ticker := time.NewTicker(time.Hour)
-		defer ticker.Stop()
-		for range ticker.C {
-			h.resetPlayground()
-		}
-	}()
-}
-
-// resetPlayground rotates the shared playground userID/token/streamID and
-// re-registers the new streamID with the hub. The previous userID's
-// demo subscribers naturally drain when their connection closes.
-func (h *Handler) resetPlayground() {
-	userID := ulid.Make().String()
-	token := generateToken()
-	streamBytes := make([]byte, 4)
-	if _, err := rand.Read(streamBytes); err != nil {
-		log.Printf("playground reset: rand.Read error: %v", err)
-		return
-	}
-	streamID := hex.EncodeToString(streamBytes)
-
-	h.hub.RegisterStreamID(streamID, userID)
-
-	playground.mu.Lock()
-	playground.userID = userID
-	playground.token = token
-	playground.streamID = streamID
-	playground.expiresAt = time.Now().UTC().Add(time.Hour)
-	playground.recentClips = nil // clear history on hourly reset
-	playground.mu.Unlock()
-
-	log.Printf("playground session reset: stream=%s expires=%s",
-		streamID, playground.expiresAt.Format(time.RFC3339))
-}
-
-// DemoStream subscribes to a demo broadcast channel over SSE using the public stream_id.
-// Used by the /playground curl read command: `curl -sN {relay_url}/demo/stream/{sid}`
-func (h *Handler) DemoStream(w http.ResponseWriter, r *http.Request) {
-	sid := r.PathValue("sid")
-	if sid == "" {
-		writeError(w, http.StatusBadRequest, "missing_sid", "stream_id is required", "")
-		return
-	}
-	userID := h.hub.LookupStreamID(sid)
-	if userID == "" {
-		writeError(w, http.StatusNotFound, "unknown_stream", "Stream not found or expired", "")
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
-	w.WriteHeader(http.StatusOK)
-
-	ch := h.hub.SubscribeDemoStream(userID)
-	defer h.hub.UnsubscribeDemoStream(userID, ch)
-
-	plain := r.URL.Query().Get("plain") == "1"
-
-	flusher, canFlush := w.(http.Flusher)
-	if canFlush {
-		flusher.Flush()
-	}
-	for {
-		select {
-		case <-r.Context().Done():
-			return
-		case content, ok := <-ch:
-			if !ok {
-				return
-			}
-			if plain {
-				fmt.Fprintf(w, "%s\n", content)
-			} else {
-				data, _ := json.Marshal(map[string]any{
-					"action": "demo_clip",
-					"clip":   map[string]string{"content": content, "clip_id": ulid.Make().String()},
-				})
-				fmt.Fprintf(w, "data: %s\n\n", data)
-			}
-			if canFlush {
-				flusher.Flush()
-			}
-		}
-	}
-}
-
 // DemoStats returns today's demo push count for the "N developers tried this today" counter.
 func (h *Handler) DemoStats(w http.ResponseWriter, r *http.Request) {
 	count, err := h.store.GetDemoStats()
@@ -1441,10 +1144,9 @@ func requestIsHTTPS(r *http.Request) bool {
 	return false
 }
 
-// deriveRelayURL returns the public URL of the relay (used in the CLI curl
-// command shown on the playground page). RELAY_PUBLIC_URL takes precedence
-// when set, so deployments can pin the exact origin without relying on
-// proxy-header detection.
+// deriveRelayURL returns the public URL of the relay. RELAY_PUBLIC_URL
+// takes precedence when set, so deployments can pin the exact origin
+// without relying on proxy-header detection.
 func deriveRelayURL(r *http.Request) string {
 	if v := os.Getenv("RELAY_PUBLIC_URL"); v != "" {
 		return strings.TrimRight(v, "/")
@@ -2055,14 +1757,6 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("OPTIONS /demo/session", h.DemoCORS(func(w http.ResponseWriter, r *http.Request) {}))
 	mux.HandleFunc("GET /demo/stats", h.DemoCORS(h.DemoStats))
 	mux.HandleFunc("OPTIONS /demo/stats", h.DemoCORS(func(w http.ResponseWriter, r *http.Request) {}))
-
-	// Playground shared-session endpoints (CORS-enabled for /playground page)
-	mux.HandleFunc("GET /demo/playground", h.DemoCORS(h.PlaygroundSession))
-	mux.HandleFunc("OPTIONS /demo/playground", h.DemoCORS(func(w http.ResponseWriter, r *http.Request) {}))
-	mux.HandleFunc("POST /demo/playground/push", h.DemoCORS(h.PlaygroundPush))
-	mux.HandleFunc("OPTIONS /demo/playground/push", h.DemoCORS(func(w http.ResponseWriter, r *http.Request) {}))
-	mux.HandleFunc("GET /demo/stream/{sid}", h.DemoCORS(h.DemoStream))
-	mux.HandleFunc("OPTIONS /demo/stream/{sid}", h.DemoCORS(func(w http.ResponseWriter, r *http.Request) {}))
 
 	// OAuth sign-in routes (no-op when OAuth not configured; self-host falls back to username form)
 	mux.HandleFunc("GET /auth/providers", h.GetProviders)
