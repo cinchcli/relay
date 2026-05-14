@@ -46,7 +46,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to init media backend: %v", err)
 	}
-	log.Printf("media backend: %s", mediaBackendName())
 
 	// Retention sweep: deletes expired remote clips hourly and purges their
 	// media objects from the configured backend.
@@ -92,11 +91,39 @@ func main() {
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
-	handler.StartPlaygroundReset()
+
+	logStartupStatus(mediaStore, handler.OAuth)
 
 	fmt.Printf("cinch relay v%s listening on :%s\n", version, port)
 	if err := http.ListenAndServe(":"+port, mux); err != nil {
 		log.Fatalf("server error: %v", err)
+	}
+}
+
+// logStartupStatus prints one line per subsystem so operators can confirm
+// at a glance that the relay came up with the expected integrations wired.
+// DB connectivity is implicit: NewStore() above already Pings and exits on
+// failure, so reaching this point means the database is reachable.
+func logStartupStatus(mediaStore media.Store, oauth *relay.OAuthProviders) {
+	log.Printf("startup: database ok")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := mediaStore.HealthCheck(ctx); err != nil {
+		log.Printf("startup: media (%s) FAILED: %v", mediaBackendName(), err)
+	} else {
+		log.Printf("startup: media (%s) ok", mediaBackendName())
+	}
+
+	if oauth != nil && oauth.GitHub != nil {
+		log.Printf("startup: oauth github configured")
+	} else {
+		log.Printf("startup: oauth github not configured")
+	}
+	if oauth != nil && oauth.Google != nil {
+		log.Printf("startup: oauth google configured")
+	} else {
+		log.Printf("startup: oauth google not configured")
 	}
 }
 

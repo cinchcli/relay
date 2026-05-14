@@ -23,6 +23,10 @@ type Store interface {
 	// Delete removes the object at key.
 	// Returns nil if the key does not exist.
 	Delete(ctx context.Context, key string) error
+
+	// HealthCheck verifies the backend is reachable and usable.
+	// Called once at startup; should be cheap and non-mutating.
+	HealthCheck(ctx context.Context) error
 }
 
 // NewStore constructs a Store from environment variables.
