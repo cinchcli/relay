@@ -39,6 +39,8 @@ WORKDIR /data
 
 ENV PORT=8080
 EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget -qO- "http://localhost:${PORT}/health" || exit 1
 CMD ["cinch-relay"]
 
 FROM base AS runtime-prebuilt
