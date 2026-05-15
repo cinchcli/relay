@@ -1379,10 +1379,15 @@ func (s *Store) IncrementDemoCounter() error {
 
 // ── E2EE key exchange store methods ─────────────────────────────────────────
 
-// SetDevicePublicKey stores the X25519 public key and its fingerprint for a device.
+// SetDevicePublicKey stores the X25519 public key and its fingerprint for a
+// device. Any previously stored encrypted_key_bundle / ephemeral_public_key is
+// cleared atomically: those values were ECDH-encrypted under the prior
+// pubkey, so a freshly-rotated keypair could not decrypt them. Clearing the
+// bundle puts the device back into ListPendingKeyExchanges so a bearer can
+// share a freshly-encrypted bundle under the new pubkey.
 func (s *Store) SetDevicePublicKey(deviceID, pubKeyB64, fingerprint string) error {
 	res, err := s.db.Exec(
-		"UPDATE devices SET public_key = $1, public_key_fingerprint = $2 WHERE id = $3",
+		"UPDATE devices SET public_key = $1, public_key_fingerprint = $2, encrypted_key_bundle = NULL, ephemeral_public_key = NULL WHERE id = $3",
 		pubKeyB64, fingerprint, deviceID,
 	)
 	if err != nil {

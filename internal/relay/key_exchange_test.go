@@ -255,6 +255,75 @@ func TestRegisterDevicePublicKey_RequiresFields(t *testing.T) {
 	}
 }
 
+// TestRegisterDevicePublicKey_RotationClearsStaleBundle verifies the
+// re-pair regression: when a device rotates its X25519 keypair (e.g.
+// `cinch auth login --force` reuses the same device row but generates a
+// fresh device keypair), the relay-stored encrypted_key_bundle from the
+// previous pubkey is invalidated. Without this, the next
+// poll_key_bundle would return the stale ciphertext and the device
+// would AEAD-fail to decrypt.
+func TestRegisterDevicePublicKey_RotationClearsStaleBundle(t *testing.T) {
+	ts, store, _ := keyExchangeTestServer(t)
+	token, _, deviceID := keyExchangeLogin(t, ts, "host-rotating")
+
+	if err := store.SetDevicePublicKey(deviceID, "pubkey-A", "fp-A"); err != nil {
+		t.Fatalf("set pubkey A: %v", err)
+	}
+	if err := store.SaveKeyBundle(deviceID, "eph-pub-A", "encrypted-under-A"); err != nil {
+		t.Fatalf("save bundle: %v", err)
+	}
+
+	// Pre-rotation: bundle is present.
+	getReq, _ := http.NewRequest(http.MethodGet, ts.URL+"/auth/key-bundle", nil)
+	getReq.Header.Set("Authorization", "Bearer "+token)
+	preResp, err := http.DefaultClient.Do(getReq)
+	if err != nil {
+		t.Fatalf("get pre-rotation: %v", err)
+	}
+	defer preResp.Body.Close()
+	var pre KeyBundleResponse
+	if err := json.NewDecoder(preResp.Body).Decode(&pre); err != nil {
+		t.Fatalf("decode pre: %v", err)
+	}
+	if pre.EncryptedBundle != "encrypted-under-A" {
+		t.Fatalf("pre: expected stored bundle, got %q", pre.EncryptedBundle)
+	}
+
+	// Re-register with a different pubkey (simulating a fresh keypair on re-pair).
+	body, _ := json.Marshal(RegisterPublicKeyRequest{PublicKey: "pubkey-B", Fingerprint: "fp-B"})
+	regReq, _ := http.NewRequest(http.MethodPost, ts.URL+"/auth/device/public-key", bytes.NewReader(body))
+	regReq.Header.Set("Authorization", "Bearer "+token)
+	regReq.Header.Set("Content-Type", "application/json")
+	regResp, err := http.DefaultClient.Do(regReq)
+	if err != nil {
+		t.Fatalf("re-register: %v", err)
+	}
+	defer regResp.Body.Close()
+	if regResp.StatusCode != http.StatusOK {
+		t.Fatalf("re-register status %d", regResp.StatusCode)
+	}
+
+	// Post-rotation: bundle must be cleared (empty fields + non-empty pending_since).
+	postReq, _ := http.NewRequest(http.MethodGet, ts.URL+"/auth/key-bundle", nil)
+	postReq.Header.Set("Authorization", "Bearer "+token)
+	postResp, err := http.DefaultClient.Do(postReq)
+	if err != nil {
+		t.Fatalf("get post-rotation: %v", err)
+	}
+	defer postResp.Body.Close()
+	var post KeyBundleResponse
+	if err := json.NewDecoder(postResp.Body).Decode(&post); err != nil {
+		t.Fatalf("decode post: %v", err)
+	}
+	if post.EncryptedBundle != "" || post.EphemeralPublicKey != "" {
+		t.Fatalf("post: expected cleared bundle, got eph=%q bundle=%q",
+			post.EphemeralPublicKey, post.EncryptedBundle)
+	}
+	if post.PendingSince == "" {
+		t.Fatalf("post: expected pending_since to be set after rotation")
+	}
+}
+
 // TestKeyBundleRetry_NoPubKeyReturns400 verifies retry refuses when the
 // device hasn't yet registered a public key — there is nothing for a
 // key-bearer to encrypt against.
