@@ -375,6 +375,7 @@ func (s *connectAuthServer) RegisterDevicePublicKey(
 	req *connect.Request[cinchv1.RegisterDevicePublicKeyRequest],
 ) (*connect.Response[cinchv1.RegisterDevicePublicKeyResponse], error) {
 	deviceID := req.Header().Get("X-Device-ID")
+	userID := req.Header().Get("X-User-ID")
 	if deviceID == "" {
 		return nil, connect.NewError(connect.CodeUnauthenticated, errMsg("missing device"))
 	}
@@ -386,6 +387,21 @@ func (s *connectAuthServer) RegisterDevicePublicKey(
 			return nil, connect.NewError(connect.CodeNotFound, errMsg("device not found"))
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	// Best-effort broadcast: matches the legacy HTTP handler — a bearer
+	// responds immediately instead of letting the device block on its
+	// 30s key-bundle poll waiting for the next sweep.
+	if userID != "" {
+		if hostname, _, hostErr := s.h.store.GetDeviceHostnameAndPubKey(deviceID); hostErr == nil {
+			s.h.hub.SendToUser(userID, &cinchv1.ServerEvent{
+				Event: &cinchv1.ServerEvent_KeyExchange{
+					KeyExchange: &cinchv1.KeyExchangeEvent{
+						DeviceId: deviceID,
+						Hostname: hostname,
+					},
+				},
+			})
+		}
 	}
 	return connect.NewResponse(&cinchv1.RegisterDevicePublicKeyResponse{Ok: true}), nil
 }

@@ -348,10 +348,11 @@ type RegisterPublicKeyRequest struct {
 // RegisterDevicePublicKey accepts the X25519 public key for the calling
 // device. The relay needs this to (a) include the device in
 // ListPendingKeyExchanges sweeps and (b) broadcast key_exchange_requested
-// when the device or `cinch auth retry-key` asks for a re-share.
+// so a bearer responds immediately (no waiting for the next sweep).
 // Bearer-authenticated; the device_id is taken from the auth header.
 func (h *Handler) RegisterDevicePublicKey(w http.ResponseWriter, r *http.Request) {
 	deviceID := r.Header.Get("X-Device-ID")
+	userID := r.Header.Get("X-User-ID")
 	if deviceID == "" {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "missing device", "")
 		return
@@ -372,6 +373,23 @@ func (h *Handler) RegisterDevicePublicKey(w http.ResponseWriter, r *http.Request
 		}
 		writeError(w, http.StatusInternalServerError, "store error", err.Error(), "")
 		return
+	}
+	// Best-effort broadcast: a bearer that holds the canonical key will see
+	// this and respond with an encrypted bundle within milliseconds. Without
+	// this, the device would block on the 30s poll waiting for the next
+	// ListPendingKeyExchanges sweep.
+	if userID != "" {
+		hostname, _, hostErr := h.store.GetDeviceHostnameAndPubKey(deviceID)
+		if hostErr == nil {
+			h.hub.SendToUser(userID, &cinchv1.ServerEvent{
+				Event: &cinchv1.ServerEvent_KeyExchange{
+					KeyExchange: &cinchv1.KeyExchangeEvent{
+						DeviceId: deviceID,
+						Hostname: hostname,
+					},
+				},
+			})
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
