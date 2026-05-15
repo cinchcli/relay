@@ -1,48 +1,33 @@
 // Cross-language wire-format gate for the hand-written WSMessage envelope.
 //
-// The generated cinch.v1 messages have their own round-trip test in
-// internal/gen/cinch/v1/wire_vectors_test.go, but WSMessage lives here in
-// internal/protocol/ (it is hand-written, not generated from proto). To
-// avoid an import cycle with internal/gen/cinch/v1, the WSMessage entries
-// in testdata/wire-vectors.json are round-tripped here.
+// The generated cinch.v1 messages are round-tripped in wire_vectors_test.go
+// against types from github.com/cinchcli/cinch-core. WSMessage stays
+// hand-written in internal/protocol/ because the WebSocket envelope's
+// "action + 8 optional siblings" shape doesn't map cleanly onto a proto
+// oneof. Co-locating both round-trips here keeps the embedded fixture
+// in one place and avoids the import cycle the original layout had to
+// dodge (protocol → cinchv1, so a test in cinchv1 couldn't import
+// protocol).
 //
-// The Rust mirror lives at cinch/crates/client-core/tests/wire_vectors.rs
-// and round-trips the same vectors through client_core::protocol::WSMessage.
+// The Rust mirror lives at cinch-core's
+// `crates/client-core/tests/wire_vectors.rs` and round-trips the same
+// vectors through `client_core::protocol::WSMessage`.
 
-package protocol
+package wire_test
 
 import (
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"reflect"
 	"testing"
+
+	"github.com/cinchcli/relay/internal/protocol"
 )
-
-const wsFixtureRel = "../../testdata/wire-vectors.json"
-
-func loadWSVectors(t *testing.T) map[string]any {
-	t.Helper()
-	abs, err := filepath.Abs(wsFixtureRel)
-	if err != nil {
-		t.Fatalf("resolve fixture path: %v", err)
-	}
-	bytes, err := os.ReadFile(abs)
-	if err != nil {
-		t.Fatalf("read %s: %v", abs, err)
-	}
-	var root map[string]any
-	if err := json.Unmarshal(bytes, &root); err != nil {
-		t.Fatalf("parse %s: %v", abs, err)
-	}
-	return root
-}
 
 // TestWSMessageVectorsRoundTrip round-trips every "WSMessage" vector
 // through encoding/json and asserts byte-equal output (modulo key order).
 func TestWSMessageVectorsRoundTrip(t *testing.T) {
-	root := loadWSVectors(t)
+	root := loadVectors(t)
 	raw, ok := root["WSMessage"]
 	if !ok {
 		t.Fatal("missing vector group: WSMessage")
@@ -62,7 +47,7 @@ func TestWSMessageVectorsRoundTrip(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: marshal input: %v", label, err)
 		}
-		var msg WSMessage
+		var msg protocol.WSMessage
 		if err := json.Unmarshal(inputBytes, &msg); err != nil {
 			t.Fatalf("%s: decode failed: %v (input: %s)", label, err, inputBytes)
 		}
