@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	cinchv1 "github.com/cinchcli/relay/internal/gen/cinch/v1"
+	cinchv1 "github.com/cinchcli/cinch-core/go/cinch/v1"
 	relay "github.com/cinchcli/relay/internal/relay"
 )
 

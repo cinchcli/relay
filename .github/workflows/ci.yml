@@ -6,10 +6,7 @@ on:
     paths:
       - 'cmd/**'
       - 'internal/**'
-      - 'proto/**'
       - 'go.*'
-      - 'buf.yaml'
-      - 'buf.gen.yaml'
       - 'Dockerfile'
       - 'Makefile'
       - '.github/workflows/ci.yml'
@@ -18,10 +15,7 @@ on:
     paths:
       - 'cmd/**'
       - 'internal/**'
-      - 'proto/**'
       - 'go.*'
-      - 'buf.yaml'
-      - 'buf.gen.yaml'
       - 'Dockerfile'
       - 'Makefile'
       - '.github/workflows/ci.yml'
@@ -62,31 +56,14 @@ jobs:
       - name: Install build deps
         run: sudo apt-get update && sudo apt-get install -y gcc
 
-      - name: Install buf
-        uses: bufbuild/buf-setup-action@a47c93e0b1648d5651a065437926377d060baa99 # v1
-        with:
-          github_token: ${{ github.token }}
-
-      - name: Install proto plugins
-        run: |
-          go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-          go install connectrpc.com/connect/cmd/protoc-gen-connect-go@latest
-
-      - name: Buf lint
-        run: buf lint
-
-      - name: Buf breaking change check
-        if: github.event_name == 'pull_request'
-        run: buf breaking --against "https://github.com/${{ github.repository }}.git#branch=main"
-
-      - name: Proto drift check (generated code matches proto)
-        run: |
-          make generate
-          git diff --exit-code internal/gen/
+      # Buf / proto codegen / drift check removed: relay no longer owns
+      # the wire schema. cinchcli/cinch-core is the source of truth and
+      # ships generated Go bindings via go.mod; lint/breaking-change
+      # gates run in cinchcli/cinch-core's own CI.
 
       - name: Verify gofmt
         run: |
-          unformatted=$(gofmt -l $(find . -name '*.go' -not -path './internal/gen/*'))
+          unformatted=$(gofmt -l $(find . -name '*.go'))
           if [ -n "$unformatted" ]; then
             echo "::error::Files not gofmt'd:"
             echo "$unformatted"

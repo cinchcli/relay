@@ -1,4 +1,4 @@
-.PHONY: build build-failover-listener build-all test lint clean generate docker-build
+.PHONY: build build-failover-listener build-all test lint clean update-cinch-core docker-build
 
 VERSION ?= 0.1.0
 LDFLAGS := -ldflags "-s -w -X main.version=$(VERSION)"
@@ -15,13 +15,17 @@ test:
 	go test ./... -v -race -count=1
 
 lint:
-	buf lint && go vet ./...
+	go vet ./...
 
 clean:
 	rm -rf dist/
 
-generate:
-	PATH="$(HOME)/go/bin:$(PATH)" buf generate
+# The proto schema and generated Go bindings live in github.com/cinchcli/cinch-core.
+# To pick up a wire-format change: bump cinch-core there, publish a new tag,
+# then run `make update-cinch-core REV=<tag>` here.
+update-cinch-core:
+	@if [ -z "$(REV)" ]; then echo "usage: make update-cinch-core REV=v0.1.x"; exit 1; fi
+	go get github.com/cinchcli/cinch-core@$(REV)
 	go mod tidy
 
 docker-build:
