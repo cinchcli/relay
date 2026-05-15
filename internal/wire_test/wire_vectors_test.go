@@ -1,39 +1,39 @@
 // Cross-language wire-format gate.
 //
-// Loads relay/testdata/wire-vectors.json and round-trips every named vector
-// through the protoc-gen-go types. The Rust CLI runs an equivalent test
-// against an identical fixture in the cinch repo. If both pass, the wire
-// format is shape-equivalent across languages.
+// Loads testdata/wire-vectors.json (vendored alongside this test) and
+// round-trips every named vector through the protoc-gen-go types pulled
+// from cinch-core. The Rust client runs an equivalent test against an
+// identical fixture in cinch-core (`testdata/wire-vectors.json`). If
+// both pass, the wire format is shape-equivalent across languages.
 //
 // Round-trip: input JSON -> typed unmarshal -> re-marshal -> compare both
 // sides parsed as map[string]any so JSON object key ordering is irrelevant.
+//
+// Cross-repo invariant: this fixture must stay byte-equivalent to
+// `testdata/wire-vectors.json` in github.com/cinchcli/cinch-core. Updates
+// land in cinch-core first; copy them here on the next bump of the
+// cinch-core dependency.
 
-package cinchv1
+package wire_test
 
 import (
+	_ "embed"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"reflect"
 	"testing"
+
+	cinchv1 "github.com/cinchcli/cinch-core/go/cinch/v1"
 )
 
-const fixtureRel = "../../../../testdata/wire-vectors.json"
+//go:embed testdata/wire-vectors.json
+var fixtureBytes []byte
 
 func loadVectors(t *testing.T) map[string]any {
 	t.Helper()
-	abs, err := filepath.Abs(fixtureRel)
-	if err != nil {
-		t.Fatalf("resolve fixture path: %v", err)
-	}
-	bytes, err := os.ReadFile(abs)
-	if err != nil {
-		t.Fatalf("read %s: %v", abs, err)
-	}
 	var root map[string]any
-	if err := json.Unmarshal(bytes, &root); err != nil {
-		t.Fatalf("parse %s: %v", abs, err)
+	if err := json.Unmarshal(fixtureBytes, &root); err != nil {
+		t.Fatalf("parse embedded wire-vectors.json: %v", err)
 	}
 	return root
 }
@@ -98,37 +98,37 @@ func runGroup(t *testing.T, root map[string]any, message string, factory func() 
 
 func TestClipVectorsRoundTrip(t *testing.T) {
 	root := loadVectors(t)
-	runGroup(t, root, "Clip", func() any { return &Clip{} })
+	runGroup(t, root, "Clip", func() any { return &cinchv1.Clip{} })
 }
 
 func TestPushClipRequestVectorsRoundTrip(t *testing.T) {
 	root := loadVectors(t)
-	runGroup(t, root, "PushClipRequest", func() any { return &PushClipRequest{} })
+	runGroup(t, root, "PushClipRequest", func() any { return &cinchv1.PushClipRequest{} })
 }
 
 func TestPushClipResponseVectorsRoundTrip(t *testing.T) {
 	root := loadVectors(t)
-	runGroup(t, root, "PushClipResponse", func() any { return &PushClipResponse{} })
+	runGroup(t, root, "PushClipResponse", func() any { return &cinchv1.PushClipResponse{} })
 }
 
 func TestPullResponseVectorsRoundTrip(t *testing.T) {
 	root := loadVectors(t)
-	runGroup(t, root, "PullResponse", func() any { return &PullResponse{} })
+	runGroup(t, root, "PullResponse", func() any { return &cinchv1.PullResponse{} })
 }
 
 func TestDeviceCodeStartResponseVectorsRoundTrip(t *testing.T) {
 	root := loadVectors(t)
-	runGroup(t, root, "DeviceCodeStartResponse", func() any { return &DeviceCodeStartResponse{} })
+	runGroup(t, root, "DeviceCodeStartResponse", func() any { return &cinchv1.DeviceCodeStartResponse{} })
 }
 
 func TestDeviceCodePollResponseVectorsRoundTrip(t *testing.T) {
 	root := loadVectors(t)
-	runGroup(t, root, "DeviceCodePollResponse", func() any { return &DeviceCodePollResponse{} })
+	runGroup(t, root, "DeviceCodePollResponse", func() any { return &cinchv1.DeviceCodePollResponse{} })
 }
 
 func TestLoginResponseVectorsRoundTrip(t *testing.T) {
 	root := loadVectors(t)
-	runGroup(t, root, "LoginResponse", func() any { return &LoginResponse{} })
+	runGroup(t, root, "LoginResponse", func() any { return &cinchv1.LoginResponse{} })
 }
 
 // PairResponse / RotatePairTokenResponse round-trip tests removed —
@@ -137,27 +137,27 @@ func TestLoginResponseVectorsRoundTrip(t *testing.T) {
 
 func TestErrorResponseVectorsRoundTrip(t *testing.T) {
 	root := loadVectors(t)
-	runGroup(t, root, "ErrorResponse", func() any { return &ErrorResponse{} })
+	runGroup(t, root, "ErrorResponse", func() any { return &cinchv1.ErrorResponse{} })
 }
 
 func TestDeviceVectorsRoundTrip(t *testing.T) {
 	root := loadVectors(t)
-	runGroup(t, root, "Device", func() any { return &Device{} })
+	runGroup(t, root, "Device", func() any { return &cinchv1.Device{} })
 }
 
 func TestListClipsRequestVectorsRoundTrip(t *testing.T) {
 	root := loadVectors(t)
-	runGroup(t, root, "ListClipsRequest", func() any { return &ListClipsRequest{} })
+	runGroup(t, root, "ListClipsRequest", func() any { return &cinchv1.ListClipsRequest{} })
 }
 
 func TestListClipsResponseVectorsRoundTrip(t *testing.T) {
 	root := loadVectors(t)
-	runGroup(t, root, "ListClipsResponse", func() any { return &ListClipsResponse{} })
+	runGroup(t, root, "ListClipsResponse", func() any { return &cinchv1.ListClipsResponse{} })
 }
 
 func TestClipDeletedEventVectorsRoundTrip(t *testing.T) {
 	root := loadVectors(t)
-	runGroup(t, root, "ClipDeletedEvent", func() any { return &ClipDeletedEvent{} })
+	runGroup(t, root, "ClipDeletedEvent", func() any { return &cinchv1.ClipDeletedEvent{} })
 }
 
 // TestServerEventMarshalShape verifies that a ServerEvent with clip_deleted
@@ -182,9 +182,9 @@ func TestServerEventMarshalShape(t *testing.T) {
 	}
 
 	// Build the actual ServerEvent and marshal it.
-	se := &ServerEvent{
-		Event: &ServerEvent_ClipDeleted{
-			ClipDeleted: &ClipDeletedEvent{ClipId: "01HABC0000000000000000000"},
+	se := &cinchv1.ServerEvent{
+		Event: &cinchv1.ServerEvent_ClipDeleted{
+			ClipDeleted: &cinchv1.ClipDeletedEvent{ClipId: "01HABC0000000000000000000"},
 		},
 	}
 	actualBytes, err := json.Marshal(se)
