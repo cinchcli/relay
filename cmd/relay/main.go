@@ -41,6 +41,12 @@ func main() {
 	}
 	defer store.Close()
 
+	if code := os.Getenv("RELAY_BOOTSTRAP_INVITE_CODE"); code != "" {
+		if err := relay.ApplyBootstrapInvite(store, code, os.Stderr); err != nil {
+			log.Fatalf("bootstrap invite: %v", err)
+		}
+	}
+
 	// Build media backend from env (MEDIA_BACKEND=local|s3; see DEPLOY.md).
 	mediaStore, err := media.NewStore()
 	if err != nil {
