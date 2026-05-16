@@ -123,11 +123,23 @@ func TestUserAdminAndDisplayName(t *testing.T) {
 	if err != nil || len(list) != 1 || list[0].DisplayName != "han" || !list[0].IsAdmin {
 		t.Fatalf("ListUsers bad: %+v err=%v", list, err)
 	}
+	// Verify DeleteUser handles invites.created_by SET NULL cleanly.
+	invHash := HashInviteCode("cinch_inv_fordelete")
+	if err := s.CreateInvite(invHash, &uid, "test", 1, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.DeleteUser(uid); err != nil {
 		t.Fatal(err)
 	}
 	count2, _ := s.CountUsers()
 	if count2 != 0 {
 		t.Fatalf("DeleteUser failed: count=%d", count2)
+	}
+	var createdBy *string
+	if err := s.db.QueryRow(`SELECT created_by FROM invites WHERE code_hash = $1`, invHash).Scan(&createdBy); err != nil {
+		t.Fatalf("invite row should still exist after user delete: %v", err)
+	}
+	if createdBy != nil {
+		t.Fatalf("created_by should be NULL after user delete, got: %v", *createdBy)
 	}
 }
