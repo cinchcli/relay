@@ -173,6 +173,21 @@ func (h *Handler) SetMediaStore(s media.Store) { h.media = s }
 // When empty, the endpoint returns 503 (not silently open).
 func (h *Handler) SetInternalServiceSecret(s string) { h.internalServiceSecret = s }
 
+// RequireAdmin wraps RequireAuth and additionally checks that the
+// authenticated user has is_admin = TRUE. Returns 403 admin_required otherwise.
+func (h *Handler) RequireAdmin(next http.HandlerFunc) http.HandlerFunc {
+	return h.RequireAuth(func(w http.ResponseWriter, r *http.Request) {
+		uid := r.Header.Get("X-User-ID") // set by RequireAuth
+		admin, err := h.store.IsUserAdmin(uid)
+		if err != nil || !admin {
+			writeError(w, http.StatusForbidden, "admin_required",
+				"This endpoint requires an admin account.", "")
+			return
+		}
+		next(w, r)
+	})
+}
+
 // RequireAuth wraps a handler with token authentication.
 // After the OAuth-only migration every active token lives on devices.token;
 // the legacy master-token (users.token) lookup has been removed.
