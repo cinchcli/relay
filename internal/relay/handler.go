@@ -49,8 +49,37 @@ var (
 	ErrAgentTimeout = errors.New("desktop agent did not respond in time")
 )
 
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
+// wsAllowedOrigin returns true for origins permitted to open a WebSocket.
+// Empty Origin is allowed: native clients (cinch CLI, desktop's Rust ws.rs,
+// curl) do not set this header, while browsers always do for cross-origin
+// requests. WS auth is bearer ticket/token via URL params, so the cookie-CSRF
+// concern that motivates strict origin checks on cookie-auth WS does not
+// directly apply here — but locking the allowlist is cheap defense-in-depth.
+func (h *Handler) wsAllowedOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	if origin == demoAllowOrigin || origin == demoAllowOriginL {
+		return true
+	}
+	// Tauri v2 webview origins: tauri://localhost on macOS/Linux,
+	// http://tauri.localhost on Windows. The desktop's WS client is in
+	// Rust (not the webview), so this matters only for hypothetical
+	// browser-side use — but we permit them for consistency with HTTP.
+	if origin == "tauri://localhost" || origin == "http://tauri.localhost" {
+		return true
+	}
+	for _, o := range h.CORSOrigins {
+		if o == origin {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *Handler) wsUpgrader() websocket.Upgrader {
+	return websocket.Upgrader{CheckOrigin: h.wsAllowedOrigin}
 }
 
 // wsTicket holds the identity bound to a short-lived WebSocket auth ticket.
@@ -242,14 +271,14 @@ func (h *Handler) AuthLogin(w http.ResponseWriter, r *http.Request) {
 
 	userID := ulid.Make().String()
 	if err := h.store.CreateUser(userID); err != nil {
-		writeError(w, http.StatusInternalServerError, "account creation failed", err.Error(), "")
+		writeInternalError(w, "account creation failed", "create account", err)
 		return
 	}
 
 	deviceID := ulid.Make().String()
 	deviceToken := generateToken()
 	if err := h.store.RegisterDeviceWithToken(userID, deviceID, hostname, deviceToken); err != nil {
-		writeError(w, http.StatusInternalServerError, "device creation failed", err.Error(), "")
+		writeInternalError(w, "device creation failed", "create device", err)
 		return
 	}
 
@@ -371,7 +400,7 @@ func (h *Handler) RegisterDevicePublicKey(w http.ResponseWriter, r *http.Request
 			writeError(w, http.StatusNotFound, "device not found", "", "")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "store error", err.Error(), "")
+		writeInternalError(w, "store error", "store op", err)
 		return
 	}
 	// Best-effort broadcast: a bearer that holds the canonical key will see
@@ -411,7 +440,7 @@ func (h *Handler) KeyBundleRetry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "store error", err.Error(), "")
+		writeInternalError(w, "store error", "store op", err)
 		return
 	}
 	if pubKey == "" {
@@ -486,7 +515,7 @@ func (h *Handler) PushClip(w http.ResponseWriter, r *http.Request) {
 		}
 		clip, err := h.store.SaveClip(userID, &req)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "save_failed", err.Error(), "")
+			writeInternalError(w, "save_failed", "save clip", err)
 			return
 		}
 		if req.Source != "" {
@@ -525,7 +554,7 @@ func (h *Handler) PushClip(w http.ResponseWriter, r *http.Request) {
 
 	clip, err := h.store.SaveClip(userID, &req)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "save failed", err.Error(), "")
+		writeInternalError(w, "save failed", "save clip", err)
 		return
 	}
 
@@ -591,7 +620,7 @@ func (h *Handler) ListClips(w http.ResponseWriter, r *http.Request) {
 		}
 		clips, err := h.store.ListClipsSince(userID, sinceTime, limit)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "list failed", err.Error(), "")
+			writeInternalError(w, "list failed", "list", err)
 			return
 		}
 		writeJSON(w, http.StatusOK, clips)
@@ -607,7 +636,7 @@ func (h *Handler) ListClips(w http.ResponseWriter, r *http.Request) {
 		ClipIDs:       clipIDs,
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "list failed", err.Error(), "")
+		writeInternalError(w, "list failed", "list", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, clips)
@@ -624,7 +653,7 @@ func (h *Handler) DeleteClip(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "delete_failed", err.Error(), "")
+		writeInternalError(w, "delete_failed", "delete clip", err)
 		return
 	}
 
@@ -703,7 +732,7 @@ func (h *Handler) PullClipboard(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, ErrAgentTimeout):
 			writeError(w, http.StatusGatewayTimeout, "agent timeout", "Desktop agent did not respond within 10 seconds", "Check if cinchd is running")
 		default:
-			writeError(w, http.StatusInternalServerError, "pull failed", err.Error(), "")
+			writeInternalError(w, "pull failed", "pull", err)
 		}
 		return
 	}
@@ -775,7 +804,7 @@ func (h *Handler) SetClipPin(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "clip_not_found", "Clip not found", "")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "update_failed", err.Error(), "")
+		writeInternalError(w, "update_failed", "update", err)
 		return
 	}
 
@@ -788,7 +817,7 @@ func (h *Handler) ListDevices(w http.ResponseWriter, r *http.Request) {
 	userID := r.Header.Get("X-User-ID")
 	devices, err := h.store.ListDevices(userID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "list failed", err.Error(), "")
+		writeInternalError(w, "list failed", "list", err)
 		return
 	}
 
@@ -819,7 +848,8 @@ func (h *Handler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid or expired ticket", http.StatusUnauthorized)
 			return
 		}
-		conn, err := upgrader.Upgrade(w, r, nil)
+		ug := h.wsUpgrader()
+		conn, err := ug.Upgrade(w, r, nil)
 		if err != nil {
 			log.Printf("ws upgrade failed: %v", err)
 			return
@@ -906,7 +936,8 @@ func (h *Handler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn, err := upgrader.Upgrade(w, r, nil)
+	ug := h.wsUpgrader()
+	conn, err := ug.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("ws upgrade failed: %v", err)
 		return
@@ -1029,7 +1060,7 @@ func (h *Handler) PushBinaryClip(w http.ResponseWriter, r *http.Request) {
 	clip, err := h.store.SaveClip(userID, req)
 	if err != nil {
 		h.media.Delete(r.Context(), mediaPath)
-		writeError(w, http.StatusInternalServerError, "save failed", err.Error(), "")
+		writeInternalError(w, "save failed", "save clip", err)
 		return
 	}
 
@@ -1099,6 +1130,15 @@ func writeError(w http.ResponseWriter, status int, errType, message, fix string)
 	})
 }
 
+// writeInternalError logs the underlying error for operators and returns a
+// generic 500 to the client. Use for failures originating from DB, disk, or
+// downstream services — leaking raw err.Error() exposes driver versions,
+// schema details, and file paths.
+func writeInternalError(w http.ResponseWriter, errType, opName string, err error) {
+	log.Printf("%s: %v", opName, err)
+	writeError(w, http.StatusInternalServerError, errType, "Internal error", "")
+}
+
 func generateToken() string {
 	b := make([]byte, 32)
 	rand.Read(b)
@@ -1112,7 +1152,7 @@ func (h *Handler) DemoSession(w http.ResponseWriter, r *http.Request) {
 	token := generateToken()
 
 	if err := h.store.CreateDemoUser(userID, token); err != nil {
-		writeError(w, http.StatusInternalServerError, "demo create failed", err.Error(), "")
+		writeInternalError(w, "demo create failed", "create demo session", err)
 		return
 	}
 
@@ -1139,7 +1179,7 @@ func (h *Handler) DemoSession(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) DemoStats(w http.ResponseWriter, r *http.Request) {
 	count, err := h.store.GetDemoStats()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "stats failed", err.Error(), "")
+		writeInternalError(w, "stats failed", "stats", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, protocol.DemoStatsResponse{PushesToday: count})
@@ -1250,13 +1290,13 @@ func (h *Handler) RevokeDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "revoke_failed", err.Error(), "")
+		writeInternalError(w, "revoke_failed", "revoke device", err)
 		return
 	}
 
 	revokedAt, err := h.store.RevokeDevice(req.DeviceId)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "revoke_failed", err.Error(), "")
+		writeInternalError(w, "revoke_failed", "revoke device", err)
 		return
 	}
 
@@ -1307,7 +1347,7 @@ func (h *Handler) SetDeviceNickname(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.store.SetDeviceNickname(deviceID, req.Nickname); err != nil {
-		writeError(w, http.StatusInternalServerError, "update_failed", err.Error(), "")
+		writeInternalError(w, "update_failed", "update", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -1553,7 +1593,7 @@ func (h *Handler) CompleteDeviceCodeHTTP(w http.ResponseWriter, r *http.Request)
 	// user's account.
 	newDeviceID, newToken, err := h.store.CreateDeviceForUser(approverUserID, hostname, machineID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "device_create_failed", err.Error(), "")
+		writeInternalError(w, "device_create_failed", "create device for code", err)
 		return
 	}
 
@@ -1600,7 +1640,7 @@ func (h *Handler) IssueDeviceCode(w http.ResponseWriter, r *http.Request) {
 
 	resp, pendingUserID, err := h.store.CreateDeviceCode(hostname, machineID, "", "")
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "device_code_failed", err.Error(), "")
+		writeInternalError(w, "device_code_failed", "device code", err)
 		return
 	}
 	_ = pendingUserID // legacy HTTP path stays unchanged; broadcast wiring lives on the Connect-RPC route
@@ -1729,7 +1769,7 @@ func (h *Handler) UpdateUserQuota(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.store.UpsertUserCapabilities(cap); err != nil {
-		writeError(w, http.StatusInternalServerError, "upsert_failed", err.Error(), "")
+		writeInternalError(w, "upsert_failed", "upsert quota", err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
