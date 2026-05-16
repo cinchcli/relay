@@ -186,6 +186,28 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 
+	// Add invites table and new columns on users (invite-auth phase 2A).
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS invites (
+			code_hash   TEXT PRIMARY KEY,
+			created_by  TEXT REFERENCES users(id) ON DELETE SET NULL,
+			label       TEXT,
+			max_uses    INTEGER     NOT NULL DEFAULT 1,
+			used_count  INTEGER     NOT NULL DEFAULT 0,
+			created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			expires_at  TIMESTAMPTZ NOT NULL,
+			revoked_at  TIMESTAMPTZ
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_invites_created_by ON invites(created_by);
+
+		ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin     BOOLEAN NOT NULL DEFAULT FALSE;
+		ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name TEXT;
+	`)
+	if err != nil {
+		return fmt.Errorf("invites + user columns migration: %w", err)
+	}
+
 	// Drop the partial index on email_verified before any type conversion — the old index
 	// predicate uses "email_verified = 1" (integer) which blocks ALTER COLUMN TYPE BOOLEAN.
 	if _, err = db.Exec(`DROP INDEX IF EXISTS idx_oauth_identities_email`); err != nil {

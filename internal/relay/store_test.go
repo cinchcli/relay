@@ -24,7 +24,7 @@ func newTestStore(t *testing.T) *Store {
 	t.Cleanup(func() {
 		store.db.Exec(`TRUNCATE clips, devices, device_codes, clip_tombstones,
 			oauth_identities, user_capabilities, api_request_counts,
-			demo_stats, settings, users CASCADE`)
+			demo_stats, settings, invites, users CASCADE`)
 		store.Close()
 	})
 	return store
