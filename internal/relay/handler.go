@@ -264,6 +264,21 @@ func (h *Handler) AuthLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Body != nil && r.ContentLength > 0 {
 		_ = json.NewDecoder(r.Body).Decode(&req)
 	}
+
+	// Invite gate: required when OAuth is off.
+	if req.InviteCode == nil || *req.InviteCode == "" {
+		writeError(w, http.StatusForbidden, "invite_required",
+			"An invite code is required to create an account on this relay.",
+			"Ask the operator for an invite code.")
+		return
+	}
+	hash := HashInviteCode(*req.InviteCode)
+	if err := h.store.RedeemInvite(hash); err != nil {
+		writeError(w, http.StatusForbidden, "invite_invalid",
+			"Invite code is invalid, expired, revoked, or used up.", "")
+		return
+	}
+
 	hostname := "unknown"
 	if req.Hostname != nil && *req.Hostname != "" {
 		hostname = *req.Hostname
@@ -274,11 +289,20 @@ func (h *Handler) AuthLogin(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, "account creation failed", "create account", err)
 		return
 	}
+	if req.DisplayName != nil && *req.DisplayName != "" {
+		_ = h.store.SetUserDisplayName(userID, *req.DisplayName)
+	}
+
+	// First user on the relay becomes admin automatically. CountUsers is
+	// called after the insert, so the freshly-created user is included.
+	if n, err := h.store.CountUsers(); err == nil && n == 1 {
+		_ = h.store.SetUserAdmin(userID, true)
+	}
 
 	deviceID := ulid.Make().String()
 	deviceToken := generateToken()
 	if err := h.store.RegisterDeviceWithToken(userID, deviceID, hostname, deviceToken); err != nil {
-		writeInternalError(w, "device creation failed", "create device", err)
+		writeError(w, http.StatusInternalServerError, "device creation failed", err.Error(), "")
 		return
 	}
 

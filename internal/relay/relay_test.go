@@ -20,11 +20,31 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// testBootstrapInvite is a pre-baked invite code installed by setupTestServer*
+// so that the invite gate does not break existing tests that call login().
+const testBootstrapInvite = "cinch_inv_test_bootstrap"
+
+// installBootstrapInvite seeds a multi-use long-lived invite into the store
+// so that login() can complete even after the invite gate is active.
+func installBootstrapInvite(t *testing.T, store *relay.Store) {
+	t.Helper()
+	if err := store.CreateInvite(
+		relay.HashInviteCode(testBootstrapInvite),
+		nil,
+		"test-bootstrap",
+		1000,
+		time.Now().Add(365*24*time.Hour),
+	); err != nil {
+		t.Fatalf("install test bootstrap invite: %v", err)
+	}
+}
+
 // setupTestServer creates a relay backed by the test PostgreSQL DB and returns the test server URL.
 func setupTestServer(t *testing.T) (*httptest.Server, *relay.Hub) {
 	t.Helper()
 
 	store := relay.NewTestStore(t)
+	installBootstrapInvite(t, store)
 
 	hub := relay.NewHub()
 	go hub.Run()
@@ -45,6 +65,7 @@ func setupTestServerWithStore(t *testing.T) (*httptest.Server, *relay.Hub, *rela
 	t.Helper()
 
 	store := relay.NewTestStore(t)
+	installBootstrapInvite(t, store)
 
 	hub := relay.NewHub()
 	go hub.Run()
@@ -65,7 +86,8 @@ func setupTestServerWithStore(t *testing.T) (*httptest.Server, *relay.Hub, *rela
 func login(t *testing.T, baseURL string) (token, pairToken, userID string) {
 	t.Helper()
 
-	resp, err := http.Post(baseURL+"/auth/login", "application/json", nil)
+	body := strings.NewReader(`{"invite_code":"` + testBootstrapInvite + `"}`)
+	resp, err := http.Post(baseURL+"/auth/login", "application/json", body)
 	if err != nil {
 		t.Fatalf("login request failed: %v", err)
 	}
@@ -132,7 +154,7 @@ func TestAuthLogin_Available_WhenNoOAuth(t *testing.T) {
 	ts, _ := setupTestServer(t)
 
 	resp, err := http.Post(ts.URL+"/auth/login", "application/json",
-		strings.NewReader(`{"hostname":"test-host"}`))
+		strings.NewReader(`{"hostname":"test-host","invite_code":"`+testBootstrapInvite+`"}`))
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
@@ -542,6 +564,7 @@ func setupTestServerWithDisk(t *testing.T) *httptest.Server {
 	tmpDir := t.TempDir()
 
 	store := relay.NewTestStore(t)
+	installBootstrapInvite(t, store)
 
 	mediaStore, err := media.NewLocalStore(filepath.Join(tmpDir, "media"))
 	if err != nil {
