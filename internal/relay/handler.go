@@ -246,18 +246,10 @@ func (h *Handler) AuthLogin(w http.ResponseWriter, r *http.Request) {
 	} else {
 		ip = strings.TrimSpace(strings.SplitN(ip, ",", 2)[0])
 	}
-	// Loopback addresses are only reachable locally (smoke tests, local dev).
-	// Real public traffic always arrives via Cloudflare with X-Forwarded-For set.
-	if ip != "127.0.0.1" && ip != "::1" {
-		h.loginRateMu.Lock()
-		if last, ok := h.loginRateMap[ip]; ok && time.Since(last) < loginRateWindow {
-			h.loginRateMu.Unlock()
-			writeError(w, http.StatusTooManyRequests, "rate_limited",
-				"Too many login attempts. Try again in a minute.", "")
-			return
-		}
-		h.loginRateMap[ip] = time.Now()
-		h.loginRateMu.Unlock()
+	if h.checkLoginRateLimit(ip) {
+		writeError(w, http.StatusTooManyRequests, "rate_limited",
+			"Too many login attempts. Try again in a minute.", "")
+		return
 	}
 
 	var req cinchv1.LoginRequest
@@ -290,19 +282,23 @@ func (h *Handler) AuthLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.DisplayName != nil && *req.DisplayName != "" {
-		_ = h.store.SetUserDisplayName(userID, *req.DisplayName)
+		if err := h.store.SetUserDisplayName(userID, *req.DisplayName); err != nil {
+			log.Printf("set display name for %s: %v", userID, err)
+		}
 	}
 
 	// First user on the relay becomes admin automatically. CountUsers is
 	// called after the insert, so the freshly-created user is included.
 	if n, err := h.store.CountUsers(); err == nil && n == 1 {
-		_ = h.store.SetUserAdmin(userID, true)
+		if err := h.store.SetUserAdmin(userID, true); err != nil {
+			log.Printf("promote first user %s to admin: %v", userID, err)
+		}
 	}
 
 	deviceID := ulid.Make().String()
 	deviceToken := generateToken()
 	if err := h.store.RegisterDeviceWithToken(userID, deviceID, hostname, deviceToken); err != nil {
-		writeError(w, http.StatusInternalServerError, "device creation failed", err.Error(), "")
+		writeInternalError(w, "device creation failed", "create device", err)
 		return
 	}
 
@@ -1161,6 +1157,22 @@ func writeError(w http.ResponseWriter, status int, errType, message, fix string)
 func writeInternalError(w http.ResponseWriter, errType, opName string, err error) {
 	log.Printf("%s: %v", opName, err)
 	writeError(w, http.StatusInternalServerError, errType, "Internal error", "")
+}
+
+// checkLoginRateLimit returns true if the given IP should be denied for
+// hitting the per-IP login rate window. Loopback always allowed.
+// Updates the bucket on a non-limited hit.
+func (h *Handler) checkLoginRateLimit(ip string) bool {
+	if ip == "127.0.0.1" || ip == "::1" {
+		return false
+	}
+	h.loginRateMu.Lock()
+	defer h.loginRateMu.Unlock()
+	if last, ok := h.loginRateMap[ip]; ok && time.Since(last) < loginRateWindow {
+		return true
+	}
+	h.loginRateMap[ip] = time.Now()
+	return false
 }
 
 func generateToken() string {
