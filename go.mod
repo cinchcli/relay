@@ -4,7 +4,7 @@ go 1.26.2
 
 require (
 	connectrpc.com/connect v1.19.2
-	github.com/cinchcli/cinch-core v0.1.1
+	github.com/cinchcli/cinch-core v0.1.5
 	github.com/gorilla/websocket v1.5.3
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/minio/minio-go/v7 v7.1.0

@@ -186,6 +186,28 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 
+	// Add invites table and new columns on users (invite-auth phase 2A).
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS invites (
+			code_hash   TEXT PRIMARY KEY,
+			created_by  TEXT REFERENCES users(id) ON DELETE SET NULL,
+			label       TEXT,
+			max_uses    INTEGER     NOT NULL DEFAULT 1,
+			used_count  INTEGER     NOT NULL DEFAULT 0,
+			created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			expires_at  TIMESTAMPTZ NOT NULL,
+			revoked_at  TIMESTAMPTZ
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_invites_created_by ON invites(created_by);
+
+		ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin     BOOLEAN NOT NULL DEFAULT FALSE;
+		ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name TEXT;
+	`)
+	if err != nil {
+		return fmt.Errorf("invites + user columns migration: %w", err)
+	}
+
 	// Drop the partial index on email_verified before any type conversion — the old index
 	// predicate uses "email_verified = 1" (integer) which blocks ALTER COLUMN TYPE BOOLEAN.
 	if _, err = db.Exec(`DROP INDEX IF EXISTS idx_oauth_identities_email`); err != nil {
@@ -1736,6 +1758,95 @@ func (s *Store) IncrementDailyRequestCount(userID string) (int, error) {
 	return count, err
 }
 
+// Invite is the row shape returned by ListInvites.
+type Invite struct {
+	// CodeHash is the SHA-256 hex of the plaintext invite code.
+	// It is NOT the redeemable code; the plaintext cannot be recovered from it.
+	CodeHash  string
+	CreatedBy *string
+	Label     string
+	MaxUses   int
+	UsedCount int
+	CreatedAt time.Time
+	ExpiresAt time.Time
+	RevokedAt *time.Time
+}
+
+// CreateInvite inserts a fresh invite row. createdBy may be nil (bootstrap).
+func (s *Store) CreateInvite(codeHash string, createdBy *string, label string, maxUses int, expiresAt time.Time) error {
+	_, err := s.db.Exec(`
+		INSERT INTO invites (code_hash, created_by, label, max_uses, expires_at)
+		VALUES ($1, $2, $3, $4, $5)
+	`, codeHash, createdBy, label, maxUses, expiresAt)
+	return err
+}
+
+// RedeemInvite atomically increments used_count when the invite is valid.
+// Returns nil on success; an error if the code is unknown, expired, revoked,
+// or fully used.
+func (s *Store) RedeemInvite(codeHash string) error {
+	res, err := s.db.Exec(`
+		UPDATE invites
+		SET    used_count = used_count + 1
+		WHERE  code_hash    = $1
+		  AND  revoked_at   IS NULL
+		  AND  expires_at   > NOW()
+		  AND  used_count   < max_uses
+	`, codeHash)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("invite is unknown, expired, revoked, or used up")
+	}
+	return nil
+}
+
+// ListInvites returns every invite row, newest first.
+func (s *Store) ListInvites() ([]Invite, error) {
+	rows, err := s.db.Query(`
+		SELECT code_hash, created_by, COALESCE(label,''), max_uses, used_count,
+		       created_at, expires_at, revoked_at
+		FROM   invites
+		ORDER  BY created_at DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Invite
+	for rows.Next() {
+		var inv Invite
+		if err := rows.Scan(&inv.CodeHash, &inv.CreatedBy, &inv.Label, &inv.MaxUses,
+			&inv.UsedCount, &inv.CreatedAt, &inv.ExpiresAt, &inv.RevokedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, inv)
+	}
+	return out, rows.Err()
+}
+
+// RevokeInvite marks an invite revoked. Idempotent.
+func (s *Store) RevokeInvite(codeHash string) error {
+	res, err := s.db.Exec(
+		`UPDATE invites SET revoked_at = NOW() WHERE code_hash = $1 AND revoked_at IS NULL`,
+		codeHash,
+	)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		var dummy string
+		err2 := s.db.QueryRow(`SELECT code_hash FROM invites WHERE code_hash = $1`, codeHash).Scan(&dummy)
+		if errors.Is(err2, sql.ErrNoRows) {
+			return fmt.Errorf("invite not found: %s", codeHash)
+		}
+		// Row exists but was already revoked — idempotent success.
+	}
+	return nil
+}
+
 // SweepOldRequestCounts deletes daily request count rows older than retentionDays.
 func (s *Store) SweepOldRequestCounts(retentionDays int) (int, error) {
 	cutoff := time.Now().UTC().AddDate(0, 0, -retentionDays).Format("2006-01-02")
@@ -1748,4 +1859,106 @@ func (s *Store) SweepOldRequestCounts(retentionDays int) (int, error) {
 	}
 	n, _ := res.RowsAffected()
 	return int(n), nil
+}
+
+// UserRow is the shape returned by ListUsers.
+type UserRow struct {
+	ID          string
+	DisplayName string
+	IsAdmin     bool
+	CreatedAt   time.Time
+}
+
+// CountUsers returns the total number of user rows.
+func (s *Store) CountUsers() (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&n)
+	return n, err
+}
+
+// SetUserAdmin sets or clears the is_admin flag for a user.
+func (s *Store) SetUserAdmin(userID string, admin bool) error {
+	res, err := s.db.Exec(`UPDATE users SET is_admin = $1 WHERE id = $2`, admin, userID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("user not found: %s", userID)
+	}
+	return nil
+}
+
+// SetUserDisplayName updates display_name. A blank name is a no-op.
+func (s *Store) SetUserDisplayName(userID, name string) error {
+	if name == "" {
+		return nil
+	}
+	res, err := s.db.Exec(`UPDATE users SET display_name = $1 WHERE id = $2`, name, userID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("user not found: %s", userID)
+	}
+	return nil
+}
+
+// IsUserAdmin reports whether the given user has is_admin = TRUE.
+func (s *Store) IsUserAdmin(userID string) (bool, error) {
+	var v bool
+	err := s.db.QueryRow(`SELECT is_admin FROM users WHERE id = $1`, userID).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("user not found: %s", userID)
+	}
+	if err != nil {
+		return false, err
+	}
+	return v, nil
+}
+
+// ListUsers returns all user rows ordered by creation time ascending.
+func (s *Store) ListUsers() ([]UserRow, error) {
+	rows, err := s.db.Query(`
+		SELECT id, COALESCE(display_name,''), is_admin, created_at
+		FROM   users ORDER BY created_at ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []UserRow
+	for rows.Next() {
+		var u UserRow
+		if err := rows.Scan(&u.ID, &u.DisplayName, &u.IsAdmin, &u.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+// DeleteUser removes a user and all dependent rows in the correct FK order.
+// Wraps the deletions in a transaction so a failure leaves the DB consistent.
+// invites.created_by is left intact (SET NULL by Postgres FK).
+// For self-host operator use only.
+func (s *Store) DeleteUser(userID string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, q := range []string{
+		`DELETE FROM clip_tombstones    WHERE user_id = $1`,
+		`DELETE FROM clips              WHERE user_id = $1`,
+		`DELETE FROM devices            WHERE user_id = $1`,
+		`DELETE FROM user_capabilities  WHERE user_id = $1`,
+		`DELETE FROM api_request_counts WHERE user_id = $1`,
+		`DELETE FROM oauth_identities   WHERE user_id = $1`,
+		`DELETE FROM users              WHERE id      = $1`,
+	} {
+		if _, err := tx.Exec(q, userID); err != nil {
+			return fmt.Errorf("%s: %w", q, err)
+		}
+	}
+	return tx.Commit()
 }

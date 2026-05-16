@@ -24,6 +24,7 @@ func buildRevokeTestServer(t *testing.T) (*httptest.Server, *Store, *Hub) {
 	t.Helper()
 
 	store := newTestStore(t)
+	installTestBootstrapInvite(t, store)
 
 	hub := NewHub()
 	go hub.Run()
@@ -45,7 +46,10 @@ func buildRevokeTestServer(t *testing.T) (*httptest.Server, *Store, *Hub) {
 func loginAndPair(t *testing.T, ts *httptest.Server, hostname string) (deviceToken, userID, deviceID string) {
 	t.Helper()
 
-	body, _ := json.Marshal(cinchv1.LoginRequest{Hostname: &hostname})
+	body, _ := json.Marshal(cinchv1.LoginRequest{
+		Hostname:   &hostname,
+		InviteCode: stringPtr(testBootstrapInviteCode),
+	})
 	resp, err := http.Post(ts.URL+"/auth/login", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("login: %v", err)

@@ -105,6 +105,17 @@
     }
   },
 
+  "LoginRequest": {
+    "minimal": {
+      "hostname": "my-macbook"
+    },
+    "with_invite": {
+      "hostname": "my-macbook",
+      "invite_code": "cinch_inv_aaaabbbbccccddddeeeeffffgggghhhhiiii",
+      "display_name": "han"
+    }
+  },
+
   "LoginResponse": {
     "ok": {
       "token": "tok_01H",
