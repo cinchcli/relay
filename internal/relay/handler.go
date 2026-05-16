@@ -1389,8 +1389,18 @@ func (h *Handler) SetDeviceNickname(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// authBrowserHTML is the self-contained login page served by GET /auth/browser.
-const authBrowserHTML = `<!DOCTYPE html>
+// authBrowserData holds the data passed to the self-host browser sign-in template.
+type authBrowserData struct {
+	// SelfHost is true when no OAuth providers are configured. When true,
+	// the template renders invite-code and display-name fields in addition
+	// to the device-name field.
+	SelfHost bool
+}
+
+// authBrowserTemplate is the self-contained login page served by GET /auth/browser
+// for self-hosted relays. It is parsed once at package init via html/template so
+// that the {{if .SelfHost}} conditional is evaluated safely at render time.
+var authBrowserTemplate = template.Must(template.New("self-host-browser").Parse(`<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -1421,6 +1431,16 @@ button:disabled{opacity:.5;cursor:not-allowed}
   <h1>Sign in to Cinch</h1>
   <p class="sub">Create an account or sign in to connect your devices.</p>
   <form id="loginForm">
+    {{if .SelfHost}}
+    <div class="field">
+      <label for="invite">Invite code</label>
+      <input type="text" id="invite" name="invite" placeholder="cinch_inv_…" required autocomplete="off">
+    </div>
+    <div class="field">
+      <label for="display">Your name (optional)</label>
+      <input type="text" id="display" name="display" placeholder="han" autocomplete="off">
+    </div>
+    {{end}}
     <div class="field">
       <label for="hostname">Device Name</label>
       <input type="text" id="hostname" name="hostname" placeholder="my-macbook" autocomplete="off">
@@ -1450,7 +1470,11 @@ button:disabled{opacity:.5;cursor:not-allowed}
     fetch(relayURL + '/auth/login', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({hostname: hostname})
+      body: JSON.stringify({
+        hostname: hostname,
+        invite_code: document.getElementById('invite') ? document.getElementById('invite').value.trim() : undefined,
+        display_name: document.getElementById('display') ? document.getElementById('display').value.trim() : undefined
+      })
     })
     .then(function(r){ return r.json().then(function(d){ return {ok: r.ok, data: d}; }); })
     .then(function(res){
@@ -1485,7 +1509,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 })();
 </script>
 </body>
-</html>`
+</html>`))
 
 // deviceCodePattern validates the device_code query parameter format before
 // it is interpolated into HTML. Only XXXX-XXXX (4 uppercase alphanumeric,
@@ -1552,8 +1576,11 @@ func (h *Handler) AuthBrowser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Legacy self-host fallback: username form.
-	w.Write([]byte(authBrowserHTML))
+	// Self-host fallback: render the invite + display-name form via template.
+	selfHost := !hasGitHub && !hasGoogle
+	if err := authBrowserTemplate.Execute(w, authBrowserData{SelfHost: selfHost}); err != nil {
+		log.Printf("AuthBrowser: template execute error: %v", err)
+	}
 }
 
 // authOAuthHTMLTemplate is the OAuth sign-in page rendered via html/template.
