@@ -41,6 +41,20 @@ func NewStore(dsn string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("opening db: %w", err)
 	}
+
+	// Without an explicit cap, database/sql opens connections on demand up to
+	// MaxOpenConns=0 (unlimited). Under traffic spikes that lets us blow past
+	// Postgres' `max_connections` (typically 100–200 on managed instances
+	// shared with other services), which surfaces as cascading "too many
+	// clients" errors. 25 leaves headroom for the retention sweeper, the
+	// grace sweeper, and the demo cleanup running alongside user traffic.
+	// SetConnMaxLifetime forces stale conns to be recycled so long-running
+	// processes don't accumulate connections that Postgres has already
+	// closed server-side.
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(5 * time.Minute)
+
 	if err := db.Ping(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("connecting to db: %w", err)
@@ -1248,6 +1262,12 @@ func (s *Store) SweepAllUsersRetention() error {
 	return nil
 }
 
+// sweepBatchSize bounds how many clip IDs go into a single DELETE / tombstone
+// INSERT statement. Postgres caps a query at 65535 parameters; 1000 leaves a
+// comfortable margin and keeps individual round-trips short so a long sweep
+// can be interrupted between chunks.
+const sweepBatchSize = 1000
+
 // SweepExpiredClipsReturningMedia deletes clips older than retentionDays and returns media keys.
 func (s *Store) SweepExpiredClipsReturningMedia(userID string, retentionDays int) (count int, mediaPaths []string, err error) {
 	rows, err := s.db.Query(
@@ -1264,7 +1284,8 @@ func (s *Store) SweepExpiredClipsReturningMedia(userID string, retentionDays int
 	var toDelete []row
 	for rows.Next() {
 		var r row
-		if err := rows.Scan(&r.id, &r.key); err != nil {
+		if scanErr := rows.Scan(&r.id, &r.key); scanErr != nil {
+			log.Printf("sweep: scan expired clip row for user %s: %v", userID, scanErr)
 			continue
 		}
 		toDelete = append(toDelete, r)
@@ -1274,28 +1295,95 @@ func (s *Store) SweepExpiredClipsReturningMedia(userID string, retentionDays int
 	if err := rows.Err(); err != nil {
 		return 0, nil, err
 	}
+	if len(toDelete) == 0 {
+		return 0, nil, nil
+	}
 
-	for _, r := range toDelete {
-		if _, err := s.db.Exec("DELETE FROM clips WHERE id = $1 AND user_id = $2", r.id, userID); err != nil {
-			log.Printf("sweep: delete clip %q: %v", r.id, err)
+	for i := 0; i < len(toDelete); i += sweepBatchSize {
+		end := i + sweepBatchSize
+		if end > len(toDelete) {
+			end = len(toDelete)
+		}
+		chunk := toDelete[i:end]
+		ids := make([]string, len(chunk))
+		for j, r := range chunk {
+			ids[j] = r.id
+		}
+		if delErr := s.deleteClipsBatch(userID, ids); delErr != nil {
+			// Don't bail on the whole sweep — the next hourly tick retries.
+			// We log the chunk size rather than every ID to keep log volume sane.
+			log.Printf("sweep: batch delete (%d clips) for user %s: %v", len(ids), userID, delErr)
 			continue
 		}
-		count++
-		if r.key != "" {
-			mediaPaths = append(mediaPaths, r.key)
+		// Only collect media keys after a successful delete so the caller
+		// doesn't orphan-delete media for clips still in the DB.
+		for _, r := range chunk {
+			if r.key != "" {
+				mediaPaths = append(mediaPaths, r.key)
+			}
 		}
-		if err := s.InsertTombstone(userID, r.id); err != nil {
-			log.Printf("sweep: insert tombstone %q: %v", r.id, err)
+		count += len(ids)
+		if tErr := s.insertTombstonesBatch(userID, ids); tErr != nil {
+			log.Printf("sweep: batch tombstones (%d clips) for user %s: %v", len(ids), userID, tErr)
 		}
 	}
 	return count, mediaPaths, nil
 }
 
+// deleteClipsBatch removes up to len(ids) clips for a single user in one
+// statement. Callers must keep len(ids) under sweepBatchSize.
+func (s *Store) deleteClipsBatch(userID string, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, userID)
+	for i, id := range ids {
+		placeholders[i] = fmt.Sprintf("$%d", i+2)
+		args = append(args, id)
+	}
+	query := fmt.Sprintf(
+		"DELETE FROM clips WHERE user_id = $1 AND id IN (%s)",
+		strings.Join(placeholders, ","),
+	)
+	_, err := s.db.Exec(query, args...)
+	return err
+}
+
+// insertTombstonesBatch records deletion events for many clip IDs in one
+// statement. Idempotent per-clip via the ON CONFLICT clause.
+func (s *Store) insertTombstonesBatch(userID string, clipIDs []string) error {
+	if len(clipIDs) == 0 {
+		return nil
+	}
+	placeholders := make([]string, len(clipIDs))
+	args := make([]any, 0, len(clipIDs)*2)
+	for i, id := range clipIDs {
+		placeholders[i] = fmt.Sprintf("($%d, $%d)", i*2+1, i*2+2)
+		args = append(args, id, userID)
+	}
+	query := fmt.Sprintf(
+		"INSERT INTO clip_tombstones (clip_id, user_id) VALUES %s ON CONFLICT (clip_id) DO NOTHING",
+		strings.Join(placeholders, ","),
+	)
+	_, err := s.db.Exec(query, args...)
+	return err
+}
+
 // SweepAllUsersRetentionReturningMedia sweeps all users' expired clips and collects media keys.
+//
+// The capability lookup is folded into the device query via LEFT JOIN so we
+// don't pay one round-trip per user. Behavior is preserved: a positive
+// user_capabilities.retention_days overrides the device-level value, which is
+// itself the per-device knob users set via the desktop's settings.
 func (s *Store) SweepAllUsersRetentionReturningMedia() (mediaPaths []string, err error) {
 	rows, err := s.db.Query(
-		`SELECT DISTINCT d.user_id, d.remote_retention_days
+		`SELECT DISTINCT d.user_id,
+		                 d.remote_retention_days,
+		                 COALESCE(uc.retention_days, 0) AS cap_retention
 		  FROM devices d
+		  LEFT JOIN user_capabilities uc ON uc.user_id = d.user_id
 		  WHERE d.remote_retention_days IS NOT NULL AND d.revoked_at IS NULL`,
 	)
 	if err != nil {
@@ -1303,13 +1391,15 @@ func (s *Store) SweepAllUsersRetentionReturningMedia() (mediaPaths []string, err
 	}
 
 	type ur struct {
-		userID string
-		days   int
+		userID       string
+		deviceDays   int
+		capRetention int
 	}
 	var users []ur
 	for rows.Next() {
 		var u ur
-		if err := rows.Scan(&u.userID, &u.days); err != nil {
+		if scanErr := rows.Scan(&u.userID, &u.deviceDays, &u.capRetention); scanErr != nil {
+			log.Printf("retention sweep: scan device row: %v", scanErr)
 			continue
 		}
 		users = append(users, u)
@@ -1321,9 +1411,9 @@ func (s *Store) SweepAllUsersRetentionReturningMedia() (mediaPaths []string, err
 	}
 
 	for _, u := range users {
-		retentionDays := u.days
-		if cap, capErr := s.GetUserCapabilities(u.userID); capErr == nil && cap.RetentionDays > 0 {
-			retentionDays = cap.RetentionDays
+		retentionDays := u.deviceDays
+		if u.capRetention > 0 {
+			retentionDays = u.capRetention
 		}
 		count, paths, sweepErr := s.SweepExpiredClipsReturningMedia(u.userID, retentionDays)
 		if sweepErr != nil {
