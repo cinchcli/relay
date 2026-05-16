@@ -1758,6 +1758,82 @@ func (s *Store) IncrementDailyRequestCount(userID string) (int, error) {
 	return count, err
 }
 
+// Invite is the row shape returned by ListInvites.
+type Invite struct {
+	CodeHash  string
+	CreatedBy *string
+	Label     string
+	MaxUses   int
+	UsedCount int
+	CreatedAt time.Time
+	ExpiresAt time.Time
+	RevokedAt *time.Time
+}
+
+// CreateInvite inserts a fresh invite row. createdBy may be nil (bootstrap).
+func (s *Store) CreateInvite(codeHash string, createdBy *string, label string, maxUses int, expiresAt time.Time) error {
+	_, err := s.db.Exec(`
+		INSERT INTO invites (code_hash, created_by, label, max_uses, expires_at)
+		VALUES ($1, $2, $3, $4, $5)
+	`, codeHash, createdBy, label, maxUses, expiresAt)
+	return err
+}
+
+// RedeemInvite atomically increments used_count when the invite is valid.
+// Returns nil on success; an error if the code is unknown, expired, revoked,
+// or fully used.
+func (s *Store) RedeemInvite(codeHash string) error {
+	res, err := s.db.Exec(`
+		UPDATE invites
+		SET    used_count = used_count + 1
+		WHERE  code_hash    = $1
+		  AND  revoked_at   IS NULL
+		  AND  expires_at   > NOW()
+		  AND  used_count   < max_uses
+	`, codeHash)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("invite is unknown, expired, revoked, or used up")
+	}
+	return nil
+}
+
+// ListInvites returns every invite row, newest first.
+func (s *Store) ListInvites() ([]Invite, error) {
+	rows, err := s.db.Query(`
+		SELECT code_hash, created_by, COALESCE(label,''), max_uses, used_count,
+		       created_at, expires_at, revoked_at
+		FROM   invites
+		ORDER  BY created_at DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Invite
+	for rows.Next() {
+		var inv Invite
+		if err := rows.Scan(&inv.CodeHash, &inv.CreatedBy, &inv.Label, &inv.MaxUses,
+			&inv.UsedCount, &inv.CreatedAt, &inv.ExpiresAt, &inv.RevokedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, inv)
+	}
+	return out, rows.Err()
+}
+
+// RevokeInvite marks an invite revoked. Idempotent.
+func (s *Store) RevokeInvite(codeHash string) error {
+	_, err := s.db.Exec(
+		`UPDATE invites SET revoked_at = NOW() WHERE code_hash = $1 AND revoked_at IS NULL`,
+		codeHash,
+	)
+	return err
+}
+
 // SweepOldRequestCounts deletes daily request count rows older than retentionDays.
 func (s *Store) SweepOldRequestCounts(retentionDays int) (int, error) {
 	cutoff := time.Now().UTC().AddDate(0, 0, -retentionDays).Format("2006-01-02")
