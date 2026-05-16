@@ -96,3 +96,38 @@ func TestRevokeInvite_StopsRedemption(t *testing.T) {
 		t.Fatal("revoked invite should be rejected")
 	}
 }
+
+func TestUserAdminAndDisplayName(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+
+	uid := "u1"
+	if err := s.CreateUser(uid); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetUserDisplayName(uid, "han"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetUserAdmin(uid, true); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := s.IsUserAdmin(uid)
+	if err != nil || !ok {
+		t.Fatalf("IsUserAdmin=%v err=%v want true", ok, err)
+	}
+	count, err := s.CountUsers()
+	if err != nil || count != 1 {
+		t.Fatalf("CountUsers=%d err=%v want 1", count, err)
+	}
+	list, err := s.ListUsers()
+	if err != nil || len(list) != 1 || list[0].DisplayName != "han" || !list[0].IsAdmin {
+		t.Fatalf("ListUsers bad: %+v err=%v", list, err)
+	}
+	if err := s.DeleteUser(uid); err != nil {
+		t.Fatal(err)
+	}
+	count2, _ := s.CountUsers()
+	if count2 != 0 {
+		t.Fatalf("DeleteUser failed: count=%d", count2)
+	}
+}
