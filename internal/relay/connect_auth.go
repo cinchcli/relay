@@ -3,6 +3,7 @@ package relay
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -101,11 +102,18 @@ func (e *connectErrMsg) Error() string { return e.s }
 
 // ─── Login ──────────────────────────────────────────────────
 
-// Login mirrors the REST AuthLogin handler — anonymous account + first
-// device row, no master token (the users.token column was dropped in
-// the OAuth-only migration). PairToken is reserved in the proto and
-// intentionally left unset.
+// Login mirrors the REST AuthLogin handler — invite-gated anonymous account +
+// first device row. PairToken is reserved in the proto and intentionally left unset.
 func (s *connectAuthServer) Login(ctx context.Context, req *connect.Request[cinchv1.LoginRequest]) (*connect.Response[cinchv1.LoginResponse], error) {
+	// Invite gate: required when OAuth is off (same rule as REST AuthLogin).
+	if req.Msg.InviteCode == nil || *req.Msg.InviteCode == "" {
+		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("invite_required"))
+	}
+	hash := HashInviteCode(*req.Msg.InviteCode)
+	if err := s.h.store.RedeemInvite(hash); err != nil {
+		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("invite_invalid"))
+	}
+
 	hostname := "unknown"
 	if req.Msg.Hostname != nil && *req.Msg.Hostname != "" {
 		hostname = *req.Msg.Hostname
@@ -114,6 +122,14 @@ func (s *connectAuthServer) Login(ctx context.Context, req *connect.Request[cinc
 	userID := ulid.Make().String()
 	if err := s.h.store.CreateUser(userID); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.DisplayName != nil && *req.Msg.DisplayName != "" {
+		_ = s.h.store.SetUserDisplayName(userID, *req.Msg.DisplayName)
+	}
+
+	// First user on the relay becomes admin automatically.
+	if n, err := s.h.store.CountUsers(); err == nil && n == 1 {
+		_ = s.h.store.SetUserAdmin(userID, true)
 	}
 
 	deviceID := ulid.Make().String()
