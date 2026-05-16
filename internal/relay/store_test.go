@@ -16,15 +16,18 @@ const testBootstrapInviteCode = "cinch_inv_test_bootstrap"
 
 // installTestBootstrapInvite seeds a multi-use long-lived invite into s so that
 // helper login calls succeed even after the invite gate is active.
+// Idempotent: tolerates a leftover row when an earlier test panicked before
+// its t.Cleanup truncated invites.
 func installTestBootstrapInvite(t *testing.T, s *Store) {
 	t.Helper()
-	if err := s.CreateInvite(
+	err := s.CreateInvite(
 		HashInviteCode(testBootstrapInviteCode),
 		nil,
 		"test-bootstrap",
 		1000,
 		time.Now().Add(365*24*time.Hour),
-	); err != nil {
+	)
+	if err != nil && !strings.Contains(err.Error(), "duplicate key") {
 		t.Fatalf("install test bootstrap invite: %v", err)
 	}
 }
