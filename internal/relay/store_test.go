@@ -9,6 +9,29 @@ import (
 	"time"
 )
 
+// testBootstrapInviteCode is a pre-baked invite code used by internal-package
+// test server builders so that /auth/login succeeds without a real invite flow.
+// The value must match the one used in relay_test.go (package relay_test).
+const testBootstrapInviteCode = "cinch_inv_test_bootstrap"
+
+// installTestBootstrapInvite seeds a multi-use long-lived invite into s so that
+// helper login calls succeed even after the invite gate is active.
+// Idempotent: tolerates a leftover row when an earlier test panicked before
+// its t.Cleanup truncated invites.
+func installTestBootstrapInvite(t *testing.T, s *Store) {
+	t.Helper()
+	err := s.CreateInvite(
+		HashInviteCode(testBootstrapInviteCode),
+		nil,
+		"test-bootstrap",
+		1000,
+		time.Now().Add(365*24*time.Hour),
+	)
+	if err != nil && !strings.Contains(err.Error(), "duplicate key") {
+		t.Fatalf("install test bootstrap invite: %v", err)
+	}
+}
+
 // newTestStore connects to TEST_DATABASE_URL and skips if it is not set.
 // Registered cleanup truncates all tables so tests do not bleed into each other.
 func newTestStore(t *testing.T) *Store {
@@ -24,7 +47,7 @@ func newTestStore(t *testing.T) *Store {
 	t.Cleanup(func() {
 		store.db.Exec(`TRUNCATE clips, devices, device_codes, clip_tombstones,
 			oauth_identities, user_capabilities, api_request_counts,
-			demo_stats, settings, users CASCADE`)
+			demo_stats, settings, invites, users CASCADE`)
 		store.Close()
 	})
 	return store

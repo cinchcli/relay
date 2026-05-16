@@ -17,10 +17,25 @@ import (
 var version = "dev"
 
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "invite":
+			runInviteCLI(os.Args[2:])
+			return
+		case "user":
+			runUserCLI(os.Args[2:])
+			return
+		}
+	}
+	runServer()
+}
+
+func runServer() {
+	fs := flag.NewFlagSet("server", flag.ExitOnError)
 	var portFlag string
-	flag.StringVar(&portFlag, "port", "", "TCP port to listen on (overrides PORT env; default 8080)")
-	flag.StringVar(&portFlag, "p", "", "short alias for --port")
-	flag.Parse()
+	fs.StringVar(&portFlag, "port", "", "TCP port to listen on (overrides PORT env; default 8080)")
+	fs.StringVar(&portFlag, "p", "", "short alias for --port")
+	_ = fs.Parse(os.Args[1:])
 
 	port := portFlag
 	if port == "" {
@@ -40,6 +55,12 @@ func main() {
 		log.Fatalf("failed to open database: %v", err)
 	}
 	defer store.Close()
+
+	if code := os.Getenv("RELAY_BOOTSTRAP_INVITE_CODE"); code != "" {
+		if err := relay.ApplyBootstrapInvite(store, code, os.Stderr); err != nil {
+			log.Fatalf("bootstrap invite: %v", err)
+		}
+	}
 
 	// Build media backend from env (MEDIA_BACKEND=local|s3; see DEPLOY.md).
 	mediaStore, err := media.NewStore()

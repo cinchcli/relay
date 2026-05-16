@@ -173,6 +173,21 @@ func (h *Handler) SetMediaStore(s media.Store) { h.media = s }
 // When empty, the endpoint returns 503 (not silently open).
 func (h *Handler) SetInternalServiceSecret(s string) { h.internalServiceSecret = s }
 
+// RequireAdmin wraps RequireAuth and additionally checks that the
+// authenticated user has is_admin = TRUE. Returns 403 admin_required otherwise.
+func (h *Handler) RequireAdmin(next http.HandlerFunc) http.HandlerFunc {
+	return h.RequireAuth(func(w http.ResponseWriter, r *http.Request) {
+		uid := r.Header.Get("X-User-ID") // set by RequireAuth
+		admin, err := h.store.IsUserAdmin(uid)
+		if err != nil || !admin {
+			writeError(w, http.StatusForbidden, "admin_required",
+				"This endpoint requires an admin account.", "")
+			return
+		}
+		next(w, r)
+	})
+}
+
 // RequireAuth wraps a handler with token authentication.
 // After the OAuth-only migration every active token lives on devices.token;
 // the legacy master-token (users.token) lookup has been removed.
@@ -246,24 +261,31 @@ func (h *Handler) AuthLogin(w http.ResponseWriter, r *http.Request) {
 	} else {
 		ip = strings.TrimSpace(strings.SplitN(ip, ",", 2)[0])
 	}
-	// Loopback addresses are only reachable locally (smoke tests, local dev).
-	// Real public traffic always arrives via Cloudflare with X-Forwarded-For set.
-	if ip != "127.0.0.1" && ip != "::1" {
-		h.loginRateMu.Lock()
-		if last, ok := h.loginRateMap[ip]; ok && time.Since(last) < loginRateWindow {
-			h.loginRateMu.Unlock()
-			writeError(w, http.StatusTooManyRequests, "rate_limited",
-				"Too many login attempts. Try again in a minute.", "")
-			return
-		}
-		h.loginRateMap[ip] = time.Now()
-		h.loginRateMu.Unlock()
+	if h.checkLoginRateLimit(ip) {
+		writeError(w, http.StatusTooManyRequests, "rate_limited",
+			"Too many login attempts. Try again in a minute.", "")
+		return
 	}
 
 	var req cinchv1.LoginRequest
 	if r.Body != nil && r.ContentLength > 0 {
 		_ = json.NewDecoder(r.Body).Decode(&req)
 	}
+
+	// Invite gate: required when OAuth is off.
+	if req.InviteCode == nil || *req.InviteCode == "" {
+		writeError(w, http.StatusForbidden, "invite_required",
+			"An invite code is required to create an account on this relay.",
+			"Ask the operator for an invite code.")
+		return
+	}
+	hash := HashInviteCode(*req.InviteCode)
+	if err := h.store.RedeemInvite(hash); err != nil {
+		writeError(w, http.StatusForbidden, "invite_invalid",
+			"Invite code is invalid, expired, revoked, or used up.", "")
+		return
+	}
+
 	hostname := "unknown"
 	if req.Hostname != nil && *req.Hostname != "" {
 		hostname = *req.Hostname
@@ -273,6 +295,19 @@ func (h *Handler) AuthLogin(w http.ResponseWriter, r *http.Request) {
 	if err := h.store.CreateUser(userID); err != nil {
 		writeInternalError(w, "account creation failed", "create account", err)
 		return
+	}
+	if req.DisplayName != nil && *req.DisplayName != "" {
+		if err := h.store.SetUserDisplayName(userID, *req.DisplayName); err != nil {
+			log.Printf("set display name for %s: %v", userID, err)
+		}
+	}
+
+	// First user on the relay becomes admin automatically. CountUsers is
+	// called after the insert, so the freshly-created user is included.
+	if n, err := h.store.CountUsers(); err == nil && n == 1 {
+		if err := h.store.SetUserAdmin(userID, true); err != nil {
+			log.Printf("promote first user %s to admin: %v", userID, err)
+		}
 	}
 
 	deviceID := ulid.Make().String()
@@ -1139,6 +1174,22 @@ func writeInternalError(w http.ResponseWriter, errType, opName string, err error
 	writeError(w, http.StatusInternalServerError, errType, "Internal error", "")
 }
 
+// checkLoginRateLimit returns true if the given IP should be denied for
+// hitting the per-IP login rate window. Loopback always allowed.
+// Updates the bucket on a non-limited hit.
+func (h *Handler) checkLoginRateLimit(ip string) bool {
+	if ip == "127.0.0.1" || ip == "::1" {
+		return false
+	}
+	h.loginRateMu.Lock()
+	defer h.loginRateMu.Unlock()
+	if last, ok := h.loginRateMap[ip]; ok && time.Since(last) < loginRateWindow {
+		return true
+	}
+	h.loginRateMap[ip] = time.Now()
+	return false
+}
+
 func generateToken() string {
 	b := make([]byte, 32)
 	rand.Read(b)
@@ -1353,8 +1404,18 @@ func (h *Handler) SetDeviceNickname(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// authBrowserHTML is the self-contained login page served by GET /auth/browser.
-const authBrowserHTML = `<!DOCTYPE html>
+// authBrowserData holds the data passed to the self-host browser sign-in template.
+type authBrowserData struct {
+	// SelfHost is true when no OAuth providers are configured. When true,
+	// the template renders invite-code and display-name fields in addition
+	// to the device-name field.
+	SelfHost bool
+}
+
+// authBrowserTemplate is the self-contained login page served by GET /auth/browser
+// for self-hosted relays. It is parsed once at package init via html/template so
+// that the {{if .SelfHost}} conditional is evaluated safely at render time.
+var authBrowserTemplate = template.Must(template.New("self-host-browser").Parse(`<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -1385,6 +1446,16 @@ button:disabled{opacity:.5;cursor:not-allowed}
   <h1>Sign in to Cinch</h1>
   <p class="sub">Create an account or sign in to connect your devices.</p>
   <form id="loginForm">
+    {{if .SelfHost}}
+    <div class="field">
+      <label for="invite">Invite code</label>
+      <input type="text" id="invite" name="invite" placeholder="cinch_inv_…" required autocomplete="off">
+    </div>
+    <div class="field">
+      <label for="display">Your name (optional)</label>
+      <input type="text" id="display" name="display" placeholder="han" autocomplete="off">
+    </div>
+    {{end}}
     <div class="field">
       <label for="hostname">Device Name</label>
       <input type="text" id="hostname" name="hostname" placeholder="my-macbook" autocomplete="off">
@@ -1414,7 +1485,11 @@ button:disabled{opacity:.5;cursor:not-allowed}
     fetch(relayURL + '/auth/login', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({hostname: hostname})
+      body: JSON.stringify({
+        hostname: hostname,
+        invite_code: document.getElementById('invite') ? document.getElementById('invite').value.trim() : undefined,
+        display_name: document.getElementById('display') ? document.getElementById('display').value.trim() : undefined
+      })
     })
     .then(function(r){ return r.json().then(function(d){ return {ok: r.ok, data: d}; }); })
     .then(function(res){
@@ -1449,7 +1524,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 })();
 </script>
 </body>
-</html>`
+</html>`))
 
 // deviceCodePattern validates the device_code query parameter format before
 // it is interpolated into HTML. Only XXXX-XXXX (4 uppercase alphanumeric,
@@ -1516,8 +1591,11 @@ func (h *Handler) AuthBrowser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Legacy self-host fallback: username form.
-	w.Write([]byte(authBrowserHTML))
+	// Self-host fallback: render the invite + display-name form via template.
+	selfHost := !hasGitHub && !hasGoogle
+	if err := authBrowserTemplate.Execute(w, authBrowserData{SelfHost: selfHost}); err != nil {
+		log.Printf("AuthBrowser: template execute error: %v", err)
+	}
 }
 
 // authOAuthHTMLTemplate is the OAuth sign-in page rendered via html/template.
@@ -1809,6 +1887,13 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /ws/ticket", h.RequireAuth(h.IssueWsTicket))
 	mux.HandleFunc("GET /health", h.Health)
 	mux.HandleFunc("POST /internal/quota", h.UpdateUserQuota)
+
+	// Admin endpoints — require admin token (RequireAdmin wraps RequireAuth).
+	mux.HandleFunc("POST /admin/invites", h.RequireAdmin(h.AdminCreateInvite))
+	mux.HandleFunc("GET /admin/invites", h.RequireAdmin(h.AdminListInvites))
+	mux.HandleFunc("DELETE /admin/invites/{hash}", h.RequireAdmin(h.AdminRevokeInvite))
+	mux.HandleFunc("GET /admin/users", h.RequireAdmin(h.AdminListUsers))
+	mux.HandleFunc("DELETE /admin/users/{id}", h.RequireAdmin(h.AdminDeleteUser))
 
 	// Demo session endpoints (CORS-enabled for landing page)
 	mux.HandleFunc("POST /demo/session", h.DemoCORS(h.DemoSession))

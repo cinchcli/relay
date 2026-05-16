@@ -20,6 +20,7 @@ func keyExchangeTestServer(t *testing.T) (*httptest.Server, *Store, *Hub) {
 	t.Helper()
 
 	store := newTestStore(t)
+	installTestBootstrapInvite(t, store)
 
 	hub := NewHub()
 	go hub.Run()
@@ -34,12 +35,14 @@ func keyExchangeTestServer(t *testing.T) (*httptest.Server, *Store, *Hub) {
 	return ts, store, hub
 }
 
-// keyExchangeLogin opens a fresh OAuth-only login and returns the per-device
-// token, user_id and device_id.
+// keyExchangeLogin opens a fresh login and returns the per-device token, user_id and device_id.
 func keyExchangeLogin(t *testing.T, ts *httptest.Server, hostname string) (token, userID, deviceID string) {
 	t.Helper()
 
-	body, _ := json.Marshal(cinchv1.LoginRequest{Hostname: stringPtr(hostname)})
+	body, _ := json.Marshal(cinchv1.LoginRequest{
+		Hostname:   stringPtr(hostname),
+		InviteCode: stringPtr(testBootstrapInviteCode),
+	})
 	resp, err := http.Post(ts.URL+"/auth/login", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("login: %v", err)

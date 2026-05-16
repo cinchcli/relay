@@ -3,6 +3,8 @@ package relay
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -101,11 +103,37 @@ func (e *connectErrMsg) Error() string { return e.s }
 
 // ─── Login ──────────────────────────────────────────────────
 
-// Login mirrors the REST AuthLogin handler — anonymous account + first
-// device row, no master token (the users.token column was dropped in
-// the OAuth-only migration). PairToken is reserved in the proto and
-// intentionally left unset.
+// Login mirrors the REST AuthLogin handler — invite-gated anonymous account +
+// first device row. PairToken is reserved in the proto and intentionally left unset.
 func (s *connectAuthServer) Login(ctx context.Context, req *connect.Request[cinchv1.LoginRequest]) (*connect.Response[cinchv1.LoginResponse], error) {
+	// OAuth gate: refuse direct account creation when OAuth is configured,
+	// matching the REST AuthLogin behavior (security finding 3).
+	if s.h.OAuth != nil && (s.h.OAuth.GitHub != nil || s.h.OAuth.Google != nil) {
+		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("oauth_required"))
+	}
+
+	// IP rate limiter: mirror the per-IP window applied by REST AuthLogin.
+	ip := req.Header().Get("X-Forwarded-For")
+	if ip == "" {
+		if addr := req.Peer().Addr; addr != "" {
+			ip, _, _ = strings.Cut(addr, ":")
+		}
+	} else {
+		ip = strings.TrimSpace(strings.SplitN(ip, ",", 2)[0])
+	}
+	if s.h.checkLoginRateLimit(ip) {
+		return nil, connect.NewError(connect.CodeResourceExhausted, errors.New("rate_limited"))
+	}
+
+	// Invite gate: required when OAuth is off (same rule as REST AuthLogin).
+	if req.Msg.InviteCode == nil || *req.Msg.InviteCode == "" {
+		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("invite_required"))
+	}
+	hash := HashInviteCode(*req.Msg.InviteCode)
+	if err := s.h.store.RedeemInvite(hash); err != nil {
+		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("invite_invalid"))
+	}
+
 	hostname := "unknown"
 	if req.Msg.Hostname != nil && *req.Msg.Hostname != "" {
 		hostname = *req.Msg.Hostname
@@ -114,6 +142,18 @@ func (s *connectAuthServer) Login(ctx context.Context, req *connect.Request[cinc
 	userID := ulid.Make().String()
 	if err := s.h.store.CreateUser(userID); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.DisplayName != nil && *req.Msg.DisplayName != "" {
+		if err := s.h.store.SetUserDisplayName(userID, *req.Msg.DisplayName); err != nil {
+			log.Printf("set display name for %s: %v", userID, err)
+		}
+	}
+
+	// First user on the relay becomes admin automatically.
+	if n, err := s.h.store.CountUsers(); err == nil && n == 1 {
+		if err := s.h.store.SetUserAdmin(userID, true); err != nil {
+			log.Printf("promote first user %s to admin: %v", userID, err)
+		}
 	}
 
 	deviceID := ulid.Make().String()
