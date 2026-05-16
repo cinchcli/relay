@@ -1888,6 +1888,13 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /health", h.Health)
 	mux.HandleFunc("POST /internal/quota", h.UpdateUserQuota)
 
+	// Admin endpoints — require admin token (RequireAdmin wraps RequireAuth).
+	mux.HandleFunc("POST /admin/invites", h.RequireAdmin(h.AdminCreateInvite))
+	mux.HandleFunc("GET /admin/invites", h.RequireAdmin(h.AdminListInvites))
+	mux.HandleFunc("DELETE /admin/invites/{hash}", h.RequireAdmin(h.AdminRevokeInvite))
+	mux.HandleFunc("GET /admin/users", h.RequireAdmin(h.AdminListUsers))
+	mux.HandleFunc("DELETE /admin/users/{id}", h.RequireAdmin(h.AdminDeleteUser))
+
 	// Demo session endpoints (CORS-enabled for landing page)
 	mux.HandleFunc("POST /demo/session", h.DemoCORS(h.DemoSession))
 	mux.HandleFunc("OPTIONS /demo/session", h.DemoCORS(func(w http.ResponseWriter, r *http.Request) {}))
