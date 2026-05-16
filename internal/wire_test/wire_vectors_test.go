@@ -126,6 +126,11 @@ func TestDeviceCodePollResponseVectorsRoundTrip(t *testing.T) {
 	runGroup(t, root, "DeviceCodePollResponse", func() any { return &cinchv1.DeviceCodePollResponse{} })
 }
 
+func TestLoginRequestVectorsRoundTrip(t *testing.T) {
+	root := loadVectors(t)
+	runGroup(t, root, "LoginRequest", func() any { return &cinchv1.LoginRequest{} })
+}
+
 func TestLoginResponseVectorsRoundTrip(t *testing.T) {
 	root := loadVectors(t)
 	runGroup(t, root, "LoginResponse", func() any { return &cinchv1.LoginResponse{} })
