@@ -1760,6 +1760,8 @@ func (s *Store) IncrementDailyRequestCount(userID string) (int, error) {
 
 // Invite is the row shape returned by ListInvites.
 type Invite struct {
+	// CodeHash is the SHA-256 hex of the plaintext invite code.
+	// It is NOT the redeemable code; the plaintext cannot be recovered from it.
 	CodeHash  string
 	CreatedBy *string
 	Label     string
@@ -1827,11 +1829,22 @@ func (s *Store) ListInvites() ([]Invite, error) {
 
 // RevokeInvite marks an invite revoked. Idempotent.
 func (s *Store) RevokeInvite(codeHash string) error {
-	_, err := s.db.Exec(
+	res, err := s.db.Exec(
 		`UPDATE invites SET revoked_at = NOW() WHERE code_hash = $1 AND revoked_at IS NULL`,
 		codeHash,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		var dummy string
+		err2 := s.db.QueryRow(`SELECT code_hash FROM invites WHERE code_hash = $1`, codeHash).Scan(&dummy)
+		if errors.Is(err2, sql.ErrNoRows) {
+			return fmt.Errorf("invite not found: %s", codeHash)
+		}
+		// Row exists but was already revoked — idempotent success.
+	}
+	return nil
 }
 
 // SweepOldRequestCounts deletes daily request count rows older than retentionDays.
@@ -1865,8 +1878,14 @@ func (s *Store) CountUsers() (int, error) {
 
 // SetUserAdmin sets or clears the is_admin flag for a user.
 func (s *Store) SetUserAdmin(userID string, admin bool) error {
-	_, err := s.db.Exec(`UPDATE users SET is_admin = $1 WHERE id = $2`, admin, userID)
-	return err
+	res, err := s.db.Exec(`UPDATE users SET is_admin = $1 WHERE id = $2`, admin, userID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("user not found: %s", userID)
+	}
+	return nil
 }
 
 // SetUserDisplayName updates display_name. A blank name is a no-op.
@@ -1874,15 +1893,27 @@ func (s *Store) SetUserDisplayName(userID, name string) error {
 	if name == "" {
 		return nil
 	}
-	_, err := s.db.Exec(`UPDATE users SET display_name = $1 WHERE id = $2`, name, userID)
-	return err
+	res, err := s.db.Exec(`UPDATE users SET display_name = $1 WHERE id = $2`, name, userID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("user not found: %s", userID)
+	}
+	return nil
 }
 
 // IsUserAdmin reports whether the given user has is_admin = TRUE.
 func (s *Store) IsUserAdmin(userID string) (bool, error) {
 	var v bool
 	err := s.db.QueryRow(`SELECT is_admin FROM users WHERE id = $1`, userID).Scan(&v)
-	return v, err
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("user not found: %s", userID)
+	}
+	if err != nil {
+		return false, err
+	}
+	return v, nil
 }
 
 // ListUsers returns all user rows ordered by creation time ascending.
@@ -1906,9 +1937,10 @@ func (s *Store) ListUsers() ([]UserRow, error) {
 	return out, rows.Err()
 }
 
-// DeleteUser removes a user and its dependent rows. Relies on CASCADE on
-// oauth_identities; clips/devices/etc. use plain FK so caller must accept
-// failure if those still reference the user. For self-host operator use.
+// DeleteUser removes a user and all dependent rows in the correct FK order.
+// Wraps the deletions in a transaction so a failure leaves the DB consistent.
+// invites.created_by is left intact (SET NULL by Postgres FK).
+// For self-host operator use only.
 func (s *Store) DeleteUser(userID string) error {
 	tx, err := s.db.Begin()
 	if err != nil {

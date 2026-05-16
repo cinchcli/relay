@@ -6,6 +6,7 @@ import (
 	"encoding/base32"
 	"encoding/hex"
 	"fmt"
+	"strings"
 )
 
 const InvitePrefix = "cinch_inv_"
@@ -20,7 +21,7 @@ func GenerateInviteCode() (string, error) {
 	enc := base32.StdEncoding.WithPadding(base32.NoPadding)
 	body := enc.EncodeToString(b[:])
 	// StdEncoding is uppercase; switch to lowercase for friendlier URLs.
-	body = toLowerASCII(body)
+	body = strings.ToLower(body)
 	return InvitePrefix + body, nil
 }
 
@@ -29,16 +30,4 @@ func GenerateInviteCode() (string, error) {
 func HashInviteCode(code string) string {
 	sum := sha256.Sum256([]byte(code))
 	return hex.EncodeToString(sum[:])
-}
-
-func toLowerASCII(s string) string {
-	out := make([]byte, len(s))
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c >= 'A' && c <= 'Z' {
-			c += 'a' - 'A'
-		}
-		out[i] = c
-	}
-	return string(out)
 }
