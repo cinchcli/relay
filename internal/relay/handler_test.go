@@ -218,6 +218,51 @@ func TestAuthBrowser_ServesHTML(t *testing.T) {
 	}
 }
 
+// TestAuthBrowser_SelfHost_ShowsInviteFields verifies that GET /auth/browser on a
+// self-hosted relay (no OAuth providers) includes the invite-code and display-name
+// inputs, and that an OAuth-configured relay does NOT render those fields.
+func TestAuthBrowser_SelfHost_ShowsInviteFields(t *testing.T) {
+	t.Run("self-host shows invite and display fields", func(t *testing.T) {
+		ts, _ := setupTestServer(t) // no OAuth configured
+		resp, err := http.Get(ts.URL + "/auth/browser?device_code=AAAA-BBBB")
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200, got %d", resp.StatusCode)
+		}
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		body := string(bodyBytes)
+		if !strings.Contains(body, `id="invite"`) {
+			t.Error("self-host browser page missing invite-code input")
+		}
+		if !strings.Contains(body, `id="display"`) {
+			t.Error("self-host browser page missing display-name input")
+		}
+	})
+
+	t.Run("oauth mode omits invite and display fields", func(t *testing.T) {
+		ts, _ := setupOAuthTestServer(t, "some-subject", true) // both providers → picker page, no auto-redirect
+		resp, err := http.Get(ts.URL + "/auth/browser")
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200, got %d", resp.StatusCode)
+		}
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		body := string(bodyBytes)
+		if strings.Contains(body, `id="invite"`) {
+			t.Error("OAuth browser page must not render invite-code input")
+		}
+		if strings.Contains(body, `id="display"`) {
+			t.Error("OAuth browser page must not render display-name input")
+		}
+	})
+}
+
 func TestCompleteDeviceCode_IssuesFreshCredentials(t *testing.T) {
 	ts, _ := setupTestServer(t)
 
