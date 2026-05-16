@@ -95,7 +95,19 @@ func main() {
 	logStartupStatus(mediaStore, handler.OAuth)
 
 	fmt.Printf("cinch relay v%s listening on :%s\n", version, port)
-	if err := http.ListenAndServe(":"+port, mux); err != nil {
+	srv := &http.Server{
+		Addr:    ":" + port,
+		Handler: mux,
+		// Cap header-read time to defend against slowloris-style attacks
+		// without affecting hijacked WebSocket connections (/ws) or
+		// Connect-RPC streaming endpoints (/v1/events), which need to stay
+		// open long after the request headers are parsed. ReadTimeout /
+		// WriteTimeout are intentionally left at 0 for the same reason; add
+		// them per-handler if a specific route needs a bound.
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+	if err := srv.ListenAndServe(); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
 }
