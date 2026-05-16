@@ -1,9 +1,12 @@
 package relay
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // ApplyBootstrapInvite installs the env-provided invite code as a single-use
@@ -24,10 +27,12 @@ func ApplyBootstrapInvite(s *Store, code string, log io.Writer) error {
 	hash := HashInviteCode(code)
 	exp := time.Now().Add(7 * 24 * time.Hour)
 	if err := s.CreateInvite(hash, nil, "bootstrap", 1, exp); err != nil {
-		// Idempotency: if relay restarts before redemption, the same hash is
-		// already in the table; ignore duplicate-key errors silently.
-		fmt.Fprintf(log, "bootstrap invite already present in DB (restart before redemption): %v\n", err)
-		return nil
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			fmt.Fprintln(log, "bootstrap invite already present in DB (restart before redemption)")
+			return nil
+		}
+		return fmt.Errorf("creating bootstrap invite: %w", err)
 	}
 	fmt.Fprintf(log, "bootstrap invite installed; expires %s\n", exp.UTC().Format(time.RFC3339))
 	return nil
