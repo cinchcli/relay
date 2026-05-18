@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -1458,6 +1459,40 @@ func (s *Store) SweepAllUsersRetentionReturningMedia() (mediaPaths []string, err
 		mediaPaths = append(mediaPaths, paths...)
 	}
 	return mediaPaths, nil
+}
+
+// UpdateDeviceVersion persists the client_version + client_type for a
+// device. clientType must be "cli" or "desktop"; other values return an
+// error and leave the row unchanged.
+func (s *Store) UpdateDeviceVersion(ctx context.Context, deviceID, version, clientType string) error {
+	if clientType != "cli" && clientType != "desktop" {
+		return fmt.Errorf("invalid client_type %q", clientType)
+	}
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE devices
+		 SET client_version = $1,
+		     client_type = $2,
+		     client_version_at = NOW()
+		 WHERE id = $3`,
+		version, clientType, deviceID,
+	)
+	return err
+}
+
+// GetDeviceVersion reads back the three version columns. Returns empty
+// strings and zero time if the device exists but has not reported.
+func (s *Store) GetDeviceVersion(ctx context.Context, deviceID string) (version, clientType string, reportedAt time.Time, err error) {
+	var v, ty sql.NullString
+	var ts sql.NullTime
+	err = s.db.QueryRowContext(ctx,
+		`SELECT client_version, client_type, client_version_at
+		 FROM devices WHERE id = $1`,
+		deviceID,
+	).Scan(&v, &ty, &ts)
+	if err != nil {
+		return "", "", time.Time{}, err
+	}
+	return v.String, ty.String, ts.Time, nil
 }
 
 // UpdateDeviceRetention sets the remote_retention_days for a specific device.
