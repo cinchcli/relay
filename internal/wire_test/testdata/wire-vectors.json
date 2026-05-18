@@ -147,7 +147,26 @@
       "nickname": "main",
       "public_key": "abc123base64",
       "public_key_fingerprint": "deadbeef",
-      "machine_id": "23856754c515bc5a"
+      "machine_id": "23856754c515bc5a",
+      "client_version": "0.1.7",
+      "client_type": "desktop",
+      "client_version_at": "2026-04-30T12:34:56Z"
+    },
+    "with_version_reported": {
+      "id": "dev_01HX9V1ABCDEF",
+      "hostname": "alice-vm",
+      "source_key": "remote:alice-vm",
+      "clip_count": 1,
+      "paired_at": "2026-04-01T12:00:00Z",
+      "last_push_at": "2026-05-18T09:15:30Z",
+      "online": true,
+      "nickname": "Linux VM",
+      "public_key": "vmpubkey",
+      "public_key_fingerprint": "vmfingerprint",
+      "machine_id": "vm-machine-id",
+      "client_version": "0.1.8",
+      "client_type": "cli",
+      "client_version_at": "2026-05-18T09:15:30Z"
     }
   },
 
