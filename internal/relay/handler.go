@@ -1887,6 +1887,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /ws/ticket", h.RequireAuth(h.IssueWsTicket))
 	mux.HandleFunc("GET /health", h.Health)
 	mux.HandleFunc("POST /internal/quota", h.UpdateUserQuota)
+	mux.HandleFunc("GET /internal/users", h.ListInternalUsers)
 
 	// Admin endpoints — require admin token (RequireAdmin wraps RequireAuth).
 	mux.HandleFunc("POST /admin/invites", h.RequireAdmin(h.AdminCreateInvite))

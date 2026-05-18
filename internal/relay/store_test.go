@@ -2,6 +2,7 @@ package relay
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"reflect"
 	"strings"
@@ -574,5 +575,249 @@ func TestListClipsFiltered_AllFilters(t *testing.T) {
 				t.Fatalf("want %v, got %v", tc.want, ids)
 			}
 		})
+	}
+}
+
+func TestListInternalUserAggregates_EmptyStore(t *testing.T) {
+	store := NewTestStore(t)
+	page, err := store.ListInternalUserAggregates(InternalUsersFilter{Limit: 100})
+	if err != nil {
+		t.Fatalf("ListInternalUserAggregates: %v", err)
+	}
+	if len(page.Rows) != 0 {
+		t.Fatalf("expected 0 rows on empty store, got %d", len(page.Rows))
+	}
+	if page.NextCursor != "" {
+		t.Fatalf("expected empty cursor, got %q", page.NextCursor)
+	}
+}
+
+func TestListInternalUserAggregates_AggregatesDevices(t *testing.T) {
+	store := NewTestStore(t)
+	if err := store.CreateUser("user-a"); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	// 3 paired devices, 1 already revoked, only 2 with last_push_at.
+	if _, err := store.db.Exec(`
+		INSERT INTO devices (id, user_id, hostname, source_key, last_push_at, revoked_at)
+		VALUES ('d1','user-a','h1','sk1', NOW() - interval '1 hour',    NULL),
+		       ('d2','user-a','h2','sk2', NOW() - interval '5 minutes', NULL),
+		       ('d3','user-a','h3','sk3', NULL,                         NOW())
+	`); err != nil {
+		t.Fatalf("seed devices: %v", err)
+	}
+
+	page, err := store.ListInternalUserAggregates(InternalUsersFilter{Limit: 100})
+	if err != nil {
+		t.Fatalf("ListInternalUserAggregates: %v", err)
+	}
+	if len(page.Rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(page.Rows))
+	}
+	row := page.Rows[0]
+	if row.UserID != "user-a" {
+		t.Fatalf("user_id = %q, want user-a", row.UserID)
+	}
+	if row.DeviceCount != 3 {
+		t.Fatalf("device_count = %d, want 3", row.DeviceCount)
+	}
+	if row.ActiveDeviceCount != 2 {
+		t.Fatalf("active_device_count = %d, want 2", row.ActiveDeviceCount)
+	}
+	if row.LastActiveAt == nil {
+		t.Fatal("last_active_at should be non-nil when at least one device has last_push_at")
+	}
+	if row.Capabilities != nil {
+		t.Fatalf("capabilities should be nil when no user_capabilities row exists, got %+v", row.Capabilities)
+	}
+}
+
+func TestListInternalUserAggregates_IncludesCapabilities(t *testing.T) {
+	store := NewTestStore(t)
+	if err := store.CreateUser("user-cap"); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := store.UpsertUserCapabilities(UserCapabilities{
+		UserID: "user-cap", DeviceLimit: 10, RetentionDays: 90, RateLimit: 0,
+	}); err != nil {
+		t.Fatalf("UpsertUserCapabilities: %v", err)
+	}
+
+	page, err := store.ListInternalUserAggregates(InternalUsersFilter{Limit: 100})
+	if err != nil {
+		t.Fatalf("ListInternalUserAggregates: %v", err)
+	}
+	if len(page.Rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(page.Rows))
+	}
+	c := page.Rows[0].Capabilities
+	if c == nil {
+		t.Fatal("expected non-nil capabilities")
+	}
+	if c.DeviceLimit != 10 || c.RetentionDays != 90 {
+		t.Fatalf("unexpected capabilities: %+v", c)
+	}
+}
+
+func TestListInternalUserAggregates_UpdatedSinceFiltersOlderUsers(t *testing.T) {
+	store := NewTestStore(t)
+
+	// Old user: created 2 days ago, no devices, no capabilities.
+	if err := store.CreateUser("old-user"); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if _, err := store.db.Exec(
+		`UPDATE users SET created_at = NOW() - interval '2 days' WHERE id = 'old-user'`,
+	); err != nil {
+		t.Fatalf("backdate user: %v", err)
+	}
+
+	// Fresh user: created just now.
+	if err := store.CreateUser("fresh-user"); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	cutoff := time.Now().Add(-1 * time.Hour)
+	page, err := store.ListInternalUserAggregates(InternalUsersFilter{
+		Limit:        100,
+		UpdatedSince: &cutoff,
+	})
+	if err != nil {
+		t.Fatalf("ListInternalUserAggregates: %v", err)
+	}
+	if len(page.Rows) != 1 || page.Rows[0].UserID != "fresh-user" {
+		t.Fatalf("expected only fresh-user, got %+v", page.Rows)
+	}
+}
+
+func TestListInternalUserAggregates_UpdatedSinceCatchesDeviceActivity(t *testing.T) {
+	store := NewTestStore(t)
+
+	// User and its row are old, but a device just pushed.
+	if err := store.CreateUser("user-with-active-device"); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if _, err := store.db.Exec(
+		`UPDATE users SET created_at = NOW() - interval '30 days' WHERE id = 'user-with-active-device'`,
+	); err != nil {
+		t.Fatalf("backdate user: %v", err)
+	}
+	if _, err := store.db.Exec(`
+		INSERT INTO devices (id, user_id, hostname, source_key, paired_at, last_push_at)
+		VALUES ('dev-active','user-with-active-device','h','sk', NOW() - interval '30 days', NOW())
+	`); err != nil {
+		t.Fatalf("seed device: %v", err)
+	}
+
+	cutoff := time.Now().Add(-1 * time.Hour)
+	page, err := store.ListInternalUserAggregates(InternalUsersFilter{
+		Limit:        100,
+		UpdatedSince: &cutoff,
+	})
+	if err != nil {
+		t.Fatalf("ListInternalUserAggregates: %v", err)
+	}
+	if len(page.Rows) != 1 || page.Rows[0].UserID != "user-with-active-device" {
+		t.Fatalf("expected user-with-active-device to be included via device activity, got %+v", page.Rows)
+	}
+}
+
+func TestListInternalUserAggregates_ExcludesDemoByDefault(t *testing.T) {
+	store := NewTestStore(t)
+	if err := store.CreateUser("real-user"); err != nil {
+		t.Fatalf("CreateUser real: %v", err)
+	}
+	if err := store.CreateUser("demo-user"); err != nil {
+		t.Fatalf("CreateUser demo: %v", err)
+	}
+	if _, err := store.db.Exec(
+		`UPDATE users SET is_demo = TRUE WHERE id = 'demo-user'`,
+	); err != nil {
+		t.Fatalf("flag demo: %v", err)
+	}
+
+	// Default (IncludeDemo=false) excludes demo.
+	page, err := store.ListInternalUserAggregates(InternalUsersFilter{Limit: 100})
+	if err != nil {
+		t.Fatalf("default: %v", err)
+	}
+	if len(page.Rows) != 1 || page.Rows[0].UserID != "real-user" {
+		t.Fatalf("expected only real-user, got %+v", page.Rows)
+	}
+
+	// IncludeDemo=true brings demo back.
+	page2, err := store.ListInternalUserAggregates(InternalUsersFilter{Limit: 100, IncludeDemo: true})
+	if err != nil {
+		t.Fatalf("include demo: %v", err)
+	}
+	if len(page2.Rows) != 2 {
+		t.Fatalf("expected 2 rows with IncludeDemo, got %d", len(page2.Rows))
+	}
+}
+
+func TestListInternalUserAggregates_PaginatesByCursor(t *testing.T) {
+	store := NewTestStore(t)
+	// Seed 5 users with monotonically increasing created_at.
+	for i := 0; i < 5; i++ {
+		uid := fmt.Sprintf("u%d", i)
+		if err := store.CreateUser(uid); err != nil {
+			t.Fatalf("CreateUser %s: %v", uid, err)
+		}
+		if _, err := store.db.Exec(
+			`UPDATE users SET created_at = $1 WHERE id = $2`,
+			time.Date(2026, 5, 1+i, 0, 0, 0, 0, time.UTC), uid,
+		); err != nil {
+			t.Fatalf("backdate %s: %v", uid, err)
+		}
+	}
+
+	// Page 1: limit 2.
+	p1, err := store.ListInternalUserAggregates(InternalUsersFilter{Limit: 2})
+	if err != nil {
+		t.Fatalf("page 1: %v", err)
+	}
+	if len(p1.Rows) != 2 || p1.Rows[0].UserID != "u0" || p1.Rows[1].UserID != "u1" {
+		t.Fatalf("page 1 unexpected: %+v", p1.Rows)
+	}
+	if p1.NextCursor == "" {
+		t.Fatal("page 1 should have a NextCursor")
+	}
+
+	// Page 2 via cursor.
+	cur, err := DecodeInternalCursor(p1.NextCursor)
+	if err != nil {
+		t.Fatalf("decode cursor: %v", err)
+	}
+	p2, err := store.ListInternalUserAggregates(InternalUsersFilter{
+		Limit:  2,
+		Cursor: &cur,
+	})
+	if err != nil {
+		t.Fatalf("page 2: %v", err)
+	}
+	if len(p2.Rows) != 2 || p2.Rows[0].UserID != "u2" || p2.Rows[1].UserID != "u3" {
+		t.Fatalf("page 2 unexpected: %+v", p2.Rows)
+	}
+	if p2.NextCursor == "" {
+		t.Fatal("page 2 should still have a NextCursor (1 row left)")
+	}
+
+	// Page 3: last row, no further cursor.
+	cur2, err := DecodeInternalCursor(p2.NextCursor)
+	if err != nil {
+		t.Fatalf("decode cursor 2: %v", err)
+	}
+	p3, err := store.ListInternalUserAggregates(InternalUsersFilter{
+		Limit:  2,
+		Cursor: &cur2,
+	})
+	if err != nil {
+		t.Fatalf("page 3: %v", err)
+	}
+	if len(p3.Rows) != 1 || p3.Rows[0].UserID != "u4" {
+		t.Fatalf("page 3 unexpected: %+v", p3.Rows)
+	}
+	if p3.NextCursor != "" {
+		t.Fatalf("page 3 should not have a NextCursor, got %q", p3.NextCursor)
 	}
 }
