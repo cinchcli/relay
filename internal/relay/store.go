@@ -306,6 +306,18 @@ func migrate(db *sql.DB) error {
 		}
 	}
 
+	// Add client version tracking columns to devices for existing databases.
+	for _, stmt := range []string{
+		`ALTER TABLE devices ADD COLUMN IF NOT EXISTS client_version TEXT`,
+		`ALTER TABLE devices ADD COLUMN IF NOT EXISTS client_type TEXT`,
+		`ALTER TABLE devices ADD COLUMN IF NOT EXISTS client_version_at TIMESTAMPTZ`,
+		`CREATE INDEX IF NOT EXISTS idx_devices_client_type ON devices(client_type) WHERE client_type IS NOT NULL`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("adding client version columns to devices: %w", err)
+		}
+	}
+
 	// Backfill oauth_identities from legacy users.identity_provider/identity_subject.
 	bfRows, err := db.Query(`
 		SELECT id, identity_provider, identity_subject FROM users
