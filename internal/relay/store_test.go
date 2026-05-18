@@ -657,3 +657,66 @@ func TestListInternalUserAggregates_IncludesCapabilities(t *testing.T) {
 		t.Fatalf("unexpected capabilities: %+v", c)
 	}
 }
+
+func TestListInternalUserAggregates_UpdatedSinceFiltersOlderUsers(t *testing.T) {
+	store := NewTestStore(t)
+
+	// Old user: created 2 days ago, no devices, no capabilities.
+	if err := store.CreateUser("old-user"); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if _, err := store.db.Exec(
+		`UPDATE users SET created_at = NOW() - interval '2 days' WHERE id = 'old-user'`,
+	); err != nil {
+		t.Fatalf("backdate user: %v", err)
+	}
+
+	// Fresh user: created just now.
+	if err := store.CreateUser("fresh-user"); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	cutoff := time.Now().Add(-1 * time.Hour)
+	page, err := store.ListInternalUserAggregates(InternalUsersFilter{
+		Limit:        100,
+		UpdatedSince: &cutoff,
+	})
+	if err != nil {
+		t.Fatalf("ListInternalUserAggregates: %v", err)
+	}
+	if len(page.Rows) != 1 || page.Rows[0].UserID != "fresh-user" {
+		t.Fatalf("expected only fresh-user, got %+v", page.Rows)
+	}
+}
+
+func TestListInternalUserAggregates_UpdatedSinceCatchesDeviceActivity(t *testing.T) {
+	store := NewTestStore(t)
+
+	// User and its row are old, but a device just pushed.
+	if err := store.CreateUser("user-with-active-device"); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if _, err := store.db.Exec(
+		`UPDATE users SET created_at = NOW() - interval '30 days' WHERE id = 'user-with-active-device'`,
+	); err != nil {
+		t.Fatalf("backdate user: %v", err)
+	}
+	if _, err := store.db.Exec(`
+		INSERT INTO devices (id, user_id, hostname, source_key, paired_at, last_push_at)
+		VALUES ('dev-active','user-with-active-device','h','sk', NOW() - interval '30 days', NOW())
+	`); err != nil {
+		t.Fatalf("seed device: %v", err)
+	}
+
+	cutoff := time.Now().Add(-1 * time.Hour)
+	page, err := store.ListInternalUserAggregates(InternalUsersFilter{
+		Limit:        100,
+		UpdatedSince: &cutoff,
+	})
+	if err != nil {
+		t.Fatalf("ListInternalUserAggregates: %v", err)
+	}
+	if len(page.Rows) != 1 || page.Rows[0].UserID != "user-with-active-device" {
+		t.Fatalf("expected user-with-active-device to be included via device activity, got %+v", page.Rows)
+	}
+}
