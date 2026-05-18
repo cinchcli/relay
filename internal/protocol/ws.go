@@ -94,6 +94,25 @@ const (
 	ActionClientHello = "client_hello"
 )
 
+// HTTP header names for header-side version reporting. Push-only CLI
+// clients that never open a WebSocket cannot send a client_hello, so
+// every authenticated HTTP request additionally carries these headers.
+// The relay reads them in the auth middleware (parallel to the hub's
+// client_hello path) and persists the version asynchronously.
+const (
+	HeaderClientVersion = "X-Cinch-Client-Version"
+	HeaderClientType    = "X-Cinch-Client-Type"
+)
+
+// ClientType* are the allow-listed values for HeaderClientType and the
+// ClientHelloPayload.Type field. The Store.UpdateDeviceVersion method
+// rejects anything else; both the hub and the middleware filter on
+// these constants before dispatching.
+const (
+	ClientTypeCLI     = "cli"
+	ClientTypeDesktop = "desktop"
+)
+
 // ContentType is the app-level enum for clip classification. The wire uses
 // plain `string` (matching `cinchv1.Clip.ContentType`); this typed alias is
 // kept so callers can write `protocol.ContentImage` instead of the raw

@@ -3,6 +3,7 @@
 package relay
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"database/sql"
@@ -237,6 +238,25 @@ func (h *Handler) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 
 		r.Header.Set("X-Device-ID", deviceID)
 		r.Header.Set("X-User-ID", userID)
+
+		// Header-side version reporting for clients that never open a
+		// WebSocket (e.g. push-only `cinch push` invocations). Mirrors
+		// the hub's client_hello dispatch in hub.go: both headers must
+		// be present, the client type must be on the allowlist, and
+		// persistence is fire-and-forget so the request is never
+		// blocked on the DB roundtrip.
+		if v := r.Header.Get(protocol.HeaderClientVersion); v != "" {
+			if ty := r.Header.Get(protocol.HeaderClientType); ty == protocol.ClientTypeCLI || ty == protocol.ClientTypeDesktop {
+				go func(devID, version, clientType string) {
+					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					if err := h.store.UpdateDeviceVersion(ctx, devID, version, clientType); err != nil {
+						log.Printf("middleware: persist version failed for %s: %v", devID, err)
+					}
+				}(deviceID, v, ty)
+			}
+		}
+
 		next(w, r)
 	}
 }
