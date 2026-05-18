@@ -114,7 +114,14 @@ func (h *Handler) ListInternalUsers(w http.ResponseWriter, r *http.Request) {
 		}
 		f.UpdatedSince = &t
 	}
-	f.IncludeDemo = q.Get("include_demo") == "true"
+	if v := q.Get("include_demo"); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_include_demo", "include_demo must be a boolean (true/false/1/0)", "")
+			return
+		}
+		f.IncludeDemo = b
+	}
 
 	page, err := h.store.ListInternalUserAggregates(f)
 	if err != nil {

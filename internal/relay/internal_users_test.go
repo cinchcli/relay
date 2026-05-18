@@ -74,6 +74,21 @@ func TestInternalUsers_RejectsWrongSecret(t *testing.T) {
 	}
 }
 
+func TestInternalUsers_RejectsBadIncludeDemo(t *testing.T) {
+	ts, _ := setupTestServerWithSecret(t, "test-secret")
+
+	req, _ := http.NewRequest("GET", ts.URL+"/internal/users?include_demo=potato", nil)
+	req.Header.Set("Authorization", "Bearer test-secret")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for bad include_demo, got %d", resp.StatusCode)
+	}
+}
+
 func TestInternalUsers_HappyPathEmpty(t *testing.T) {
 	ts, _ := setupTestServerWithSecret(t, "test-secret")
 
