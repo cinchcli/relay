@@ -1962,3 +1962,147 @@ func (s *Store) DeleteUser(userID string) error {
 	}
 	return tx.Commit()
 }
+
+// InternalUsersFilter is the input to ListInternalUserAggregates.
+// CursorCreatedAt/CursorUserID together form a keyset for pagination.
+type InternalUsersFilter struct {
+	Limit           int
+	CursorCreatedAt *time.Time
+	CursorUserID    string
+	UpdatedSince    *time.Time
+	IncludeDemo     bool
+}
+
+// InternalUserAggregate is one row returned by ListInternalUserAggregates.
+// Capabilities is nil when the user has no user_capabilities row.
+type InternalUserAggregate struct {
+	UserID            string
+	CreatedAt         time.Time
+	IsDemo            bool
+	DeviceCount       int
+	ActiveDeviceCount int
+	LastActiveAt      *time.Time
+	Capabilities      *InternalUserCapabilities
+}
+
+// InternalUserCapabilities mirrors user_capabilities columns plus updated_at.
+type InternalUserCapabilities struct {
+	DeviceLimit    int
+	RetentionDays  int
+	RateLimit      int
+	GraceExpiresAt *time.Time
+	UpdatedAt      time.Time
+}
+
+// InternalUsersPage wraps a result set with an opaque cursor for the next page.
+type InternalUsersPage struct {
+	Rows       []InternalUserAggregate
+	NextCursor string
+}
+
+// ListInternalUserAggregates returns user rows with device aggregates and
+// capability echoes, paginated by (created_at, id). Demo users are excluded
+// unless f.IncludeDemo is true. UpdatedSince filters to users whose user row,
+// capabilities row, or any device timestamp is newer than the given instant.
+func (s *Store) ListInternalUserAggregates(f InternalUsersFilter) (InternalUsersPage, error) {
+	limit := f.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+
+	const q = `
+SELECT
+    u.id,
+    u.created_at,
+    u.is_demo,
+    COUNT(d.id)                                                   AS device_count,
+    COUNT(d.id) FILTER (WHERE d.revoked_at IS NULL)               AS active_device_count,
+    MAX(d.last_push_at)                                           AS last_active_at,
+    c.device_limit,
+    c.retention_days,
+    c.rate_limit,
+    c.grace_expires_at,
+    c.updated_at                                                  AS capabilities_updated_at
+FROM users u
+LEFT JOIN devices           d ON d.user_id = u.id
+LEFT JOIN user_capabilities c ON c.user_id = u.id
+WHERE
+    ($1::boolean OR NOT u.is_demo)
+    AND ($2::timestamptz IS NULL
+         OR u.created_at > $2
+         OR (u.created_at = $2 AND u.id > $3))
+GROUP BY u.id, u.created_at, u.is_demo,
+         c.device_limit, c.retention_days, c.rate_limit, c.grace_expires_at, c.updated_at
+HAVING $4::timestamptz IS NULL
+    OR u.created_at > $4
+    OR c.updated_at > $4
+    OR MAX(d.last_push_at) > $4
+    OR MAX(d.paired_at)    > $4
+    OR MAX(d.revoked_at)   > $4
+ORDER BY u.created_at ASC, u.id ASC
+LIMIT $5
+`
+
+	rows, err := s.db.Query(q,
+		f.IncludeDemo,
+		f.CursorCreatedAt,
+		f.CursorUserID,
+		f.UpdatedSince,
+		limit+1, // n+1 trick to know if there's another page
+	)
+	if err != nil {
+		return InternalUsersPage{}, fmt.Errorf("query internal users: %w", err)
+	}
+	defer rows.Close()
+
+	var out []InternalUserAggregate
+	for rows.Next() {
+		var a InternalUserAggregate
+		var lastActive, capUpdated, capGrace sql.NullTime
+		var capDeviceLimit, capRetention, capRateLimit sql.NullInt64
+		if err := rows.Scan(
+			&a.UserID, &a.CreatedAt, &a.IsDemo,
+			&a.DeviceCount, &a.ActiveDeviceCount, &lastActive,
+			&capDeviceLimit, &capRetention, &capRateLimit, &capGrace, &capUpdated,
+		); err != nil {
+			return InternalUsersPage{}, fmt.Errorf("scan internal user row: %w", err)
+		}
+		if lastActive.Valid {
+			t := lastActive.Time
+			a.LastActiveAt = &t
+		}
+		if capUpdated.Valid {
+			caps := &InternalUserCapabilities{
+				DeviceLimit:   int(capDeviceLimit.Int64),
+				RetentionDays: int(capRetention.Int64),
+				RateLimit:     int(capRateLimit.Int64),
+				UpdatedAt:     capUpdated.Time,
+			}
+			if capGrace.Valid {
+				t := capGrace.Time
+				caps.GraceExpiresAt = &t
+			}
+			a.Capabilities = caps
+		}
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		return InternalUsersPage{}, fmt.Errorf("iterate internal users: %w", err)
+	}
+
+	page := InternalUsersPage{Rows: out}
+	if len(out) > limit {
+		// We fetched limit+1 rows. Drop the extra and emit a cursor pointing at
+		// the last in-page row so the next call resumes immediately after it.
+		last := out[limit-1]
+		page.Rows = out[:limit]
+		page.NextCursor = EncodeInternalCursor(InternalCursorPayload{
+			CreatedAt: last.CreatedAt,
+			UserID:    last.UserID,
+		})
+	}
+	return page, nil
+}

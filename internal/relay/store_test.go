@@ -576,3 +576,87 @@ func TestListClipsFiltered_AllFilters(t *testing.T) {
 		})
 	}
 }
+
+func TestListInternalUserAggregates_EmptyStore(t *testing.T) {
+	store := NewTestStore(t)
+	page, err := store.ListInternalUserAggregates(InternalUsersFilter{Limit: 100})
+	if err != nil {
+		t.Fatalf("ListInternalUserAggregates: %v", err)
+	}
+	if len(page.Rows) != 0 {
+		t.Fatalf("expected 0 rows on empty store, got %d", len(page.Rows))
+	}
+	if page.NextCursor != "" {
+		t.Fatalf("expected empty cursor, got %q", page.NextCursor)
+	}
+}
+
+func TestListInternalUserAggregates_AggregatesDevices(t *testing.T) {
+	store := NewTestStore(t)
+	if err := store.CreateUser("user-a"); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	// Pair 3 devices, then revoke 1.
+	if _, err := store.db.Exec(`
+		INSERT INTO devices (id, user_id, hostname, source_key, last_push_at)
+		VALUES ('d1','user-a','h1','sk1', NOW() - interval '1 hour'),
+		       ('d2','user-a','h2','sk2', NOW() - interval '5 minutes'),
+		       ('d3','user-a','h3','sk3', NULL)
+	`); err != nil {
+		t.Fatalf("seed devices: %v", err)
+	}
+	if _, err := store.db.Exec(`UPDATE devices SET revoked_at = NOW() WHERE id = 'd3'`); err != nil {
+		t.Fatalf("revoke device: %v", err)
+	}
+
+	page, err := store.ListInternalUserAggregates(InternalUsersFilter{Limit: 100})
+	if err != nil {
+		t.Fatalf("ListInternalUserAggregates: %v", err)
+	}
+	if len(page.Rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(page.Rows))
+	}
+	row := page.Rows[0]
+	if row.UserID != "user-a" {
+		t.Fatalf("user_id = %q, want user-a", row.UserID)
+	}
+	if row.DeviceCount != 3 {
+		t.Fatalf("device_count = %d, want 3", row.DeviceCount)
+	}
+	if row.ActiveDeviceCount != 2 {
+		t.Fatalf("active_device_count = %d, want 2", row.ActiveDeviceCount)
+	}
+	if row.LastActiveAt == nil {
+		t.Fatal("last_active_at should be non-nil when at least one device has last_push_at")
+	}
+	if row.Capabilities != nil {
+		t.Fatalf("capabilities should be nil when no user_capabilities row exists, got %+v", row.Capabilities)
+	}
+}
+
+func TestListInternalUserAggregates_IncludesCapabilities(t *testing.T) {
+	store := NewTestStore(t)
+	if err := store.CreateUser("user-cap"); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := store.UpsertUserCapabilities(UserCapabilities{
+		UserID: "user-cap", DeviceLimit: 10, RetentionDays: 90, RateLimit: 0,
+	}); err != nil {
+		t.Fatalf("UpsertUserCapabilities: %v", err)
+	}
+
+	page, err := store.ListInternalUserAggregates(InternalUsersFilter{Limit: 100})
+	if err != nil {
+		t.Fatalf("ListInternalUserAggregates: %v", err)
+	}
+	if len(page.Rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(page.Rows))
+	}
+	c := page.Rows[0].Capabilities
+	if c == nil {
+		t.Fatal("expected non-nil capabilities")
+	}
+	if c.DeviceLimit != 10 || c.RetentionDays != 90 {
+		t.Fatalf("unexpected capabilities: %+v", c)
+	}
+}
