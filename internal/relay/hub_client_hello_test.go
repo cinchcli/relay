@@ -96,3 +96,37 @@ func TestHub_ClientHello_NilPayload_NoCrash(t *testing.T) {
 	}
 	t.Fatalf("follow-up hello not persisted after malformed message")
 }
+
+// TestHub_ClientHello_InvalidType_NoUpdate verifies the WS client_type
+// allowlist mirrors the HTTP middleware: anything other than "cli" or
+// "desktop" is dropped before the store call, so the device row stays
+// empty. Mirrors TestVersionHeaders_InvalidType_NoUpdate.
+func TestHub_ClientHello_InvalidType_NoUpdate(t *testing.T) {
+	ts, store, _ := keyExchangeTestServer(t)
+	token, _, deviceID := keyExchangeLogin(t, ts, "host-hello-invalid")
+
+	wsURL := strings.Replace(ts.URL, "http://", "ws://", 1) + "/ws?token=" + token
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("ws dial: %v", err)
+	}
+	defer conn.Close()
+
+	hello := protocol.WSMessage{
+		Action: protocol.ActionClientHello,
+		ClientHello: &protocol.ClientHelloPayload{
+			Version: "0.1.8",
+			Type:    "chrome",
+		},
+	}
+	if err := conn.WriteJSON(hello); err != nil {
+		t.Fatalf("write hello: %v", err)
+	}
+
+	// Give any (incorrect) async persistence a chance to complete.
+	time.Sleep(200 * time.Millisecond)
+	v, ty, _, _ := store.GetDeviceVersion(context.Background(), deviceID)
+	if v != "" || ty != "" {
+		t.Errorf("invalid type should be rejected; got (%q, %q)", v, ty)
+	}
+}

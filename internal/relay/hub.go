@@ -548,6 +548,14 @@ func (h *Hub) HandleAgentMessage(deviceID string, msg *protocol.WSMessage) {
 		if msg.ClientHello == nil || h.versionStore == nil || deviceID == "" {
 			return // malformed, unconfigured, or legacy master-token conn
 		}
+		// Allowlist client_type pre-flight so HTTP and WS paths are
+		// symmetric: anything other than "cli" or "desktop" is dropped
+		// silently before the store call, avoiding a DB round-trip and
+		// error log per malformed message.
+		clientType := msg.ClientHello.Type
+		if clientType != protocol.ClientTypeCLI && clientType != protocol.ClientTypeDesktop {
+			return
+		}
 		// Persist asynchronously so the WS read loop is not blocked on DB.
 		go func(devID, version, clientType string) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -555,6 +563,6 @@ func (h *Hub) HandleAgentMessage(deviceID string, msg *protocol.WSMessage) {
 			if err := h.versionStore.UpdateDeviceVersion(ctx, devID, version, clientType); err != nil {
 				log.Printf("hub: update device version failed for %s: %v", devID, err)
 			}
-		}(deviceID, msg.ClientHello.Version, msg.ClientHello.Type)
+		}(deviceID, msg.ClientHello.Version, clientType)
 	}
 }
