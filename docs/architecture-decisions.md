@@ -105,22 +105,34 @@ CREATE TABLE user_capabilities (
 ### `GET /internal/users`
 
 Read-only counterpart to `POST /internal/quota`. Returns paginated user
-rows with device aggregates so the SaaS billing layer can render its
-admin dashboard. Disabled by default — enable by setting
+rows with device aggregates so the billing Worker can render its admin
+dashboard. Disabled by default — enable by setting
 `INTERNAL_SERVICE_SECRET`. Self-hosters should use `GET /admin/users`
 instead.
 
-Query params: `limit` (1–1000, default 100), `cursor` (opaque, from a
-prior response), `updated_since` (RFC 3339), `include_demo` (boolean,
-default false; accepts `true/false/1/0` per `strconv.ParseBool`).
+Authentication: `Authorization: Bearer <INTERNAL_SERVICE_SECRET>`.
+
+Query params: `limit` (1–1000, default 100), `cursor` (opaque keyset
+from a prior response — pagination is stable on `(created_at ASC,
+user_id ASC)`), `updated_since` (RFC 3339; surfaces a user when any of
+`users.created_at`, `user_capabilities.updated_at`,
+`MAX(devices.last_push_at)`, `MAX(devices.paired_at)`, or
+`MAX(devices.revoked_at)` is newer than the given instant),
+`include_demo` (boolean, default false; accepts `true/false/1/0`).
 
 Response shape: `{users: [...], next_cursor?: string}`. Each user row
-includes only `user_id`, `created_at`, `is_demo`, `device_count`,
-`active_device_count`, `last_active_at`, and a nullable `capabilities`
-block. Device tokens, hostnames, nicknames, machine IDs, clip metadata,
-key material, and OAuth identity strings are **never** returned by this
-endpoint. If biz needs per-device drill-down, add a separate scoped
-endpoint — don't widen this one.
+contains exactly: `user_id` (string), `created_at` (RFC 3339), `is_demo`
+(bool), `device_count` (int), `active_device_count` (int — non-revoked
+devices), `last_active_at` (RFC 3339, omitted when no device has pushed),
+and `capabilities` (nullable object — emitted as JSON `null` when the
+user has no `user_capabilities` row; otherwise contains `device_limit`,
+`retention_days`, `rate_limit` (all int), `grace_expires_at` (RFC 3339
+or null), and `updated_at` (RFC 3339)).
+
+Device tokens, hostnames, nicknames, machine IDs, clip metadata, key
+material, and OAuth identity strings are **never** returned by this
+endpoint. If the billing Worker needs per-device drill-down, add a
+separate scoped endpoint — don't widen this one.
 
 ### Not yet designed
 
