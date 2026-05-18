@@ -102,6 +102,26 @@ CREATE TABLE user_capabilities (
 - SSO/SAML (Enterprise tier)
 - Audit log
 
+### `GET /internal/users`
+
+Read-only counterpart to `POST /internal/quota`. Returns paginated user
+rows with device aggregates so the SaaS billing layer can render its
+admin dashboard. Disabled by default — enable by setting
+`INTERNAL_SERVICE_SECRET`. Self-hosters should use `GET /admin/users`
+instead.
+
+Query params: `limit` (1–1000, default 100), `cursor` (opaque, from a
+prior response), `updated_since` (RFC 3339), `include_demo` (boolean,
+default false; accepts `true/false/1/0` per `strconv.ParseBool`).
+
+Response shape: `{users: [...], next_cursor?: string}`. Each user row
+includes only `user_id`, `created_at`, `is_demo`, `device_count`,
+`active_device_count`, `last_active_at`, and a nullable `capabilities`
+block. Device tokens, hostnames, nicknames, machine IDs, clip metadata,
+key material, and OAuth identity strings are **never** returned by this
+endpoint. If biz needs per-device drill-down, add a separate scoped
+endpoint — don't widen this one.
+
 ### Not yet designed
 
 - Cloud API repo structure and tech stack
