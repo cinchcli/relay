@@ -4,45 +4,41 @@ Self-hostable relay server for [Cinch](https://cinchcli.com) — Your clipboard.
 
 The relay receives clipboard clips pushed by the CLI (`cinch push`) and delivers them in real time to connected devices via WebSocket. It is the only component you need to self-host; the CLI and desktop app work with any relay URL.
 
-## Quick Start (Docker)
+## Quick Start (Docker Compose)
 
-```bash
-docker run -p 8080:8080 ghcr.io/cinchcli/relay
-```
-
-Data is stored in-memory by default. To persist across restarts, mount a volume:
-
-```bash
-docker run -p 8080:8080 \
-  -v cinch-data:/data \
-  -e DB_PATH=/data/cinch.db \
-  ghcr.io/cinchcli/relay
-```
-
-Then point the CLI at your relay:
-
-```bash
-cinch auth login --relay http://your-server:8080
-```
-
-## Docker Compose
+The relay requires a PostgreSQL database. The fastest way to run both
+together is Docker Compose:
 
 ```yaml
 services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=cinch
+      - POSTGRES_PASSWORD=cinch
+      - POSTGRES_DB=cinch
+    volumes:
+      - relay-db:/var/lib/postgresql/data
+    restart: unless-stopped
+
   relay:
     image: ghcr.io/cinchcli/relay:latest
+    depends_on:
+      - db
     ports:
       - "8080:8080"
     volumes:
-      - relay-data:/data
+      - relay-media:/data/media
     environment:
       - PORT=8080
-      - DB_PATH=/data/cinch.db
+      - DATABASE_URL=postgres://cinch:cinch@db:5432/cinch?sslmode=disable
+      - MEDIA_LOCAL_DIR=/data/media
       - BASE_URL=https://relay.example.com
     restart: unless-stopped
 
 volumes:
-  relay-data:
+  relay-db:
+  relay-media:
 ```
 
 Save as `docker-compose.yml` and run:
@@ -51,12 +47,24 @@ Save as `docker-compose.yml` and run:
 docker compose up -d
 ```
 
+Then point the CLI at your relay:
+
+```bash
+cinch auth login --relay http://your-server:8080
+```
+
+> If you already operate a PostgreSQL instance, you can run the relay
+> container alone — just set `DATABASE_URL` to your DSN. The relay applies
+> its own migrations on startup; no manual schema setup is required.
+
 ## Environment Variables
 
 | Variable | Default | Description |
 |---|---|---|
 | `PORT` | `8080` | TCP port the server listens on |
-| `DB_PATH` | `cinch.db` | Path to the SQLite database file |
+| `DATABASE_URL` | _(required)_ | PostgreSQL DSN, e.g. `postgres://user:pass@host:5432/db?sslmode=disable` |
+| `MEDIA_BACKEND` | `local` | Binary media backend: `local` (filesystem) or `s3` (S3-compatible). See [`DEPLOY.md`](DEPLOY.md) for S3 vars. |
+| `MEDIA_LOCAL_DIR` | `media` | Directory for binary media when `MEDIA_BACKEND=local` |
 | `BASE_URL` | _(unset)_ | Public HTTPS root of the relay, e.g. `https://relay.example.com`. Required for OAuth sign-in. |
 | `RELAY_REGION` | _(unset)_ | Optional region label returned in health responses |
 | `CORS_ORIGINS` | _(unset)_ | Comma-separated extra allowed CORS origins |
@@ -106,7 +114,7 @@ See [`DEPLOY.md`](DEPLOY.md) for a full production runbook (OCI, Cloudflare prox
 | `GET` | `/v1/clips` | Fetch latest clip |
 | `GET` | `/v1/stream` | WebSocket real-time clip stream |
 
-Full Connect-RPC service definitions live in [`proto/cinch/v1/`](proto/cinch/v1/).
+Full Connect-RPC service definitions live in [`cinchcli/cinch-core`](https://github.com/cinchcli/cinch-core) under `crates/client-core/proto/cinch/v1/`.
 
 ## Building from Source
 
@@ -114,10 +122,11 @@ Full Connect-RPC service definitions live in [`proto/cinch/v1/`](proto/cinch/v1/
 git clone https://github.com/cinchcli/relay.git
 cd relay
 go build -o dist/relay ./cmd/relay
-./dist/relay --port 8080
+DATABASE_URL=postgres://user:pass@localhost:5432/cinch?sslmode=disable \
+  ./dist/relay --port 8080
 ```
 
-Requires Go 1.24+. No CGO needed (`CGO_ENABLED=0`).
+Requires Go 1.26+ and PostgreSQL 14+. No CGO needed (`CGO_ENABLED=0`).
 
 ## Documentation
 
@@ -125,13 +134,14 @@ Full docs at [cinchcli.com/docs](https://cinchcli.com/docs).
 
 ## Related Repos
 
+- [cinchcli/cinch-core](https://github.com/cinchcli/cinch-core) — shared wire schema (`.proto` files) and generated Go/Rust bindings; single source of truth for `Clip`, `Device`, push/pull/auth requests, etc.
 - [cinchcli/cinch](https://github.com/cinchcli/cinch) — CLI client (`cinch push` / `pull` / `auth`)
 - [cinchcli/desktop](https://github.com/cinchcli/desktop) — Tauri v2 desktop app (macOS)
 
-The wire-format DTOs (`Clip`, `Device`, push/pull/auth requests, etc.) are
-defined in `proto/cinch/v1/*.proto` here; the Rust CLI and desktop generate
-their types from this same schema via the `proto-cinch` crate in
-[cinchcli/cinch](https://github.com/cinchcli/cinch).
+The relay imports the generated Go bindings from cinch-core
+(`github.com/cinchcli/cinch-core/go/cinch/v1`); the Rust CLI and
+desktop consume the same schema via the `cinchcli-core` crate on
+crates.io.
 
 ## License
 
