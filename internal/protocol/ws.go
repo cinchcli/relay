@@ -50,6 +50,20 @@ type WSMessage struct {
 	UserCode     string `json:"user_code,omitempty"`
 	RequestedAt  int64  `json:"requested_at,omitempty"`  // unix seconds
 	SourceRegion string `json:"source_region,omitempty"` // best-effort GeoIP, empty if unavailable
+
+	// action="client_hello" — first message after WS auth, carries the
+	// client_version + client_type for the connecting device.
+	ClientHello *ClientHelloPayload `json:"client_hello,omitempty"`
+}
+
+// ClientHelloPayload is sent by the agent immediately after WebSocket
+// auth to report its binary version and client type. The relay uses it
+// to populate devices.client_version / devices.client_type so admins
+// can see which version each connected device is running.
+type ClientHelloPayload struct {
+	Version string `json:"version"`      // semver of the binary
+	Type    string `json:"type"`         // "cli" | "desktop"
+	OS      string `json:"os,omitempty"` // future hint, unused
 }
 
 // WebSocket action constants.
@@ -74,6 +88,10 @@ const (
 	// Remote-login push approval (relay → desktop) — a CLI device-code
 	// flow that resolved a user_hint to this user is awaiting approval.
 	ActionDeviceCodePending = "device_code_pending"
+
+	// client_hello (agent → relay) — first message after WS auth,
+	// reports the connecting binary's version and client type.
+	ActionClientHello = "client_hello"
 )
 
 // ContentType is the app-level enum for clip classification. The wire uses
