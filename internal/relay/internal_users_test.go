@@ -1,6 +1,9 @@
 package relay_test
 
 import (
+	"encoding/json"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -38,5 +41,65 @@ func TestInternalCursor_RejectsGarbage(t *testing.T) {
 		if _, err := relay.DecodeInternalCursor(s); err == nil {
 			t.Fatalf("expected error for cursor %q", s)
 		}
+	}
+}
+
+func TestInternalUsers_UnavailableWhenNoSecret(t *testing.T) {
+	ts, _ := setupTestServer(t) // no secret configured
+
+	req, _ := http.NewRequest("GET", ts.URL+"/internal/users", nil)
+	req.Header.Set("Authorization", "Bearer anything")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", resp.StatusCode)
+	}
+}
+
+func TestInternalUsers_RejectsWrongSecret(t *testing.T) {
+	ts, _ := setupTestServerWithSecret(t, "correct-secret")
+
+	req, _ := http.NewRequest("GET", ts.URL+"/internal/users", nil)
+	req.Header.Set("Authorization", "Bearer wrong-secret")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", resp.StatusCode)
+	}
+}
+
+func TestInternalUsers_HappyPathEmpty(t *testing.T) {
+	ts, _ := setupTestServerWithSecret(t, "test-secret")
+
+	req, _ := http.NewRequest("GET", ts.URL+"/internal/users", nil)
+	req.Header.Set("Authorization", "Bearer test-secret")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body)
+	}
+
+	var got struct {
+		Users      []map[string]any `json:"users"`
+		NextCursor string           `json:"next_cursor"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Users) != 0 {
+		t.Fatalf("expected empty users on fresh store, got %d", len(got.Users))
+	}
+	if got.NextCursor != "" {
+		t.Fatalf("expected empty cursor, got %q", got.NextCursor)
 	}
 }
