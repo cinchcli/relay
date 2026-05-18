@@ -2,6 +2,7 @@ package relay
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"reflect"
 	"strings"
@@ -718,5 +719,105 @@ func TestListInternalUserAggregates_UpdatedSinceCatchesDeviceActivity(t *testing
 	}
 	if len(page.Rows) != 1 || page.Rows[0].UserID != "user-with-active-device" {
 		t.Fatalf("expected user-with-active-device to be included via device activity, got %+v", page.Rows)
+	}
+}
+
+func TestListInternalUserAggregates_ExcludesDemoByDefault(t *testing.T) {
+	store := NewTestStore(t)
+	if err := store.CreateUser("real-user"); err != nil {
+		t.Fatalf("CreateUser real: %v", err)
+	}
+	if err := store.CreateUser("demo-user"); err != nil {
+		t.Fatalf("CreateUser demo: %v", err)
+	}
+	if _, err := store.db.Exec(
+		`UPDATE users SET is_demo = TRUE WHERE id = 'demo-user'`,
+	); err != nil {
+		t.Fatalf("flag demo: %v", err)
+	}
+
+	// Default (IncludeDemo=false) excludes demo.
+	page, err := store.ListInternalUserAggregates(InternalUsersFilter{Limit: 100})
+	if err != nil {
+		t.Fatalf("default: %v", err)
+	}
+	if len(page.Rows) != 1 || page.Rows[0].UserID != "real-user" {
+		t.Fatalf("expected only real-user, got %+v", page.Rows)
+	}
+
+	// IncludeDemo=true brings demo back.
+	page2, err := store.ListInternalUserAggregates(InternalUsersFilter{Limit: 100, IncludeDemo: true})
+	if err != nil {
+		t.Fatalf("include demo: %v", err)
+	}
+	if len(page2.Rows) != 2 {
+		t.Fatalf("expected 2 rows with IncludeDemo, got %d", len(page2.Rows))
+	}
+}
+
+func TestListInternalUserAggregates_PaginatesByCursor(t *testing.T) {
+	store := NewTestStore(t)
+	// Seed 5 users with monotonically increasing created_at.
+	for i := 0; i < 5; i++ {
+		uid := fmt.Sprintf("u%d", i)
+		if err := store.CreateUser(uid); err != nil {
+			t.Fatalf("CreateUser %s: %v", uid, err)
+		}
+		if _, err := store.db.Exec(
+			`UPDATE users SET created_at = $1 WHERE id = $2`,
+			time.Date(2026, 5, 1+i, 0, 0, 0, 0, time.UTC), uid,
+		); err != nil {
+			t.Fatalf("backdate %s: %v", uid, err)
+		}
+	}
+
+	// Page 1: limit 2.
+	p1, err := store.ListInternalUserAggregates(InternalUsersFilter{Limit: 2})
+	if err != nil {
+		t.Fatalf("page 1: %v", err)
+	}
+	if len(p1.Rows) != 2 || p1.Rows[0].UserID != "u0" || p1.Rows[1].UserID != "u1" {
+		t.Fatalf("page 1 unexpected: %+v", p1.Rows)
+	}
+	if p1.NextCursor == "" {
+		t.Fatal("page 1 should have a NextCursor")
+	}
+
+	// Page 2 via cursor.
+	cur, err := DecodeInternalCursor(p1.NextCursor)
+	if err != nil {
+		t.Fatalf("decode cursor: %v", err)
+	}
+	p2, err := store.ListInternalUserAggregates(InternalUsersFilter{
+		Limit:  2,
+		Cursor: &cur,
+	})
+	if err != nil {
+		t.Fatalf("page 2: %v", err)
+	}
+	if len(p2.Rows) != 2 || p2.Rows[0].UserID != "u2" || p2.Rows[1].UserID != "u3" {
+		t.Fatalf("page 2 unexpected: %+v", p2.Rows)
+	}
+	if p2.NextCursor == "" {
+		t.Fatal("page 2 should still have a NextCursor (1 row left)")
+	}
+
+	// Page 3: last row, no further cursor.
+	cur2, err := DecodeInternalCursor(p2.NextCursor)
+	if err != nil {
+		t.Fatalf("decode cursor 2: %v", err)
+	}
+	p3, err := store.ListInternalUserAggregates(InternalUsersFilter{
+		Limit:  2,
+		Cursor: &cur2,
+	})
+	if err != nil {
+		t.Fatalf("page 3: %v", err)
+	}
+	if len(p3.Rows) != 1 || p3.Rows[0].UserID != "u4" {
+		t.Fatalf("page 3 unexpected: %+v", p3.Rows)
+	}
+	if p3.NextCursor != "" {
+		t.Fatalf("page 3 should not have a NextCursor, got %q", p3.NextCursor)
 	}
 }
