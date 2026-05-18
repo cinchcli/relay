@@ -1,6 +1,6 @@
 # Cinch Relay
 
-Self-hostable relay server for [Cinch](https://cinchcli.com) — copy from any terminal, paste anywhere.
+Self-hostable relay server for [Cinch](https://cinchcli.com) — Your clipboard. Across every machine.
 
 The relay receives clipboard clips pushed by the CLI (`cinch push`) and delivers them in real time to connected devices via WebSocket. It is the only component you need to self-host; the CLI and desktop app work with any relay URL.
 
