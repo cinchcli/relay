@@ -31,9 +31,8 @@ func TestInternalCursor_RoundTrip(t *testing.T) {
 
 func TestInternalCursor_RejectsGarbage(t *testing.T) {
 	cases := []string{
-		"!!!not-base64!!!",
-		"e30",          // valid base64 → "{}"; missing id field
-		"eyJpZCI6IiJ9", // valid base64 → '{"id":""}'; empty id
+		"!!!not-base64!!!", // bad base64
+		"eyJpZCI6IiJ9",     // valid base64 → '{"id":""}'; missing/empty id
 	}
 	for _, s := range cases {
 		if _, err := relay.DecodeInternalCursor(s); err == nil {

@@ -1964,13 +1964,16 @@ func (s *Store) DeleteUser(userID string) error {
 }
 
 // InternalUsersFilter is the input to ListInternalUserAggregates.
-// CursorCreatedAt/CursorUserID together form a keyset for pagination.
+// Cursor carries the keyset (created_at, user_id) atomically; nil means
+// the first page. Grouping the two fields into one pointer prevents
+// callers from passing a half-set cursor (e.g. UserID without CreatedAt),
+// which would otherwise collapse the SQL keyset disjunct to a tautology
+// and silently return all rows instead of paginating.
 type InternalUsersFilter struct {
-	Limit           int
-	CursorCreatedAt *time.Time
-	CursorUserID    string
-	UpdatedSince    *time.Time
-	IncludeDemo     bool
+	Limit        int
+	Cursor       *InternalCursorPayload
+	UpdatedSince *time.Time
+	IncludeDemo  bool
 }
 
 // InternalUserAggregate is one row returned by ListInternalUserAggregates.
@@ -2046,10 +2049,18 @@ ORDER BY u.created_at ASC, u.id ASC
 LIMIT $5
 `
 
+	var cursorCreatedAt *time.Time
+	var cursorUserID string
+	if f.Cursor != nil {
+		t := f.Cursor.CreatedAt
+		cursorCreatedAt = &t
+		cursorUserID = f.Cursor.UserID
+	}
+
 	rows, err := s.db.Query(q,
 		f.IncludeDemo,
-		f.CursorCreatedAt,
-		f.CursorUserID,
+		cursorCreatedAt,
+		cursorUserID,
 		f.UpdatedSince,
 		limit+1, // n+1 trick to know if there's another page
 	)

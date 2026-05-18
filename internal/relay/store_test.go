@@ -596,17 +596,14 @@ func TestListInternalUserAggregates_AggregatesDevices(t *testing.T) {
 	if err := store.CreateUser("user-a"); err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	// Pair 3 devices, then revoke 1.
+	// 3 paired devices, 1 already revoked, only 2 with last_push_at.
 	if _, err := store.db.Exec(`
-		INSERT INTO devices (id, user_id, hostname, source_key, last_push_at)
-		VALUES ('d1','user-a','h1','sk1', NOW() - interval '1 hour'),
-		       ('d2','user-a','h2','sk2', NOW() - interval '5 minutes'),
-		       ('d3','user-a','h3','sk3', NULL)
+		INSERT INTO devices (id, user_id, hostname, source_key, last_push_at, revoked_at)
+		VALUES ('d1','user-a','h1','sk1', NOW() - interval '1 hour',    NULL),
+		       ('d2','user-a','h2','sk2', NOW() - interval '5 minutes', NULL),
+		       ('d3','user-a','h3','sk3', NULL,                         NOW())
 	`); err != nil {
 		t.Fatalf("seed devices: %v", err)
-	}
-	if _, err := store.db.Exec(`UPDATE devices SET revoked_at = NOW() WHERE id = 'd3'`); err != nil {
-		t.Fatalf("revoke device: %v", err)
 	}
 
 	page, err := store.ListInternalUserAggregates(InternalUsersFilter{Limit: 100})
