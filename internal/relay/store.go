@@ -948,7 +948,7 @@ func (s *Store) GetClipMediaPath(userID, clipID string) (string, error) {
 // ListDevices returns all non-revoked devices for a user.
 func (s *Store) ListDevices(userID string) ([]*cinchv1.Device, error) {
 	rows, err := s.db.Query(
-		`SELECT id, hostname, source_key, clip_count, paired_at, last_push_at, COALESCE(public_key, ''), COALESCE(nickname, ''), machine_id
+		`SELECT id, hostname, source_key, clip_count, paired_at, last_push_at, COALESCE(public_key, ''), COALESCE(nickname, ''), machine_id, client_version, client_type, client_version_at
 		 FROM devices WHERE user_id = $1 AND revoked_at IS NULL ORDER BY last_push_at DESC NULLS LAST`,
 		userID,
 	)
@@ -963,8 +963,9 @@ func (s *Store) ListDevices(userID string) ([]*cinchv1.Device, error) {
 		var pairedAt time.Time
 		var lastPush sql.NullTime
 		var clipCount int
-		var machineID sql.NullString
-		if err := rows.Scan(&d.Id, &d.Hostname, &d.SourceKey, &clipCount, &pairedAt, &lastPush, &d.PublicKey, &d.Nickname, &machineID); err != nil {
+		var machineID, clientVersion, clientType sql.NullString
+		var clientVersionAt sql.NullTime
+		if err := rows.Scan(&d.Id, &d.Hostname, &d.SourceKey, &clipCount, &pairedAt, &lastPush, &d.PublicKey, &d.Nickname, &machineID, &clientVersion, &clientType, &clientVersionAt); err != nil {
 			return nil, err
 		}
 		d.ClipCount = int32(clipCount)
@@ -973,7 +974,19 @@ func (s *Store) ListDevices(userID string) ([]*cinchv1.Device, error) {
 			d.LastPushAt = protocol.FormatRFC3339Ptr(&lastPush.Time)
 		}
 		if machineID.Valid {
-			d.MachineId = &machineID.String
+			mi := machineID.String
+			d.MachineId = &mi
+		}
+		if clientVersion.Valid {
+			cv := clientVersion.String
+			d.ClientVersion = &cv
+		}
+		if clientType.Valid {
+			ct := clientType.String
+			d.ClientType = &ct
+		}
+		if clientVersionAt.Valid {
+			d.ClientVersionAt = protocol.FormatRFC3339Ptr(&clientVersionAt.Time)
 		}
 		devices = append(devices, d)
 	}
