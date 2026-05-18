@@ -43,8 +43,11 @@ func TestUpdateDeviceVersion_Upsert(t *testing.T) {
 	if v != "0.1.5" || ty != "cli" {
 		t.Errorf("first read: got (%q, %q), want (%q, %q)", v, ty, "0.1.5", "cli")
 	}
-	if ts1.Before(before) {
-		t.Errorf("first read: timestamp %v is before update start %v", ts1, before)
+	// Allow 1s of clock skew between the Go process and the Postgres
+	// container (NOW() is sampled server-side and the Docker bridge can
+	// run a few hundred microseconds behind the host clock).
+	if ts1.Before(before.Add(-time.Second)) {
+		t.Errorf("first read: timestamp %v is more than 1s before update start %v", ts1, before)
 	}
 
 	time.Sleep(10 * time.Millisecond) // ensure timestamp differs
