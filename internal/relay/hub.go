@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"context"
 	"log"
 	"sync"
 	"time"
@@ -9,6 +10,14 @@ import (
 	"github.com/cinchcli/relay/internal/protocol"
 	"github.com/gorilla/websocket"
 )
+
+// versionPersister is the minimal store surface the Hub needs to record
+// client_hello version reports. Kept as a narrow interface so hub tests
+// can inject lightweight fakes without dragging in the full Postgres
+// Store.
+type versionPersister interface {
+	UpdateDeviceVersion(ctx context.Context, deviceID, version, clientType string) error
+}
 
 // Hub manages WebSocket connections keyed by (user_id, device_id).
 type Hub struct {
@@ -23,6 +32,11 @@ type Hub struct {
 	// Keyed by userID -> deviceID; fan-out mirrors the WS path.
 	eventSubsMu sync.RWMutex
 	eventSubs   map[string]map[string]chan *cinchv1.ServerEvent
+
+	// versionStore persists client_hello version reports. nil disables
+	// the dispatch (existing hub tests construct NewHub() without a
+	// store and never exercise client_hello).
+	versionStore versionPersister
 }
 
 // AgentConn wraps a WebSocket connection for one desktop agent.
@@ -84,6 +98,13 @@ func NewHub() *Hub {
 		pullReqs:  make(map[string]chan string),
 		eventSubs: make(map[string]map[string]chan *cinchv1.ServerEvent),
 	}
+}
+
+// SetVersionStore wires the persistence backend for client_hello version
+// reports. The handler calls this after constructing both the Hub and
+// Store. If unset, client_hello messages are accepted but discarded.
+func (h *Hub) SetVersionStore(s versionPersister) {
+	h.versionStore = s
 }
 
 // RegisterEventSub registers a Connect-RPC streaming subscriber for (userID, deviceID).
@@ -515,11 +536,25 @@ func (h *Hub) IsOnline(userID string) bool {
 }
 
 // HandleAgentMessage processes messages from the agent's WebSocket.
-func (h *Hub) HandleAgentMessage(msg *protocol.WSMessage) {
+// deviceID is the connection's authenticated device — required for
+// client_hello so the version report binds to the right row.
+func (h *Hub) HandleAgentMessage(deviceID string, msg *protocol.WSMessage) {
 	switch msg.Action {
 	case protocol.ActionClipboardContent:
 		h.DeliverClipboard(msg.PullID, msg.Content)
 	case protocol.ActionPong:
 		// heartbeat response, nothing to do
+	case protocol.ActionClientHello:
+		if msg.ClientHello == nil || h.versionStore == nil || deviceID == "" {
+			return // malformed, unconfigured, or legacy master-token conn
+		}
+		// Persist asynchronously so the WS read loop is not blocked on DB.
+		go func(devID, version, clientType string) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := h.versionStore.UpdateDeviceVersion(ctx, devID, version, clientType); err != nil {
+				log.Printf("hub: update device version failed for %s: %v", devID, err)
+			}
+		}(deviceID, msg.ClientHello.Version, msg.ClientHello.Type)
 	}
 }

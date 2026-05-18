@@ -156,6 +156,9 @@ type Handler struct {
 }
 
 func NewHandler(store *Store, hub *Hub) *Handler {
+	// Wire the version-report sink so the hub can persist client_hello
+	// payloads from the WS read loop.
+	hub.SetVersionStore(store)
 	return &Handler{
 		store:             store,
 		hub:               hub,
@@ -937,7 +940,7 @@ func (h *Handler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 					}
 					return
 				}
-				h.hub.HandleAgentMessage(&msg)
+				h.hub.HandleAgentMessage(deviceID, &msg)
 			}
 		}()
 		return
@@ -1027,7 +1030,7 @@ func (h *Handler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 				}
 				return
 			}
-			h.hub.HandleAgentMessage(&msg)
+			h.hub.HandleAgentMessage(deviceID, &msg)
 		}
 	}()
 }
