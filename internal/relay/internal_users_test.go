@@ -142,9 +142,10 @@ func TestInternalUsers_ReturnsAggregates(t *testing.T) {
 
 	var got struct {
 		Users []struct {
-			UserID       string `json:"user_id"`
-			DeviceCount  int    `json:"device_count"`
-			Capabilities *struct {
+			UserID            string `json:"user_id"`
+			DeviceCount       int    `json:"device_count"`
+			ActiveDeviceCount int    `json:"active_device_count"`
+			Capabilities      *struct {
 				DeviceLimit int `json:"device_limit"`
 			} `json:"capabilities"`
 		} `json:"users"`
@@ -154,6 +155,12 @@ func TestInternalUsers_ReturnsAggregates(t *testing.T) {
 	}
 	if len(got.Users) != 1 || got.Users[0].UserID != "alice" {
 		t.Fatalf("expected alice, got %+v", got.Users)
+	}
+	if got.Users[0].DeviceCount != 0 {
+		t.Fatalf("expected device_count=0 for user with no devices, got %d", got.Users[0].DeviceCount)
+	}
+	if got.Users[0].ActiveDeviceCount != 0 {
+		t.Fatalf("expected active_device_count=0 for user with no devices, got %d", got.Users[0].ActiveDeviceCount)
 	}
 	if got.Users[0].Capabilities == nil || got.Users[0].Capabilities.DeviceLimit != 10 {
 		t.Fatalf("expected device_limit=10, got %+v", got.Users[0].Capabilities)
