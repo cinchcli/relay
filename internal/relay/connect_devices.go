@@ -2,12 +2,10 @@ package relay
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"strings"
 
 	"connectrpc.com/connect"
-	"github.com/oklog/ulid/v2"
 
 	cinchv1 "github.com/cinchcli/cinch-core/go/cinch/v1"
 	"github.com/cinchcli/cinch-core/go/cinch/v1/cinchv1connect"
@@ -77,34 +75,6 @@ func (s *connectDevicesServer) SetRetention(ctx context.Context, req *connect.Re
 
 func isRangeError(err error) bool {
 	return strings.Contains(err.Error(), "between 1 and 365")
-}
-
-// ─── Pull ────────────────────────────────────────────────────
-
-func (s *connectDevicesServer) Pull(ctx context.Context, req *connect.Request[cinchv1.PullRequest]) (*connect.Response[cinchv1.PullResponse], error) {
-	userID := req.Header().Get("X-User-ID")
-
-	if isDemo, _ := s.h.store.IsDemoUser(userID); isDemo {
-		return nil, connect.NewError(connect.CodePermissionDenied, errMsg("demo sessions cannot pull from a desktop agent"))
-	}
-
-	pullID := ulid.Make().String()
-	content, err := s.h.hub.RequestClipboard(userID, pullID)
-	if err != nil {
-		switch {
-		case errors.Is(err, ErrAgentOffline):
-			return nil, connect.NewError(connect.CodeUnavailable, errMsg("desktop agent is not connected"))
-		case errors.Is(err, ErrAgentTimeout):
-			return nil, connect.NewError(connect.CodeDeadlineExceeded, errMsg("desktop agent did not respond within 10 seconds"))
-		default:
-			return nil, connect.NewError(connect.CodeInternal, err)
-		}
-	}
-
-	return connect.NewResponse(&cinchv1.PullResponse{
-		PullId:  pullID,
-		Content: content,
-	}), nil
 }
 
 // newDevicesConnectHandler wraps DevicesService with auth interceptor.

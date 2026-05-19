@@ -15,10 +15,6 @@ type Hub struct {
 	mu    sync.RWMutex
 	conns map[string]map[string]*AgentConn // userID -> deviceID -> conn
 
-	// Pending pull requests waiting for clipboard content.
-	pullMu   sync.Mutex
-	pullReqs map[string]chan string // pull_id → content channel
-
 	// eventSubs are Connect-RPC streaming subscribers (parallel to WS conns).
 	// Keyed by userID -> deviceID; fan-out mirrors the WS path.
 	eventSubsMu sync.RWMutex
@@ -41,8 +37,6 @@ func serverEventToWSMessage(e *cinchv1.ServerEvent) *protocol.WSMessage {
 	switch ev := e.Event.(type) {
 	case *cinchv1.ServerEvent_NewClip:
 		return &protocol.WSMessage{Action: protocol.ActionNewClip, Clip: ev.NewClip.Clip}
-	case *cinchv1.ServerEvent_SendClipboard:
-		return &protocol.WSMessage{Action: protocol.ActionSendClipboard, PullID: ev.SendClipboard.PullId}
 	case *cinchv1.ServerEvent_Revoked:
 		return &protocol.WSMessage{Action: protocol.ActionRevoked, Reason: ev.Revoked.Reason}
 	case *cinchv1.ServerEvent_TokenRotated:
@@ -81,7 +75,6 @@ func serverEventToWSMessage(e *cinchv1.ServerEvent) *protocol.WSMessage {
 func NewHub() *Hub {
 	return &Hub{
 		conns:     make(map[string]map[string]*AgentConn),
-		pullReqs:  make(map[string]chan string),
 		eventSubs: make(map[string]map[string]chan *cinchv1.ServerEvent),
 	}
 }
@@ -159,17 +152,6 @@ func (h *Hub) sendToEventSub(userID, deviceID string, event *cinchv1.ServerEvent
 	case ch <- event:
 	default:
 		log.Printf("event sub buffer full for device %s", deviceID[:8])
-	}
-}
-
-// DeliverClipboard signals a pending pull request with clipboard content.
-// Called by both HandleAgentMessage (WS path) and ProvideClipboard (Connect path).
-func (h *Hub) DeliverClipboard(pullID, content string) {
-	h.pullMu.Lock()
-	ch, ok := h.pullReqs[pullID]
-	h.pullMu.Unlock()
-	if ok {
-		ch <- content
 	}
 }
 
@@ -413,72 +395,6 @@ func (h *Hub) SendToDevice(userID, deviceID string, event *cinchv1.ServerEvent) 
 	return nil
 }
 
-// RequestClipboard asks the agent for clipboard content and waits for the response.
-// Tries WS conn first; falls back to event stream subscriber if no WS conn.
-func (h *Hub) RequestClipboard(userID, pullID string) (string, error) {
-	// Pick the first connected WS device for this user.
-	h.mu.RLock()
-	var ac *AgentConn
-	for _, conn := range h.conns[userID] {
-		ac = conn
-		break
-	}
-	h.mu.RUnlock()
-
-	// Fall back to event stream subscriber if no WS conn.
-	var streamCh chan *cinchv1.ServerEvent
-	if ac == nil {
-		h.eventSubsMu.RLock()
-		for _, ch := range h.eventSubs[userID] {
-			streamCh = ch
-			break
-		}
-		h.eventSubsMu.RUnlock()
-	}
-
-	if ac == nil && streamCh == nil {
-		return "", ErrAgentOffline
-	}
-
-	// Register a channel for this pull request.
-	ch := make(chan string, 1)
-	h.pullMu.Lock()
-	h.pullReqs[pullID] = ch
-	h.pullMu.Unlock()
-
-	defer func() {
-		h.pullMu.Lock()
-		delete(h.pullReqs, pullID)
-		h.pullMu.Unlock()
-	}()
-
-	sendClipboardEvent := &cinchv1.ServerEvent{
-		Event: &cinchv1.ServerEvent_SendClipboard{
-			SendClipboard: &cinchv1.SendClipboardEvent{PullId: pullID},
-		},
-	}
-	if ac != nil {
-		wsMsg := &protocol.WSMessage{Action: protocol.ActionSendClipboard, PullID: pullID}
-		if err := ac.Conn.WriteJSON(wsMsg); err != nil {
-			return "", ErrAgentOffline
-		}
-	} else {
-		select {
-		case streamCh <- sendClipboardEvent:
-		default:
-			return "", ErrAgentOffline
-		}
-	}
-
-	// Wait for response with timeout.
-	select {
-	case content := <-ch:
-		return content, nil
-	case <-time.After(10 * time.Second):
-		return "", ErrAgentTimeout
-	}
-}
-
 // IsDeviceOnline checks if a specific (userID, deviceID) connection is active (WS or event stream).
 func (h *Hub) IsDeviceOnline(userID, deviceID string) bool {
 	h.mu.RLock()
@@ -517,8 +433,6 @@ func (h *Hub) IsOnline(userID string) bool {
 // HandleAgentMessage processes messages from the agent's WebSocket.
 func (h *Hub) HandleAgentMessage(msg *protocol.WSMessage) {
 	switch msg.Action {
-	case protocol.ActionClipboardContent:
-		h.DeliverClipboard(msg.PullID, msg.Content)
 	case protocol.ActionPong:
 		// heartbeat response, nothing to do
 	}

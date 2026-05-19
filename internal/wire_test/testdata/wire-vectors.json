@@ -76,13 +76,6 @@
     }
   },
 
-  "PullResponse": {
-    "ok": {
-      "pull_id": "01HPULL000000000000000000",
-      "content": "the contents"
-    }
-  },
-
   "DeviceCodeStartResponse": {
     "ok": {
       "device_code": "ABCDEF",

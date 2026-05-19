@@ -44,11 +44,6 @@ const (
 // (smoke tests, demos) while blocking trivial DB-bloat attacks.
 const loginRateWindow = 1 * time.Minute
 
-var (
-	ErrAgentOffline = errors.New("desktop agent is not connected")
-	ErrAgentTimeout = errors.New("desktop agent did not respond in time")
-)
-
 // wsAllowedOrigin returns true for origins permitted to open a WebSocket.
 // Empty Origin is allowed: native clients (cinch CLI, desktop's Rust ws.rs,
 // curl) do not set this header, while browsers always do for cross-origin
@@ -748,39 +743,9 @@ func (h *Handler) ListTombstones(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(tombstones)
 }
 
-// PullClipboard requests clipboard content from the desktop agent.
-func (h *Handler) PullClipboard(w http.ResponseWriter, r *http.Request) {
-	userID := r.Header.Get("X-User-ID")
-
-	if isDemo, _ := h.store.IsDemoUser(userID); isDemo {
-		writeError(w, http.StatusForbidden, "demo read only", "Demo sessions cannot pull from a desktop agent", "Install cinch to pull clips")
-		return
-	}
-
-	pullID := ulid.Make().String()
-
-	content, err := h.hub.RequestClipboard(userID, pullID)
-	if err != nil {
-		switch {
-		case errors.Is(err, ErrAgentOffline):
-			writeError(w, http.StatusServiceUnavailable, "agent offline", "Your desktop agent is not connected", "Make sure cinchd is running on your Mac")
-		case errors.Is(err, ErrAgentTimeout):
-			writeError(w, http.StatusGatewayTimeout, "agent timeout", "Desktop agent did not respond within 10 seconds", "Check if cinchd is running")
-		default:
-			writeInternalError(w, "pull failed", "pull", err)
-		}
-		return
-	}
-
-	writeJSON(w, http.StatusOK, cinchv1.PullResponse{
-		PullId:  pullID,
-		Content: content,
-	})
-}
-
-// GetLatestClip returns the most recent clip for the authenticated user,
-// filtered by source or excluding a source. Exactly one of source or
-// exclude_source must be provided.
+// GetLatestClip returns the most recent clip for the authenticated user.
+// Accepts at most one of `source` or `exclude_source`. With neither, returns
+// the absolute latest clip across every device.
 func (h *Handler) GetLatestClip(w http.ResponseWriter, r *http.Request) {
 	userID := r.Header.Get("X-User-ID")
 	q := r.URL.Query()
@@ -791,19 +756,18 @@ func (h *Handler) GetLatestClip(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_arguments", "source and exclude_source are mutually exclusive", "")
 		return
 	}
-	if source == "" && excludeSource == "" {
-		writeError(w, http.StatusBadRequest, "missing source", "source or exclude_source query parameter is required", "Usage: cinch pull --from <hostname>")
-		return
-	}
 
 	var (
 		clip *cinchv1.Clip
 		err  error
 	)
-	if excludeSource != "" {
+	switch {
+	case excludeSource != "":
 		clip, err = h.store.GetLatestClipExcludingSource(userID, excludeSource)
-	} else {
+	case source != "":
 		clip, err = h.store.GetLatestClipBySource(userID, source)
+	default:
+		clip, err = h.store.GetLatestClipForUser(userID)
 	}
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1872,7 +1836,6 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /clips/{id}", h.RequireAuth(h.DeleteClip))
 	mux.HandleFunc("POST /clips/{id}/pin", h.RequireAuth(h.SetClipPin))
 	mux.HandleFunc("GET /tombstones", h.RequireAuth(h.ListTombstones))
-	mux.HandleFunc("POST /pull", h.RequireAuth(h.PullClipboard))
 	mux.HandleFunc("GET /clips/latest", h.RequireAuth(h.GetLatestClip))
 	mux.HandleFunc("GET /devices", h.RequireAuth(h.ListDevices))
 	mux.HandleFunc("PUT /devices/{id}/nickname", h.RequireAuth(h.SetDeviceNickname))

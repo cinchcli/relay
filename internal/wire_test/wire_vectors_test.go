@@ -111,11 +111,6 @@ func TestPushClipResponseVectorsRoundTrip(t *testing.T) {
 	runGroup(t, root, "PushClipResponse", func() any { return &cinchv1.PushClipResponse{} })
 }
 
-func TestPullResponseVectorsRoundTrip(t *testing.T) {
-	root := loadVectors(t)
-	runGroup(t, root, "PullResponse", func() any { return &cinchv1.PullResponse{} })
-}
-
 func TestDeviceCodeStartResponseVectorsRoundTrip(t *testing.T) {
 	root := loadVectors(t)
 	runGroup(t, root, "DeviceCodeStartResponse", func() any { return &cinchv1.DeviceCodeStartResponse{} })

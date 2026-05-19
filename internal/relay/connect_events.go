@@ -70,19 +70,6 @@ func (s *connectEventsServer) Subscribe(
 	}
 }
 
-// ─── ProvideClipboard ────────────────────────────────────────
-
-func (s *connectEventsServer) ProvideClipboard(
-	ctx context.Context,
-	req *connect.Request[cinchv1.ProvideClipboardRequest],
-) (*connect.Response[cinchv1.ProvideClipboardResponse], error) {
-	if req.Msg.PullId == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errMsg("pull_id is required"))
-	}
-	s.h.hub.DeliverClipboard(req.Msg.PullId, req.Msg.Content)
-	return connect.NewResponse(&cinchv1.ProvideClipboardResponse{Ok: true}), nil
-}
-
 // eventsAuthInterceptor applies auth for both unary calls and server-streaming Subscribe.
 // UnaryInterceptorFunc only covers unary calls, so a full Interceptor is needed here.
 type eventsAuthInterceptor struct{ h *Handler }

@@ -320,6 +320,15 @@ func TestDeviceCodeStart_PerUserRateLimit_DropsExcessBroadcast(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 
+	// The WS-connect path spawns a goroutine that replays pending
+	// device-code rows for this user. Alice has none yet, so the goroutine
+	// writes zero frames — but the goroutine still races with the first
+	// DeviceCodeStart call below: if it queries the DB *after* that call's
+	// INSERT, it will replay a frame and the test's read loop will be off
+	// by one. Yield briefly so the replay goroutine finishes its SELECT
+	// against a fresh-for-alice device_codes table before any rows exist.
+	time.Sleep(200 * time.Millisecond)
+
 	// Share the Handler so the rate limiter state persists across calls.
 	h := NewHandler(store, hub)
 	srv := &connectAuthServer{h: h}

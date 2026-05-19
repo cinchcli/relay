@@ -651,10 +651,7 @@ func TestListInternalUserAggregates_IncludesCapabilities(t *testing.T) {
 		t.Fatalf("expected 1 row, got %d", len(page.Rows))
 	}
 	c := page.Rows[0].Capabilities
-	if c == nil {
-		t.Fatal("expected non-nil capabilities")
-	}
-	if c.DeviceLimit != 10 || c.RetentionDays != 90 {
+	if c == nil || c.DeviceLimit != 10 || c.RetentionDays != 90 {
 		t.Fatalf("unexpected capabilities: %+v", c)
 	}
 }
