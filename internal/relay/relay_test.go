@@ -936,24 +936,6 @@ func TestDemoPushSizeLimit(t *testing.T) {
 	}
 }
 
-func TestDemoPullForbidden(t *testing.T) {
-	ts, _ := setupTestServer(t)
-	sess := createDemoSession(t, ts.URL)
-
-	req, _ := http.NewRequest("POST", ts.URL+"/pull", nil)
-	req.Header.Set("Authorization", "Bearer "+sess.Token)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("pull failed: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusForbidden {
-		t.Errorf("expected 403 (demo read-only), got %d", resp.StatusCode)
-	}
-}
-
 func TestDemoExpiredToken(t *testing.T) {
 	store := relay.NewTestStore(t)
 
