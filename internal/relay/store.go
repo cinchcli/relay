@@ -874,6 +874,19 @@ func (s *Store) GetLatestClipExcludingSource(userID, excludeSource string) (*cin
 	return scanClipRow(row)
 }
 
+// GetLatestClipForUser returns the newest clip for userID across every source.
+// Returns sql.ErrNoRows when the user has no clips.
+func (s *Store) GetLatestClipForUser(userID string) (*cinchv1.Clip, error) {
+	row := s.db.QueryRow(
+		`SELECT id, user_id, content, content_type, source, label, byte_size,
+		        media_path, created_at, encrypted, is_pinned, pin_note
+		 FROM clips WHERE user_id = $1
+		 ORDER BY created_at DESC LIMIT 1`,
+		userID,
+	)
+	return scanClipRow(row)
+}
+
 // SetClipPin sets or clears the pin state for a clip owned by the caller.
 func (s *Store) SetClipPin(userID, clipID string, isPinned bool, pinNote *string) error {
 	res, err := s.db.Exec(

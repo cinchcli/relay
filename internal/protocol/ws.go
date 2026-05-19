@@ -20,16 +20,6 @@ type WSMessage struct {
 	// new_clip / clip_deleted (relay → agent) — full Clip payload.
 	Clip *cinchv1.Clip `json:"clip,omitempty"`
 
-	// send_clipboard request (relay → agent) and clipboard_content
-	// response (agent → relay) — pull correlation ID.
-	PullID string `json:"pull_id,omitempty"`
-
-	// clipboard_content response body.
-	Content string `json:"content,omitempty"`
-
-	// Error frame.
-	Error string `json:"error,omitempty"`
-
 	// revoked (relay → agent) — reason why the device was revoked.
 	Reason string `json:"reason,omitempty"`
 
@@ -54,12 +44,10 @@ type WSMessage struct {
 
 // WebSocket action constants.
 const (
-	ActionNewClip          = "new_clip"
-	ActionClipDeleted      = "clip_deleted"
-	ActionSendClipboard    = "send_clipboard"
-	ActionClipboardContent = "clipboard_content"
-	ActionPing             = "ping"
-	ActionPong             = "pong"
+	ActionNewClip     = "new_clip"
+	ActionClipDeleted = "clip_deleted"
+	ActionPing        = "ping"
+	ActionPong        = "pong"
 
 	// Phase 2 — per-device token actions.
 	ActionRevoked      = "revoked"

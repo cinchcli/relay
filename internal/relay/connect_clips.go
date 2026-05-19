@@ -189,9 +189,6 @@ func (s *connectClipsServer) GetLatestClip(ctx context.Context, req *connect.Req
 	if msg.GetSource() != "" && msg.GetExcludeSource() != "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errMsg("source and exclude_source are mutually exclusive"))
 	}
-	if msg.GetSource() == "" && msg.GetExcludeSource() == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errMsg("source is required"))
-	}
 
 	var (
 		clip *cinchv1.Clip
@@ -200,8 +197,10 @@ func (s *connectClipsServer) GetLatestClip(ctx context.Context, req *connect.Req
 	switch {
 	case msg.GetExcludeSource() != "":
 		clip, err = s.h.store.GetLatestClipExcludingSource(userID, msg.GetExcludeSource())
-	default:
+	case msg.GetSource() != "":
 		clip, err = s.h.store.GetLatestClipBySource(userID, msg.GetSource())
+	default:
+		clip, err = s.h.store.GetLatestClipForUser(userID)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, connect.NewError(connect.CodeNotFound, errMsg("no matching clip"))
