@@ -298,6 +298,22 @@ func migrate(db *sql.DB) error {
 		}
 	}
 
+	// Add idempotency_key column + partial unique index for backlog-flush dedup.
+	// The cinch-core backlog flusher sets idempotency_key on retried offline
+	// captures; normal online pushes leave it NULL. The partial unique index
+	// enforces (user_id, idempotency_key) uniqueness only when the key is set,
+	// so unconstrained NULLs from online pushes remain allowed.
+	for _, stmt := range []string{
+		`ALTER TABLE clips ADD COLUMN IF NOT EXISTS idempotency_key TEXT`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_clips_idempotency
+			ON clips(user_id, idempotency_key)
+			WHERE idempotency_key IS NOT NULL`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("adding idempotency_key to clips: %w", err)
+		}
+	}
+
 	// Add desktop-approval push columns to device_codes for existing databases.
 	for _, stmt := range []string{
 		`ALTER TABLE device_codes ADD COLUMN IF NOT EXISTS pending_user_id TEXT`,
