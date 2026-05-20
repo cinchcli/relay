@@ -25,3 +25,22 @@ func TestMigration_AddsPendingUserIDAndRequesterIP(t *testing.T) {
 		t.Fatalf("expected requester_ip column to exist after migration: %v", err)
 	}
 }
+
+// TestMigration_OAuthIdentitiesHasDisplayName verifies that the migration adds
+// the display_name TEXT column to oauth_identities.
+// Skips when TEST_DATABASE_URL is unset (newTestStore handles the skip).
+func TestMigration_OAuthIdentitiesHasDisplayName(t *testing.T) {
+	store := newTestStore(t)
+
+	var dataType string
+	err := store.DB().QueryRow(`
+		SELECT data_type FROM information_schema.columns
+		WHERE table_name = 'oauth_identities' AND column_name = 'display_name'
+	`).Scan(&dataType)
+	if err != nil {
+		t.Fatalf("display_name column missing on oauth_identities: %v", err)
+	}
+	if dataType != "text" {
+		t.Fatalf("expected text, got %s", dataType)
+	}
+}

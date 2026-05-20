@@ -203,6 +203,8 @@ func migrate(db *sql.DB) error {
 
 		ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin     BOOLEAN NOT NULL DEFAULT FALSE;
 		ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name TEXT;
+
+		ALTER TABLE oauth_identities ADD COLUMN IF NOT EXISTS display_name TEXT;
 	`)
 	if err != nil {
 		return fmt.Errorf("invites + user columns migration: %w", err)
