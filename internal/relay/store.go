@@ -1225,19 +1225,29 @@ func (s *Store) PollDeviceCode(deviceCode string) (*cinchv1.DeviceCodePollRespon
 			UserId:   &u,
 			DeviceId: &d,
 		}
-		var email, provider sql.NullString
+		var email, provider, displayName sql.NullString
 		if u != "" {
 			_ = s.db.QueryRow(
-				`SELECT email, provider FROM oauth_identities WHERE user_id = $1 AND email IS NOT NULL
-				 ORDER BY last_seen_at DESC LIMIT 1`,
+				`SELECT
+					oi.email,
+					oi.provider,
+					COALESCE(NULLIF(u.display_name, ''), oi.display_name, '') AS effective_name
+				 FROM oauth_identities oi
+				 JOIN users u ON u.id = oi.user_id
+				 WHERE oi.user_id = $1 AND oi.email IS NOT NULL
+				 ORDER BY oi.last_seen_at DESC LIMIT 1`,
 				u,
-			).Scan(&email, &provider)
+			).Scan(&email, &provider, &displayName)
 		}
 		if email.Valid && email.String != "" {
 			resp.Email = &email.String
 		}
 		if provider.Valid && provider.String != "" {
 			resp.IdentityProvider = &provider.String
+		}
+		if displayName.Valid && displayName.String != "" {
+			name := displayName.String
+			resp.DisplayName = &name
 		}
 		return resp, nil
 	}

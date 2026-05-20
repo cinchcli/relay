@@ -863,3 +863,59 @@ func TestListInternalUserAggregates_PaginatesByCursor(t *testing.T) {
 		t.Fatalf("page 3 should not have a NextCursor, got %q", p3.NextCursor)
 	}
 }
+
+// mustIssueAndCompleteDeviceCode issues a device code, completes it for the
+// given userID/deviceID, and returns the device_code string ready for
+// PollDeviceCode.
+func mustIssueAndCompleteDeviceCode(t *testing.T, s *Store, userID, deviceID string) string {
+	t.Helper()
+	startResp, _, err := s.CreateDeviceCode("test-host", "", "", "")
+	if err != nil {
+		t.Fatalf("mustIssueAndCompleteDeviceCode CreateDeviceCode: %v", err)
+	}
+	token := generateStoreToken()
+	if err := s.CompleteDeviceCode(startResp.UserCode, userID, deviceID, token); err != nil {
+		t.Fatalf("mustIssueAndCompleteDeviceCode CompleteDeviceCode: %v", err)
+	}
+	return startResp.DeviceCode
+}
+
+func TestPollDeviceCode_ReturnsDisplayName(t *testing.T) {
+	s := newTestStore(t)
+	userID, deviceID, _, err := s.UpsertOAuthUser("github", "42", "alice@example.com", true, "Alice Example", "host", "")
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	cases := []struct {
+		name             string
+		usersDisplayName string
+		want             string
+	}{
+		{"oauth_name_when_user_unset", "", "Alice Example"},
+		{"user_override_wins", "Custom", "Custom"},
+		{"user_blank_falls_back_to_oauth", "", "Alice Example"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Issue a fresh device code per sub-test so polling is always valid.
+			code := mustIssueAndCompleteDeviceCode(t, s, userID, deviceID)
+
+			if tc.usersDisplayName == "" {
+				_, _ = s.DB().Exec(`UPDATE users SET display_name = NULL WHERE id = $1`, userID)
+			} else {
+				_, _ = s.DB().Exec(`UPDATE users SET display_name = $1 WHERE id = $2`, tc.usersDisplayName, userID)
+			}
+			resp, err := s.PollDeviceCode(code)
+			if err != nil {
+				t.Fatalf("poll: %v", err)
+			}
+			if resp.DisplayName == nil {
+				t.Fatalf("DisplayName is nil; want %q", tc.want)
+			}
+			if *resp.DisplayName != tc.want {
+				t.Fatalf("display_name = %q, want %q", *resp.DisplayName, tc.want)
+			}
+		})
+	}
+}
