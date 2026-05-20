@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -97,7 +97,7 @@ func (s *connectClipsServer) PushClip(ctx context.Context, req *connect.Request[
 				NewClip: &cinchv1.NewClipEvent{Clip: clip},
 			},
 		}); err != nil {
-			log.Printf("connectClipsServer.PushClip: SendToDevice failed: %v", err)
+			slog.Error("connectClipsServer.PushClip SendToDevice failed", "err", err)
 		}
 		return connect.NewResponse(&cinchv1.PushClipResponse{
 			ClipId:   clip.ClipId,
@@ -126,18 +126,18 @@ func (s *connectClipsServer) PushClip(ctx context.Context, req *connect.Request[
 
 	if isDemoUser {
 		if err := s.h.store.IncrementDemoCounter(); err != nil {
-			log.Printf("connectClipsServer.PushClip: demo counter increment failed: %v", err)
+			slog.Error("connectClipsServer.PushClip demo counter increment failed", "err", err)
 		}
 	}
 
 	if req.Msg.Source != "" {
 		if err := s.h.store.UpdateDeviceActivity(userID, req.Msg.Source); err != nil {
-			log.Printf("connectClipsServer.PushClip: device activity update failed: %v", err)
+			slog.Error("connectClipsServer.PushClip device activity update failed", "err", err)
 		}
 	}
 
 	if err := s.h.hub.SendClip(userID, clip); err != nil {
-		log.Printf("connectClipsServer.PushClip: ws broadcast failed for %s: %v", userID, err)
+		slog.Error("connectClipsServer.PushClip ws broadcast failed", "user", userID, "err", err)
 	}
 
 	return connect.NewResponse(&cinchv1.PushClipResponse{
@@ -223,7 +223,7 @@ func (s *connectClipsServer) DeleteClip(ctx context.Context, req *connect.Reques
 		return nil, connect.NewError(connect.CodeNotFound, err)
 	}
 	if err := s.h.store.InsertTombstone(userID, req.Msg.ClipId); err != nil {
-		log.Printf("InsertTombstone %s: %v", req.Msg.ClipId, err)
+		slog.Error("InsertTombstone failed", "clip_id", req.Msg.ClipId, "err", err)
 	}
 	s.h.hub.SendClipDeleted(userID, req.Msg.ClipId)
 	return connect.NewResponse(&cinchv1.DeleteClipResponse{Ok: true}), nil

@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -32,10 +32,12 @@ func main() {
 
 	mux := buildMux(cfg)
 
-	log.Printf("failover-listener starting on %s", addr)
-	log.Printf("  FAILOVER_SCRIPT=%q", cfg.failoverScript)
-	log.Printf("  FAILBACK_SCRIPT=%q", cfg.failbackScript)
-	log.Printf("  FLUSH_SCRIPT=%q", cfg.flushScript)
+	slog.Info("failover-listener starting", "addr", addr)
+	slog.Info("failover-listener config",
+		"failover_script", cfg.failoverScript,
+		"failback_script", cfg.failbackScript,
+		"flush_script", cfg.flushScript,
+	)
 
 	srv := &http.Server{
 		Addr:         addr,
@@ -45,7 +47,8 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 	if err := srv.ListenAndServe(); err != nil {
-		log.Fatalf("server error: %v", err)
+		slog.Error("server error", "err", err)
+		os.Exit(1)
 	}
 }
 
@@ -74,12 +77,12 @@ func makeScriptHandler(scriptPath, name string) http.HandlerFunc {
 		}
 		defer globalState.unlock()
 
-		log.Printf("[%s] starting %s", name, scriptPath)
+		slog.Info("script starting", "name", name, "script", scriptPath)
 		if err := runScript(r.Context(), scriptPath, w); err != nil {
-			log.Printf("[%s] script failed: %v", name, err)
+			slog.Error("script failed", "name", name, "err", err)
 			return
 		}
-		log.Printf("[%s] script completed successfully", name)
+		slog.Info("script completed successfully", "name", name)
 	}
 }
 
@@ -96,19 +99,19 @@ func makeFailbackHandler(cfg serverConfig) http.HandlerFunc {
 		defer globalState.unlock()
 
 		if cfg.flushScript != "" {
-			log.Printf("[failback] running flush: %s", cfg.flushScript)
+			slog.Info("failback running flush", "script", cfg.flushScript)
 			if err := runScript(r.Context(), cfg.flushScript, w); err != nil {
-				log.Printf("[failback] flush script failed: %v — aborting failback", err)
+				slog.Error("failback flush script failed, aborting failback", "err", err)
 				return
 			}
 		}
 
-		log.Printf("[failback] running failback: %s", cfg.failbackScript)
+		slog.Info("failback running failback", "script", cfg.failbackScript)
 		if err := runScript(r.Context(), cfg.failbackScript, w); err != nil {
-			log.Printf("[failback] failback script failed: %v", err)
+			slog.Error("failback script failed", "err", err)
 			return
 		}
-		log.Printf("[failback] completed successfully")
+		slog.Info("failback completed successfully")
 	}
 }
 
