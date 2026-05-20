@@ -896,7 +896,13 @@ func (h *Handler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			for {
 				var msg protocol.WSMessage
 				if err := conn.ReadJSON(&msg); err != nil {
-					if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
+					// CloseAbnormalClosure (1006) covers proxy idle-timeouts, NAT
+					// resets, and client process death — common and not actionable.
+					if websocket.IsUnexpectedCloseError(err,
+						websocket.CloseGoingAway,
+						websocket.CloseNormalClosure,
+						websocket.CloseAbnormalClosure,
+					) {
 						log.Printf("ws read error for %s: %v", userID[:8], err)
 					}
 					return
@@ -986,7 +992,13 @@ func (h *Handler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		for {
 			var msg protocol.WSMessage
 			if err := conn.ReadJSON(&msg); err != nil {
-				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
+				// CloseAbnormalClosure (1006) covers proxy idle-timeouts, NAT
+				// resets, and client process death — common and not actionable.
+				if websocket.IsUnexpectedCloseError(err,
+					websocket.CloseGoingAway,
+					websocket.CloseNormalClosure,
+					websocket.CloseAbnormalClosure,
+				) {
 					log.Printf("ws read error for %s: %v", userID[:8], err)
 				}
 				return
