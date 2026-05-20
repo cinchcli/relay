@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -29,13 +30,13 @@ func main() {
 	runServer()
 }
 
-// initLogger configures slog.Default based on LOG_LEVEL and LOG_FORMAT env vars.
-// LOG_LEVEL: debug | info (default) | warn | error (case-insensitive).
-// LOG_FORMAT: text (default) | json (case-insensitive).
-// Output goes to stderr.
-func initLogger() {
+// newLoggerHandler returns a slog.Handler configured from LOG_LEVEL and
+// LOG_FORMAT-style strings. Unknown level strings fall back to Info;
+// unknown formats fall back to text. Pure — has no side effects — so
+// it can be exercised by tests with a custom writer.
+func newLoggerHandler(levelStr, formatStr string, w io.Writer) slog.Handler {
 	level := slog.LevelInfo
-	switch strings.ToLower(os.Getenv("LOG_LEVEL")) {
+	switch strings.ToLower(levelStr) {
 	case "debug":
 		level = slog.LevelDebug
 	case "warn":
@@ -44,12 +45,18 @@ func initLogger() {
 		level = slog.LevelError
 	}
 	opts := &slog.HandlerOptions{Level: level}
-	var h slog.Handler
-	if strings.EqualFold(os.Getenv("LOG_FORMAT"), "json") {
-		h = slog.NewJSONHandler(os.Stderr, opts)
-	} else {
-		h = slog.NewTextHandler(os.Stderr, opts)
+	if strings.EqualFold(formatStr, "json") {
+		return slog.NewJSONHandler(w, opts)
 	}
+	return slog.NewTextHandler(w, opts)
+}
+
+// initLogger configures slog.Default based on LOG_LEVEL and LOG_FORMAT env vars.
+// LOG_LEVEL: debug | info (default) | warn | error (case-insensitive).
+// LOG_FORMAT: text (default) | json (case-insensitive).
+// Output goes to stderr.
+func initLogger() {
+	h := newLoggerHandler(os.Getenv("LOG_LEVEL"), os.Getenv("LOG_FORMAT"), os.Stderr)
 	slog.SetDefault(slog.New(h))
 }
 

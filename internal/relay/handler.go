@@ -77,6 +77,20 @@ func (h *Handler) wsUpgrader() websocket.Upgrader {
 	return websocket.Upgrader{CheckOrigin: h.wsAllowedOrigin}
 }
 
+// shouldLogWSClose reports whether the read-loop error from a WebSocket
+// connection deserves an Info-level log line. Routine disconnects —
+// normal closure, going-away, and abnormal closure (1006: proxy idle
+// timeouts, NAT resets, client process death) — are silenced; other
+// close codes (e.g. 1002 protocol error, 1011 internal server error)
+// are logged so server bugs aren't lost.
+func shouldLogWSClose(err error) bool {
+	return websocket.IsUnexpectedCloseError(err,
+		websocket.CloseGoingAway,
+		websocket.CloseNormalClosure,
+		websocket.CloseAbnormalClosure,
+	)
+}
+
 // wsTicket holds the identity bound to a short-lived WebSocket auth ticket.
 type wsTicket struct {
 	userID    string
@@ -896,13 +910,7 @@ func (h *Handler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			for {
 				var msg protocol.WSMessage
 				if err := conn.ReadJSON(&msg); err != nil {
-					// CloseAbnormalClosure (1006) covers proxy idle-timeouts, NAT
-					// resets, and client process death — common and not actionable.
-					if websocket.IsUnexpectedCloseError(err,
-						websocket.CloseGoingAway,
-						websocket.CloseNormalClosure,
-						websocket.CloseAbnormalClosure,
-					) {
+					if shouldLogWSClose(err) {
 						slog.Info("ws read error", "user", userID[:8], "err", err)
 					}
 					return
@@ -992,13 +1000,7 @@ func (h *Handler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		for {
 			var msg protocol.WSMessage
 			if err := conn.ReadJSON(&msg); err != nil {
-				// CloseAbnormalClosure (1006) covers proxy idle-timeouts, NAT
-				// resets, and client process death — common and not actionable.
-				if websocket.IsUnexpectedCloseError(err,
-					websocket.CloseGoingAway,
-					websocket.CloseNormalClosure,
-					websocket.CloseAbnormalClosure,
-				) {
+				if shouldLogWSClose(err) {
 					slog.Info("ws read error", "user", userID[:8], "err", err)
 				}
 				return
