@@ -79,6 +79,7 @@ func (h *Handler) authConnectInterceptor() connect.UnaryInterceptorFunc {
 		cinchv1connect.AuthServiceKeyBundleGetProcedure:            true,
 		cinchv1connect.AuthServiceKeyBundleRetryProcedure:          true,
 		cinchv1connect.AuthServiceRegisterDevicePublicKeyProcedure: true,
+		cinchv1connect.AuthServiceSetDisplayNameProcedure:          true,
 	}
 	return func(next connect.UnaryFunc) connect.UnaryFunc {
 		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
@@ -444,6 +445,23 @@ func (s *connectAuthServer) RegisterDevicePublicKey(
 		}
 	}
 	return connect.NewResponse(&cinchv1.RegisterDevicePublicKeyResponse{Ok: true}), nil
+}
+
+// ─── SetDisplayName ──────────────────────────────────────
+
+// SetDisplayName updates `users.display_name` for the calling user. Requires authentication.
+func (s *connectAuthServer) SetDisplayName(ctx context.Context, req *connect.Request[cinchv1.SetDisplayNameRequest]) (*connect.Response[cinchv1.SetDisplayNameResponse], error) {
+	userID := req.Header().Get("X-User-ID")
+	if userID == "" {
+		return nil, connect.NewError(connect.CodeUnauthenticated, errMsg("auth required"))
+	}
+	if req.Msg.DisplayName == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errMsg("display_name is required"))
+	}
+	if err := s.h.store.SetUserDisplayName(userID, req.Msg.DisplayName); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	return connect.NewResponse(&cinchv1.SetDisplayNameResponse{Ok: true}), nil
 }
 
 // newAuthConnectHandler wraps the Connect AuthService handler with auth interceptor.
