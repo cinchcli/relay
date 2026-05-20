@@ -12,9 +12,17 @@ import (
 
 	cinchv1 "github.com/cinchcli/cinch-core/go/cinch/v1"
 	"github.com/cinchcli/relay/internal/protocol"
+	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/oklog/ulid/v2"
 )
+
+// idxClipsIdempotency is the name of the partial unique index on
+// clips(user_id, idempotency_key). Keep in sync with the
+// `CREATE UNIQUE INDEX IF NOT EXISTS idx_clips_idempotency` statement
+// in migrate(); the race-recovery branch in SaveClip uses this exact
+// name to identify 23505 unique_violation errors from that index.
+const idxClipsIdempotency = "idx_clips_idempotency"
 
 // Tombstone records that a clip was deleted, for offline-device sync.
 type Tombstone struct {
@@ -295,6 +303,23 @@ func migrate(db *sql.DB) error {
 	} {
 		if _, err := db.Exec(stmt); err != nil {
 			return fmt.Errorf("adding pin columns to clips: %w", err)
+		}
+	}
+
+	// Add idempotency_key column + partial unique index for backlog-flush dedup.
+	// The cinch-core backlog flusher sets idempotency_key on retried offline
+	// captures; normal online pushes leave it NULL. The partial unique index
+	// enforces (user_id, idempotency_key) uniqueness only when the key is set,
+	// so unconstrained NULLs from online pushes remain allowed.
+	for _, stmt := range []string{
+		`ALTER TABLE clips ADD COLUMN IF NOT EXISTS idempotency_key TEXT`,
+		// Index name must stay in sync with idxClipsIdempotency above.
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_clips_idempotency
+			ON clips(user_id, idempotency_key)
+			WHERE idempotency_key IS NOT NULL`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("adding idempotency_key to clips: %w", err)
 		}
 	}
 
@@ -624,10 +649,38 @@ func (s *Store) RegisterDeviceWithToken(userID, deviceID, hostname, token string
 	return err
 }
 
-// SaveClip persists a clip and returns it.
-func (s *Store) SaveClip(userID string, req *cinchv1.PushClipRequest) (*cinchv1.Clip, error) {
+// SaveClip persists a clip and returns it. When PushClipRequest carries a
+// non-empty IdempotencyKey, SaveClip first looks up an existing row by
+// (user_id, idempotency_key) and returns it on hit without inserting; the
+// returned bool is true on a duplicate-hit so callers can skip WS fanout.
+// The partial unique index idx_clips_idempotency backs this up: if a race
+// slips past the SELECT, the INSERT's unique-violation triggers a re-fetch
+// of the winning row.
+func (s *Store) SaveClip(userID string, req *cinchv1.PushClipRequest) (*cinchv1.Clip, bool, error) {
+	// Idempotency pre-check: if the client supplied a key and we already have
+	// a row for (user_id, key), return it unmodified. This is the hot path
+	// for backlog-flush retries where the original response was lost.
+	if req.IdempotencyKey != nil && *req.IdempotencyKey != "" {
+		existing, err := s.findClipByIdempotencyKey(userID, *req.IdempotencyKey)
+		if err != nil {
+			return nil, false, fmt.Errorf("idempotency lookup: %w", err)
+		}
+		if existing != nil {
+			return existing, true, nil
+		}
+	}
+
 	id := ulid.Make().String()
-	now := time.Now().UTC()
+	createdAt := time.Now().UTC()
+	if req.ClientCreatedAt != nil && *req.ClientCreatedAt != "" {
+		if t, err := time.Parse(time.RFC3339, *req.ClientCreatedAt); err == nil {
+			// Clamp to [now - 90d, now]. Outside window or unparseable → fall back to NOW().
+			ninetyDaysAgo := createdAt.Add(-90 * 24 * time.Hour)
+			if !t.Before(ninetyDaysAgo) && !t.After(createdAt) {
+				createdAt = t.UTC()
+			}
+		}
+	}
 
 	contentType := req.ContentType
 	if contentType == "" {
@@ -644,6 +697,11 @@ func (s *Store) SaveClip(userID string, req *cinchv1.PushClipRequest) (*cinchv1.
 		mediaPath = *req.MediaPath
 	}
 
+	idempotencyKey := ""
+	if req.IdempotencyKey != nil {
+		idempotencyKey = *req.IdempotencyKey
+	}
+
 	clip := &cinchv1.Clip{
 		ClipId:      id,
 		UserId:      userID,
@@ -652,7 +710,7 @@ func (s *Store) SaveClip(userID string, req *cinchv1.PushClipRequest) (*cinchv1.
 		Source:      req.Source,
 		Label:       req.Label,
 		ByteSize:    byteSize,
-		CreatedAt:   protocol.FormatRFC3339(now),
+		CreatedAt:   protocol.FormatRFC3339(createdAt),
 		Encrypted:   req.Encrypted,
 	}
 	if mediaPath != "" {
@@ -660,17 +718,67 @@ func (s *Store) SaveClip(userID string, req *cinchv1.PushClipRequest) (*cinchv1.
 	}
 
 	_, err := s.db.Exec(
-		`INSERT INTO clips (id, user_id, content, content_type, source, label, byte_size, media_path, created_at, encrypted)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		`INSERT INTO clips (id, user_id, content, content_type, source, label, byte_size, media_path, created_at, encrypted, idempotency_key)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
 		clip.ClipId, clip.UserId, clip.Content, clip.ContentType,
 		clip.Source, clip.Label, clip.ByteSize, sql.NullString{String: mediaPath, Valid: mediaPath != ""},
-		now, clip.Encrypted,
+		createdAt, clip.Encrypted,
+		sql.NullString{String: idempotencyKey, Valid: idempotencyKey != ""},
 	)
 	if err != nil {
-		return nil, fmt.Errorf("saving clip: %w", err)
+		// Race recovery: two concurrent retries with the same idempotency_key
+		// may both miss the pre-check and race into INSERT. The partial unique
+		// index rejects the loser with 23505 unique_violation referencing
+		// idx_clips_idempotency. Fetch the winner and report duplicate.
+		var pgErr *pgconn.PgError
+		if idempotencyKey != "" && errors.As(err, &pgErr) &&
+			pgErr.Code == "23505" && pgErr.ConstraintName == idxClipsIdempotency {
+			winner, lookupErr := s.findClipByIdempotencyKey(userID, idempotencyKey)
+			if lookupErr != nil {
+				return nil, false, fmt.Errorf("idempotency race recovery lookup: %w", lookupErr)
+			}
+			if winner != nil {
+				return winner, true, nil
+			}
+		}
+		return nil, false, fmt.Errorf("saving clip: %w", err)
 	}
 
-	return clip, nil
+	return clip, false, nil
+}
+
+// findClipByIdempotencyKey returns the clip row (if any) matching
+// (user_id, idempotency_key). Returns (nil, nil) when no row exists.
+// Column order matches scanClips for consistency.
+func (s *Store) findClipByIdempotencyKey(userID, key string) (*cinchv1.Clip, error) {
+	row := s.db.QueryRow(
+		`SELECT id, user_id, content, content_type, source, label, byte_size,
+		        media_path, created_at, encrypted, is_pinned, pin_note
+		 FROM clips
+		 WHERE user_id = $1 AND idempotency_key = $2
+		 LIMIT 1`,
+		userID, key,
+	)
+	c := &cinchv1.Clip{}
+	var mediaPath sql.NullString
+	var pinNote sql.NullString
+	var createdAt time.Time
+	if err := row.Scan(&c.ClipId, &c.UserId, &c.Content, &c.ContentType, &c.Source, &c.Label, &c.ByteSize, &mediaPath, &createdAt, &c.Encrypted, &c.IsPinned, &pinNote); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if mediaPath.Valid && mediaPath.String != "" {
+		v := mediaPath.String
+		c.MediaPath = &v
+	}
+	if pinNote.Valid && pinNote.String != "" {
+		v := pinNote.String
+		c.PinNote = &v
+	}
+	c.CreatedAt = protocol.FormatRFC3339(createdAt)
+	return c, nil
 }
 
 // scanClips reads clip rows produced by a query that selects:
@@ -1730,6 +1838,27 @@ func (s *Store) SweepTombstones(retentionDays int) (int, error) {
 	res, err := s.db.Exec(
 		`DELETE FROM clip_tombstones WHERE deleted_at < NOW() - $1 * INTERVAL '1 day'`,
 		retentionDays,
+	)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
+// SweepStaleIdempotencyKeys NULLs the idempotency_key column on clip rows
+// older than maxAge so the partial unique index does not grow without bound.
+// The dedup window for real backlog retries is seconds-to-minutes; clearing
+// keys after ~24h reclaims index space with zero risk of late collisions.
+// Returns the number of rows updated.
+func (s *Store) SweepStaleIdempotencyKeys(maxAge time.Duration) (int, error) {
+	cutoff := time.Now().UTC().Add(-maxAge)
+	res, err := s.db.Exec(
+		`UPDATE clips
+		 SET idempotency_key = NULL
+		 WHERE idempotency_key IS NOT NULL
+		   AND created_at < $1`,
+		cutoff,
 	)
 	if err != nil {
 		return 0, err

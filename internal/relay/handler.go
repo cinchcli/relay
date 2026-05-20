@@ -557,7 +557,7 @@ func (h *Handler) PushClip(w http.ResponseWriter, r *http.Request) {
 				"Wait for the device to come online and retry.")
 			return
 		}
-		clip, err := h.store.SaveClip(userID, &req)
+		clip, isDup, err := h.store.SaveClip(userID, &req)
 		if err != nil {
 			writeInternalError(w, "save_failed", "save clip", err)
 			return
@@ -565,12 +565,14 @@ func (h *Handler) PushClip(w http.ResponseWriter, r *http.Request) {
 		if req.Source != "" {
 			h.store.UpdateDeviceActivity(userID, req.Source)
 		}
-		if err := h.hub.SendToDevice(userID, targetDeviceID, &cinchv1.ServerEvent{
-			Event: &cinchv1.ServerEvent_NewClip{
-				NewClip: &cinchv1.NewClipEvent{Clip: clip},
-			},
-		}); err != nil {
-			slog.Error("SendToDevice failed after online check", "err", err)
+		if !isDup {
+			if err := h.hub.SendToDevice(userID, targetDeviceID, &cinchv1.ServerEvent{
+				Event: &cinchv1.ServerEvent_NewClip{
+					NewClip: &cinchv1.NewClipEvent{Clip: clip},
+				},
+			}); err != nil {
+				slog.Error("SendToDevice failed after online check", "err", err)
+			}
 		}
 		writeJSON(w, http.StatusOK, cinchv1.PushClipResponse{
 			ClipId: clip.ClipId, ByteSize: clip.ByteSize,
@@ -596,7 +598,7 @@ func (h *Handler) PushClip(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	clip, err := h.store.SaveClip(userID, &req)
+	clip, isDup, err := h.store.SaveClip(userID, &req)
 	if err != nil {
 		writeInternalError(w, "save failed", "save clip", err)
 		return
@@ -615,8 +617,10 @@ func (h *Handler) PushClip(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := h.hub.SendClip(userID, clip); err != nil {
-		slog.Error("ws broadcast failed", "user", userID, "err", err)
+	if !isDup {
+		if err := h.hub.SendClip(userID, clip); err != nil {
+			slog.Error("ws broadcast failed", "user", userID, "err", err)
+		}
 	}
 
 	writeJSON(w, http.StatusOK, cinchv1.PushClipResponse{
@@ -1070,7 +1074,7 @@ func (h *Handler) PushBinaryClip(w http.ResponseWriter, r *http.Request) {
 		ByteSize:    n,
 	}
 
-	clip, err := h.store.SaveClip(userID, req)
+	clip, isDup, err := h.store.SaveClip(userID, req)
 	if err != nil {
 		h.media.Delete(r.Context(), mediaPath)
 		writeInternalError(w, "save failed", "save clip", err)
@@ -1082,8 +1086,10 @@ func (h *Handler) PushBinaryClip(w http.ResponseWriter, r *http.Request) {
 			slog.Error("device activity update failed", "err", err)
 		}
 	}
-	if err := h.hub.SendClip(userID, clip); err != nil {
-		slog.Error("ws broadcast failed", "err", err)
+	if !isDup {
+		if err := h.hub.SendClip(userID, clip); err != nil {
+			slog.Error("ws broadcast failed", "err", err)
+		}
 	}
 
 	writeJSON(w, http.StatusOK, cinchv1.PushClipResponse{
