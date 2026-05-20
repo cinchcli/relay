@@ -361,7 +361,7 @@ func (s *Store) CreateUser(id string) error {
 // provider is "github" or "google"; subject is the stable provider-side user ID.
 // machineID, when non-empty, deduplicates same-machine sign-ins onto a single device row.
 // Returns (userID, deviceID, deviceToken).
-func (s *Store) UpsertOAuthUser(provider, subject, email string, emailVerified bool, hostname, machineID string) (string, string, string, error) {
+func (s *Store) UpsertOAuthUser(provider, subject, email string, emailVerified bool, displayName, hostname, machineID string) (string, string, string, error) {
 	if hostname == "" {
 		hostname = "unknown"
 	}
@@ -384,10 +384,14 @@ func (s *Store) UpsertOAuthUser(provider, subject, email string, emailVerified b
 			if linkErr == nil {
 				userID = linkedUserID
 				identityRowID = ulid.Make().String()
+				var displayNameArg interface{}
+				if displayName != "" {
+					displayNameArg = displayName
+				}
 				if _, err := s.db.Exec(
-					`INSERT INTO oauth_identities(id, user_id, provider, subject, email, email_verified)
-					 VALUES ($1, $2, $3, $4, $5, TRUE) ON CONFLICT(provider, subject) DO NOTHING`,
-					identityRowID, userID, provider, subject, email,
+					`INSERT INTO oauth_identities(id, user_id, provider, subject, email, email_verified, display_name)
+					 VALUES ($1, $2, $3, $4, $5, TRUE, $6) ON CONFLICT(provider, subject) DO NOTHING`,
+					identityRowID, userID, provider, subject, email, displayNameArg,
 				); err != nil {
 					return "", "", "", fmt.Errorf("linking cross-provider identity: %w", err)
 				}
@@ -397,10 +401,14 @@ func (s *Store) UpsertOAuthUser(provider, subject, email string, emailVerified b
 					return "", "", "", fmt.Errorf("creating oauth user: %w", err)
 				}
 				identityRowID = ulid.Make().String()
+				var displayNameArg interface{}
+				if displayName != "" {
+					displayNameArg = displayName
+				}
 				if _, err := s.db.Exec(
-					`INSERT INTO oauth_identities(id, user_id, provider, subject, email, email_verified)
-					 VALUES ($1, $2, $3, $4, $5, TRUE) ON CONFLICT(provider, subject) DO NOTHING`,
-					identityRowID, userID, provider, subject, email,
+					`INSERT INTO oauth_identities(id, user_id, provider, subject, email, email_verified, display_name)
+					 VALUES ($1, $2, $3, $4, $5, TRUE, $6) ON CONFLICT(provider, subject) DO NOTHING`,
+					identityRowID, userID, provider, subject, email, displayNameArg,
 				); err != nil {
 					return "", "", "", fmt.Errorf("inserting oauth identity: %w", err)
 				}
@@ -415,10 +423,14 @@ func (s *Store) UpsertOAuthUser(provider, subject, email string, emailVerified b
 			if email != "" {
 				emailArg = email
 			}
+			var displayNameArg interface{}
+			if displayName != "" {
+				displayNameArg = displayName
+			}
 			if _, err := s.db.Exec(
-				`INSERT INTO oauth_identities(id, user_id, provider, subject, email, email_verified)
-				 VALUES ($1, $2, $3, $4, $5, FALSE) ON CONFLICT(provider, subject) DO NOTHING`,
-				identityRowID, userID, provider, subject, emailArg,
+				`INSERT INTO oauth_identities(id, user_id, provider, subject, email, email_verified, display_name)
+				 VALUES ($1, $2, $3, $4, $5, FALSE, $6) ON CONFLICT(provider, subject) DO NOTHING`,
+				identityRowID, userID, provider, subject, emailArg, displayNameArg,
 			); err != nil {
 				return "", "", "", fmt.Errorf("inserting oauth identity: %w", err)
 			}
@@ -436,6 +448,12 @@ func (s *Store) UpsertOAuthUser(provider, subject, email string, emailVerified b
 			emailArg, emailVerified, identityRowID,
 		); err != nil {
 			return "", "", "", fmt.Errorf("updating oauth identity: %w", err)
+		}
+		if displayName != "" {
+			_, _ = s.db.Exec(
+				`UPDATE oauth_identities SET display_name = $1 WHERE provider = $2 AND subject = $3`,
+				displayName, provider, subject,
+			)
 		}
 	}
 

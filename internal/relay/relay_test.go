@@ -1365,7 +1365,7 @@ func TestDeviceLimit_BlocksNewDevice(t *testing.T) {
 	store := relay.NewTestStore(t)
 
 	// First OAuth login: creates user + device 1.
-	userID, _, _, err := store.UpsertOAuthUser("github", "block-subject", "", false, "host1", "machine1")
+	userID, _, _, err := store.UpsertOAuthUser("github", "block-subject", "", false, "", "host1", "machine1")
 	if err != nil {
 		t.Fatalf("first login: %v", err)
 	}
@@ -1379,7 +1379,7 @@ func TestDeviceLimit_BlocksNewDevice(t *testing.T) {
 	}
 
 	// Second OAuth login with a NEW machine — same user (same github subject), different machineID.
-	_, _, _, err = store.UpsertOAuthUser("github", "block-subject", "", false, "host2", "machine2")
+	_, _, _, err = store.UpsertOAuthUser("github", "block-subject", "", false, "", "host2", "machine2")
 	if err == nil {
 		t.Fatal("expected device_limit_exceeded error, got nil")
 	}
@@ -1392,7 +1392,7 @@ func TestDeviceLimit_GracePeriodAllowsDevice(t *testing.T) {
 	store := relay.NewTestStore(t)
 
 	// First OAuth login: creates user + device 1.
-	userID, _, _, err := store.UpsertOAuthUser("github", "grace-subject", "", false, "host1", "machine1")
+	userID, _, _, err := store.UpsertOAuthUser("github", "grace-subject", "", false, "", "host1", "machine1")
 	if err != nil {
 		t.Fatalf("first login: %v", err)
 	}
@@ -1407,7 +1407,7 @@ func TestDeviceLimit_GracePeriodAllowsDevice(t *testing.T) {
 	}
 
 	// Second device on new machine — should succeed because grace period is active.
-	_, _, _, err = store.UpsertOAuthUser("github", "grace-subject", "", false, "host2", "machine2")
+	_, _, _, err = store.UpsertOAuthUser("github", "grace-subject", "", false, "", "host2", "machine2")
 	if err != nil {
 		t.Fatalf("expected success during grace period, got: %v", err)
 	}
@@ -1418,7 +1418,7 @@ func TestDeviceLimit_ReauthAllowed(t *testing.T) {
 
 	machineID := "same-machine-123"
 	// First login on this machine: creates user + device.
-	userID, _, _, err := store.UpsertOAuthUser("github", "reauth-subject", "", false, "my-mac", machineID)
+	userID, _, _, err := store.UpsertOAuthUser("github", "reauth-subject", "", false, "", "my-mac", machineID)
 	if err != nil {
 		t.Fatalf("first login: %v", err)
 	}
@@ -1432,7 +1432,7 @@ func TestDeviceLimit_ReauthAllowed(t *testing.T) {
 	}
 
 	// Re-auth from the SAME machine — should succeed (not a new device row).
-	_, _, _, err = store.UpsertOAuthUser("github", "reauth-subject", "", false, "my-mac", machineID)
+	_, _, _, err = store.UpsertOAuthUser("github", "reauth-subject", "", false, "", "my-mac", machineID)
 	if err != nil {
 		t.Fatalf("re-auth from same machine should succeed, got: %v", err)
 	}
@@ -1441,11 +1441,11 @@ func TestDeviceLimit_ReauthAllowed(t *testing.T) {
 func TestUpsertOAuthUser_SameProviderRelogin(t *testing.T) {
 	store := relay.NewTestStore(t)
 
-	uid1, _, _, err := store.UpsertOAuthUser("google", "google-sub-1", "alice@example.com", true, "mac", "m1")
+	uid1, _, _, err := store.UpsertOAuthUser("google", "google-sub-1", "alice@example.com", true, "", "mac", "m1")
 	if err != nil {
 		t.Fatalf("first login: %v", err)
 	}
-	uid2, _, _, err := store.UpsertOAuthUser("google", "google-sub-1", "alice@example.com", true, "mac", "m1")
+	uid2, _, _, err := store.UpsertOAuthUser("google", "google-sub-1", "alice@example.com", true, "", "mac", "m1")
 	if err != nil {
 		t.Fatalf("re-login: %v", err)
 	}
@@ -1458,12 +1458,12 @@ func TestUpsertOAuthUser_CrossProviderVerifiedEmail(t *testing.T) {
 	store := relay.NewTestStore(t)
 
 	// First login via Google.
-	googleUID, _, _, err := store.UpsertOAuthUser("google", "google-sub-2", "alice@example.com", true, "mac", "m1")
+	googleUID, _, _, err := store.UpsertOAuthUser("google", "google-sub-2", "alice@example.com", true, "", "mac", "m1")
 	if err != nil {
 		t.Fatalf("google login: %v", err)
 	}
 	// Second login via GitHub with the same verified email → should link.
-	githubUID, _, _, err := store.UpsertOAuthUser("github", "12345", "alice@example.com", true, "mac", "m2")
+	githubUID, _, _, err := store.UpsertOAuthUser("github", "12345", "alice@example.com", true, "", "mac", "m2")
 	if err != nil {
 		t.Fatalf("github login: %v", err)
 	}
@@ -1475,12 +1475,12 @@ func TestUpsertOAuthUser_CrossProviderVerifiedEmail(t *testing.T) {
 func TestUpsertOAuthUser_CrossProviderUnverifiedEmail_NoLink(t *testing.T) {
 	store := relay.NewTestStore(t)
 
-	uid1, _, _, err := store.UpsertOAuthUser("google", "google-sub-3", "bob@example.com", true, "mac", "m1")
+	uid1, _, _, err := store.UpsertOAuthUser("google", "google-sub-3", "bob@example.com", true, "", "mac", "m1")
 	if err != nil {
 		t.Fatalf("google login: %v", err)
 	}
 	// GitHub login with same email but unverified → must NOT link.
-	uid2, _, _, err := store.UpsertOAuthUser("github", "67890", "bob@example.com", false, "mac", "m2")
+	uid2, _, _, err := store.UpsertOAuthUser("github", "67890", "bob@example.com", false, "", "mac", "m2")
 	if err != nil {
 		t.Fatalf("github login: %v", err)
 	}
@@ -1492,12 +1492,12 @@ func TestUpsertOAuthUser_CrossProviderUnverifiedEmail_NoLink(t *testing.T) {
 func TestUpsertOAuthUser_EmailUpdate(t *testing.T) {
 	store := relay.NewTestStore(t)
 
-	uid1, _, _, err := store.UpsertOAuthUser("google", "google-sub-4", "old@example.com", true, "mac", "m1")
+	uid1, _, _, err := store.UpsertOAuthUser("google", "google-sub-4", "old@example.com", true, "", "mac", "m1")
 	if err != nil {
 		t.Fatalf("first login: %v", err)
 	}
 	// Same provider+subject, but email changed at Google.
-	uid2, _, _, err := store.UpsertOAuthUser("google", "google-sub-4", "new@example.com", true, "mac", "m1")
+	uid2, _, _, err := store.UpsertOAuthUser("google", "google-sub-4", "new@example.com", true, "", "mac", "m1")
 	if err != nil {
 		t.Fatalf("email-update login: %v", err)
 	}
@@ -1519,13 +1519,13 @@ func TestUpsertOAuthUser_LegacyHeal_RemoteUnknown(t *testing.T) {
 	store := relay.NewTestStore(t)
 
 	// Simulate a pre-fix desktop login: hostname="unknown", machineID="" (empty).
-	userID, legacyDevID, _, err := store.UpsertOAuthUser("github", "heal-sub-1", "", false, "unknown", "")
+	userID, legacyDevID, _, err := store.UpsertOAuthUser("github", "heal-sub-1", "", false, "", "unknown", "")
 	if err != nil {
 		t.Fatalf("legacy login: %v", err)
 	}
 
 	// Now the fixed desktop (or CLI) re-logs in with the real hostname and machine_id.
-	uid2, dev2, _, err := store.UpsertOAuthUser("github", "heal-sub-1", "", false, "my-mac", "machine-abc")
+	uid2, dev2, _, err := store.UpsertOAuthUser("github", "heal-sub-1", "", false, "", "my-mac", "machine-abc")
 	if err != nil {
 		t.Fatalf("healed login: %v", err)
 	}
@@ -1549,12 +1549,12 @@ func TestUpsertOAuthUser_LegacyHeal_RemoteUnknown(t *testing.T) {
 func TestUpsertOAuthUser_LegacyHeal_SourceKeyUpdated(t *testing.T) {
 	store := relay.NewTestStore(t)
 
-	_, devID, _, err := store.UpsertOAuthUser("github", "heal-sub-2", "", false, "unknown", "")
+	_, devID, _, err := store.UpsertOAuthUser("github", "heal-sub-2", "", false, "", "unknown", "")
 	if err != nil {
 		t.Fatalf("legacy login: %v", err)
 	}
 
-	_, dev2, _, err := store.UpsertOAuthUser("github", "heal-sub-2", "", false, "real-host", "machine-xyz")
+	_, dev2, _, err := store.UpsertOAuthUser("github", "heal-sub-2", "", false, "", "real-host", "machine-xyz")
 	if err != nil {
 		t.Fatalf("healed login: %v", err)
 	}
@@ -1587,13 +1587,13 @@ func TestUpsertOAuthUser_LegacyHeal_NoCrossUserPollution(t *testing.T) {
 	store := relay.NewTestStore(t)
 
 	// User A has a legacy row.
-	userA, devA, _, err := store.UpsertOAuthUser("github", "heal-sub-A", "", false, "unknown", "")
+	userA, devA, _, err := store.UpsertOAuthUser("github", "heal-sub-A", "", false, "", "unknown", "")
 	if err != nil {
 		t.Fatalf("user A legacy login: %v", err)
 	}
 
 	// User B logs in for the first time with a real machine_id.
-	userB, devB, _, err := store.UpsertOAuthUser("github", "heal-sub-B", "", false, "real-host", "machine-xyz")
+	userB, devB, _, err := store.UpsertOAuthUser("github", "heal-sub-B", "", false, "", "real-host", "machine-xyz")
 	if err != nil {
 		t.Fatalf("user B first login: %v", err)
 	}

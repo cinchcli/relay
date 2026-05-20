@@ -19,7 +19,7 @@ func TestDeviceCodeDeny_RemoteSeesDenied(t *testing.T) {
 	ts, store, hub := keyExchangeTestServer(t)
 	defer ts.Close()
 
-	userID, _, token, err := store.UpsertOAuthUser("google", "sub-1", "alice@example.com", true, "alice-mac", "m1")
+	userID, _, token, err := store.UpsertOAuthUser("google", "sub-1", "alice@example.com", true, "", "alice-mac", "m1")
 	if err != nil {
 		t.Fatalf("seed alice: %v", err)
 	}
@@ -77,11 +77,11 @@ func TestDeviceCodeDeny_OnlyAffectsOwnPending(t *testing.T) {
 	ts, store, hub := keyExchangeTestServer(t)
 	defer ts.Close()
 
-	aliceID, _, aliceTok, err := store.UpsertOAuthUser("google", "sub-a", "alice@example.com", true, "alice-mac", "m1")
+	aliceID, _, aliceTok, err := store.UpsertOAuthUser("google", "sub-a", "alice@example.com", true, "", "alice-mac", "m1")
 	if err != nil {
 		t.Fatalf("seed alice: %v", err)
 	}
-	if _, _, _, err := store.UpsertOAuthUser("google", "sub-b", "bob@example.com", true, "bob-mac", "m2"); err != nil {
+	if _, _, _, err := store.UpsertOAuthUser("google", "sub-b", "bob@example.com", true, "", "bob-mac", "m2"); err != nil {
 		t.Fatalf("seed bob: %v", err)
 	}
 
