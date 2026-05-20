@@ -643,7 +643,16 @@ func (s *Store) RegisterDeviceWithToken(userID, deviceID, hostname, token string
 // SaveClip persists a clip and returns it.
 func (s *Store) SaveClip(userID string, req *cinchv1.PushClipRequest) (*cinchv1.Clip, error) {
 	id := ulid.Make().String()
-	now := time.Now().UTC()
+	createdAt := time.Now().UTC()
+	if req.ClientCreatedAt != nil && *req.ClientCreatedAt != "" {
+		if t, err := time.Parse(time.RFC3339, *req.ClientCreatedAt); err == nil {
+			// Clamp to [now - 90d, now]. Outside window or unparseable → fall back to NOW().
+			ninetyDaysAgo := createdAt.Add(-90 * 24 * time.Hour)
+			if !t.Before(ninetyDaysAgo) && !t.After(createdAt) {
+				createdAt = t.UTC()
+			}
+		}
+	}
 
 	contentType := req.ContentType
 	if contentType == "" {
@@ -668,7 +677,7 @@ func (s *Store) SaveClip(userID string, req *cinchv1.PushClipRequest) (*cinchv1.
 		Source:      req.Source,
 		Label:       req.Label,
 		ByteSize:    byteSize,
-		CreatedAt:   protocol.FormatRFC3339(now),
+		CreatedAt:   protocol.FormatRFC3339(createdAt),
 		Encrypted:   req.Encrypted,
 	}
 	if mediaPath != "" {
@@ -680,7 +689,7 @@ func (s *Store) SaveClip(userID string, req *cinchv1.PushClipRequest) (*cinchv1.
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
 		clip.ClipId, clip.UserId, clip.Content, clip.ContentType,
 		clip.Source, clip.Label, clip.ByteSize, sql.NullString{String: mediaPath, Valid: mediaPath != ""},
-		now, clip.Encrypted,
+		createdAt, clip.Encrypted,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("saving clip: %w", err)
