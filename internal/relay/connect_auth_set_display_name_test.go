@@ -133,6 +133,45 @@ func TestSetDisplayName_REST_RejectsEmpty(t *testing.T) {
 	}
 }
 
+func TestSetDisplayName_REST_RejectsTooLong(t *testing.T) {
+	ts, _, _ := setupTestServerWithStore(t)
+	token, _, _ := login(t, ts.URL)
+
+	long := strings.Repeat("a", 65)
+	payload, _ := json.Marshal(map[string]string{"display_name": long})
+	req, _ := http.NewRequest("POST", ts.URL+"/auth/display-name", strings.NewReader(string(payload)))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestSetDisplayName_REST_AcceptsExactly64Bytes(t *testing.T) {
+	ts, _, _ := setupTestServerWithStore(t)
+	token, _, _ := login(t, ts.URL)
+
+	exact := strings.Repeat("a", 64)
+	payload, _ := json.Marshal(map[string]string{"display_name": exact})
+	req, _ := http.NewRequest("POST", ts.URL+"/auth/display-name", strings.NewReader(string(payload)))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, string(b))
+	}
+}
+
 func TestSetDisplayName_REST_RequiresAuth(t *testing.T) {
 	ts, _, _ := setupTestServerWithStore(t)
 	_, _, _ = login(t, ts.URL) // ensure store has data but don't use token

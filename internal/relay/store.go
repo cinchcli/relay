@@ -450,10 +450,12 @@ func (s *Store) UpsertOAuthUser(provider, subject, email string, emailVerified b
 			return "", "", "", fmt.Errorf("updating oauth identity: %w", err)
 		}
 		if displayName != "" {
-			_, _ = s.db.Exec(
+			if _, err := s.db.Exec(
 				`UPDATE oauth_identities SET display_name = $1 WHERE provider = $2 AND subject = $3`,
 				displayName, provider, subject,
-			)
+			); err != nil {
+				return "", "", "", fmt.Errorf("refreshing oauth display_name: %w", err)
+			}
 		}
 	}
 
