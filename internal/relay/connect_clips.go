@@ -85,19 +85,21 @@ func (s *connectClipsServer) PushClip(ctx context.Context, req *connect.Request[
 		if !s.h.hub.IsDeviceOnline(userID, targetDeviceID) {
 			return nil, connect.NewError(connect.CodeUnavailable, errMsg("device is not currently online"))
 		}
-		clip, err := s.h.store.SaveClip(userID, req.Msg)
+		clip, isDup, err := s.h.store.SaveClip(userID, req.Msg)
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
 		if req.Msg.Source != "" {
 			s.h.store.UpdateDeviceActivity(userID, req.Msg.Source)
 		}
-		if err := s.h.hub.SendToDevice(userID, targetDeviceID, &cinchv1.ServerEvent{
-			Event: &cinchv1.ServerEvent_NewClip{
-				NewClip: &cinchv1.NewClipEvent{Clip: clip},
-			},
-		}); err != nil {
-			slog.Error("connectClipsServer.PushClip SendToDevice failed", "err", err)
+		if !isDup {
+			if err := s.h.hub.SendToDevice(userID, targetDeviceID, &cinchv1.ServerEvent{
+				Event: &cinchv1.ServerEvent_NewClip{
+					NewClip: &cinchv1.NewClipEvent{Clip: clip},
+				},
+			}); err != nil {
+				slog.Error("connectClipsServer.PushClip SendToDevice failed", "err", err)
+			}
 		}
 		return connect.NewResponse(&cinchv1.PushClipResponse{
 			ClipId:   clip.ClipId,
@@ -119,7 +121,7 @@ func (s *connectClipsServer) PushClip(ctx context.Context, req *connect.Request[
 		}
 	}
 
-	clip, err := s.h.store.SaveClip(userID, req.Msg)
+	clip, isDup, err := s.h.store.SaveClip(userID, req.Msg)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -136,8 +138,10 @@ func (s *connectClipsServer) PushClip(ctx context.Context, req *connect.Request[
 		}
 	}
 
-	if err := s.h.hub.SendClip(userID, clip); err != nil {
-		slog.Error("connectClipsServer.PushClip ws broadcast failed", "user", userID, "err", err)
+	if !isDup {
+		if err := s.h.hub.SendClip(userID, clip); err != nil {
+			slog.Error("connectClipsServer.PushClip ws broadcast failed", "user", userID, "err", err)
+		}
 	}
 
 	return connect.NewResponse(&cinchv1.PushClipResponse{

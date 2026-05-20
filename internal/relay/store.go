@@ -12,6 +12,7 @@ import (
 
 	cinchv1 "github.com/cinchcli/cinch-core/go/cinch/v1"
 	"github.com/cinchcli/relay/internal/protocol"
+	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/oklog/ulid/v2"
 )
@@ -640,8 +641,27 @@ func (s *Store) RegisterDeviceWithToken(userID, deviceID, hostname, token string
 	return err
 }
 
-// SaveClip persists a clip and returns it.
-func (s *Store) SaveClip(userID string, req *cinchv1.PushClipRequest) (*cinchv1.Clip, error) {
+// SaveClip persists a clip and returns it. When PushClipRequest carries a
+// non-empty IdempotencyKey, SaveClip first looks up an existing row by
+// (user_id, idempotency_key) and returns it on hit without inserting; the
+// returned bool is true on a duplicate-hit so callers can skip WS fanout.
+// The partial unique index idx_clips_idempotency backs this up: if a race
+// slips past the SELECT, the INSERT's unique-violation triggers a re-fetch
+// of the winning row.
+func (s *Store) SaveClip(userID string, req *cinchv1.PushClipRequest) (*cinchv1.Clip, bool, error) {
+	// Idempotency pre-check: if the client supplied a key and we already have
+	// a row for (user_id, key), return it unmodified. This is the hot path
+	// for backlog-flush retries where the original response was lost.
+	if req.IdempotencyKey != nil && *req.IdempotencyKey != "" {
+		existing, err := s.findClipByIdempotencyKey(userID, *req.IdempotencyKey)
+		if err != nil {
+			return nil, false, fmt.Errorf("idempotency lookup: %w", err)
+		}
+		if existing != nil {
+			return existing, true, nil
+		}
+	}
+
 	id := ulid.Make().String()
 	createdAt := time.Now().UTC()
 	if req.ClientCreatedAt != nil && *req.ClientCreatedAt != "" {
@@ -669,6 +689,11 @@ func (s *Store) SaveClip(userID string, req *cinchv1.PushClipRequest) (*cinchv1.
 		mediaPath = *req.MediaPath
 	}
 
+	idempotencyKey := ""
+	if req.IdempotencyKey != nil {
+		idempotencyKey = *req.IdempotencyKey
+	}
+
 	clip := &cinchv1.Clip{
 		ClipId:      id,
 		UserId:      userID,
@@ -685,17 +710,67 @@ func (s *Store) SaveClip(userID string, req *cinchv1.PushClipRequest) (*cinchv1.
 	}
 
 	_, err := s.db.Exec(
-		`INSERT INTO clips (id, user_id, content, content_type, source, label, byte_size, media_path, created_at, encrypted)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		`INSERT INTO clips (id, user_id, content, content_type, source, label, byte_size, media_path, created_at, encrypted, idempotency_key)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
 		clip.ClipId, clip.UserId, clip.Content, clip.ContentType,
 		clip.Source, clip.Label, clip.ByteSize, sql.NullString{String: mediaPath, Valid: mediaPath != ""},
 		createdAt, clip.Encrypted,
+		sql.NullString{String: idempotencyKey, Valid: idempotencyKey != ""},
 	)
 	if err != nil {
-		return nil, fmt.Errorf("saving clip: %w", err)
+		// Race recovery: two concurrent retries with the same idempotency_key
+		// may both miss the pre-check and race into INSERT. The partial unique
+		// index rejects the loser with 23505 unique_violation referencing
+		// idx_clips_idempotency. Fetch the winner and report duplicate.
+		var pgErr *pgconn.PgError
+		if idempotencyKey != "" && errors.As(err, &pgErr) &&
+			pgErr.Code == "23505" && strings.Contains(pgErr.ConstraintName, "idempotency") {
+			winner, lookupErr := s.findClipByIdempotencyKey(userID, idempotencyKey)
+			if lookupErr != nil {
+				return nil, false, fmt.Errorf("idempotency race recovery lookup: %w", lookupErr)
+			}
+			if winner != nil {
+				return winner, true, nil
+			}
+		}
+		return nil, false, fmt.Errorf("saving clip: %w", err)
 	}
 
-	return clip, nil
+	return clip, false, nil
+}
+
+// findClipByIdempotencyKey returns the clip row (if any) matching
+// (user_id, idempotency_key). Returns (nil, nil) when no row exists.
+// Column order matches scanClips for consistency.
+func (s *Store) findClipByIdempotencyKey(userID, key string) (*cinchv1.Clip, error) {
+	row := s.db.QueryRow(
+		`SELECT id, user_id, content, content_type, source, label, byte_size,
+		        media_path, created_at, encrypted, is_pinned, pin_note
+		 FROM clips
+		 WHERE user_id = $1 AND idempotency_key = $2
+		 LIMIT 1`,
+		userID, key,
+	)
+	c := &cinchv1.Clip{}
+	var mediaPath sql.NullString
+	var pinNote sql.NullString
+	var createdAt time.Time
+	if err := row.Scan(&c.ClipId, &c.UserId, &c.Content, &c.ContentType, &c.Source, &c.Label, &c.ByteSize, &mediaPath, &createdAt, &c.Encrypted, &c.IsPinned, &pinNote); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if mediaPath.Valid && mediaPath.String != "" {
+		v := mediaPath.String
+		c.MediaPath = &v
+	}
+	if pinNote.Valid && pinNote.String != "" {
+		v := pinNote.String
+		c.PinNote = &v
+	}
+	c.CreatedAt = protocol.FormatRFC3339(createdAt)
+	return c, nil
 }
 
 // scanClips reads clip rows produced by a query that selects:
