@@ -23,7 +23,7 @@ type OAuthProvider struct {
 	cfg          *oauth2.Config
 	// identityFetcher resolves stable identity info from the provider token.
 	// nil falls back to fetchOAuthIdentity. Replaceable in tests.
-	identityFetcher func(providerName string, cfg *oauth2.Config, tok *oauth2.Token) (subject, email string, emailVerified bool, err error)
+	identityFetcher func(ctx context.Context, providerName string, cfg *oauth2.Config, tok *oauth2.Token) (subject, email, displayName string, emailVerified bool, err error)
 }
 
 // OAuthProviders bundles the configured providers. A nil entry means that
@@ -187,12 +187,13 @@ func (h *Handler) OAuthCallback(providerName string) http.HandlerFunc {
 		if fetcher == nil {
 			fetcher = fetchOAuthIdentity
 		}
-		subject, email, emailVerified, err := fetcher(providerName, prov.cfg, tok)
+		subject, email, displayName, emailVerified, err := fetcher(r.Context(), providerName, prov.cfg, tok)
 		if err != nil {
 			slog.Error("oauth callback profile fetch failed", "provider", providerName, "err", err)
 			http.Error(w, "Failed to fetch profile", http.StatusBadGateway)
 			return
 		}
+		_ = displayName // consumed by Task 5 (UpsertOAuthUser)
 
 		// Resolve the device hostname + machine_id from the device_codes table
 		// (best-effort). machine_id deduplicates same-Mac CLI/desktop sign-ins
@@ -237,27 +238,40 @@ func (h *Handler) OAuthCallback(providerName string) http.HandlerFunc {
 }
 
 // fetchOAuthIdentity calls the provider's userinfo/email endpoints and returns
-// the stable subject identifier, the user's email, and whether the email is
-// verified. Email is used as a cross-provider linking pivot when verified.
-func fetchOAuthIdentity(providerName string, cfg *oauth2.Config, tok *oauth2.Token) (subject, email string, emailVerified bool, err error) {
-	client := cfg.Client(context.Background(), tok)
+// the stable subject identifier, the user's email, the provider-supplied display
+// name, and whether the email is verified. Email is used as a cross-provider
+// linking pivot when verified.
+//
+// ctx may carry a custom http.Client (via oauth2.WithClient) to redirect provider
+// API calls in tests.
+func fetchOAuthIdentity(ctx context.Context, providerName string, cfg *oauth2.Config, tok *oauth2.Token) (subject, email, displayName string, emailVerified bool, err error) {
+	client := cfg.Client(ctx, tok)
 	switch providerName {
 	case "github":
 		resp, err := client.Get("https://api.github.com/user")
 		if err != nil {
-			return "", "", false, err
+			return "", "", "", false, err
 		}
 		defer resp.Body.Close()
 		var profile struct {
-			ID int64 `json:"id"`
+			ID    int64  `json:"id"`
+			Login string `json:"login"`
+			Name  string `json:"name"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&profile); err != nil {
-			return "", "", false, err
+			return "", "", "", false, err
 		}
 		if profile.ID == 0 {
-			return "", "", false, fmt.Errorf("github user ID is zero")
+			return "", "", "", false, fmt.Errorf("github user ID is zero")
 		}
 		subject = fmt.Sprintf("%d", profile.ID)
+
+		// Resolve display name: prefer trimmed Name, fall back to Login as-is.
+		if strings.TrimSpace(profile.Name) != "" {
+			displayName = strings.TrimSpace(profile.Name)
+		} else {
+			displayName = profile.Login
+		}
 
 		// Fetch verified primary email (requires user:email scope).
 		emailResp, err := client.Get("https://api.github.com/user/emails")
@@ -278,29 +292,30 @@ func fetchOAuthIdentity(providerName string, cfg *oauth2.Config, tok *oauth2.Tok
 				}
 			}
 		}
-		return subject, email, emailVerified, nil
+		return subject, email, displayName, emailVerified, nil
 
 	case "google":
 		resp, err := client.Get("https://openidconnect.googleapis.com/v1/userinfo")
 		if err != nil {
-			return "", "", false, err
+			return "", "", "", false, err
 		}
 		defer resp.Body.Close()
 		var profile struct {
 			Sub           string `json:"sub"`
 			Email         string `json:"email"`
 			EmailVerified bool   `json:"email_verified"`
+			Name          string `json:"name"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&profile); err != nil {
-			return "", "", false, err
+			return "", "", "", false, err
 		}
 		if profile.Sub == "" {
-			return "", "", false, fmt.Errorf("google sub is empty")
+			return "", "", "", false, fmt.Errorf("google sub is empty")
 		}
-		return profile.Sub, profile.Email, profile.EmailVerified, nil
+		return profile.Sub, profile.Email, strings.TrimSpace(profile.Name), profile.EmailVerified, nil
 
 	default:
-		return "", "", false, fmt.Errorf("unknown provider: %s", providerName)
+		return "", "", "", false, fmt.Errorf("unknown provider: %s", providerName)
 	}
 }
 

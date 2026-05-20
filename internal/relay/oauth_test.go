@@ -1,6 +1,7 @@
 package relay_test
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -553,6 +554,147 @@ func TestAuthBrowser_ValidDeviceCode(t *testing.T) {
 	if !strings.Contains(bodyStr, "/auth/oauth/github/start?device_code=ABCD-1234") {
 		t.Errorf("expected GitHub href with device code, got: %s", bodyStr)
 	}
+}
+
+// TestFetchOAuthIdentity_DisplayName verifies that fetchOAuthIdentity returns the
+// correct display name for each provider according to documented fallback rules.
+//
+// The function uses cfg.Client(ctx, tok) to build an HTTP client. By placing a
+// custom http.Client (with a host-rewriting transport) into the context via
+// oauth2.WithClient, we redirect provider API calls to a local httptest.Server
+// without modifying the production code beyond accepting a context.Context.
+func TestFetchOAuthIdentity_DisplayName(t *testing.T) {
+	cases := []struct {
+		name     string
+		provider string
+		userBody string
+		wantName string
+	}{
+		{
+			name:     "github_uses_name_when_set",
+			provider: "github",
+			userBody: `{"id":42,"login":"jinmu-io","name":"Jinmu Lee"}`,
+			wantName: "Jinmu Lee",
+		},
+		{
+			name:     "github_falls_back_to_login_when_name_missing",
+			provider: "github",
+			userBody: `{"id":42,"login":"jinmu-io"}`,
+			wantName: "jinmu-io",
+		},
+		{
+			name:     "github_falls_back_to_login_when_name_blank",
+			provider: "github",
+			userBody: `{"id":42,"login":"jinmu-io","name":""}`,
+			wantName: "jinmu-io",
+		},
+		{
+			name:     "google_uses_name",
+			provider: "google",
+			userBody: `{"sub":"123","email":"a@b.com","email_verified":true,"name":"Alice Example"}`,
+			wantName: "Alice Example",
+		},
+		{
+			name:     "google_blank_name_returns_empty",
+			provider: "google",
+			userBody: `{"sub":"123","email":"a@b.com","email_verified":true}`,
+			wantName: "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+
+			switch tc.provider {
+			case "github":
+				userBody := tc.userBody
+				mux.HandleFunc("/user", func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					w.Write([]byte(userBody)) //nolint:errcheck
+				})
+				mux.HandleFunc("/user/emails", func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					w.Write([]byte(`[]`)) //nolint:errcheck
+				})
+			case "google":
+				userBody := tc.userBody
+				mux.HandleFunc("/v1/userinfo", func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					w.Write([]byte(userBody)) //nolint:errcheck
+				})
+			}
+
+			srv := httptest.NewServer(mux)
+			defer srv.Close()
+
+			// Determine which provider host fetchOAuthIdentity calls.
+			var providerHost string
+			switch tc.provider {
+			case "github":
+				providerHost = "api.github.com"
+			case "google":
+				providerHost = "openidconnect.googleapis.com"
+			}
+
+			// Build a host-rewriting transport that redirects provider API calls to srv.
+			// cfg.Client(ctx, tok) calls internal.ContextClient(ctx) to get the base
+			// http.Client and wraps its Transport in an oauth2.Transport (which attaches
+			// the Bearer token). So we inject a plain http.Client here; the oauth2
+			// package adds the token layer on top.
+			rt := &hostRewriteTransport{
+				base:    http.DefaultTransport,
+				oldHost: providerHost,
+				newHost: srv.Listener.Addr().String(),
+			}
+			httpClient := &http.Client{Transport: rt}
+			tok := &oauth2.Token{AccessToken: "test-token"}
+
+			// Inject the custom client via context so cfg.Client(ctx, tok) uses it as
+			// the base transport. oauth2.HTTPClient is the context key recognized by
+			// internal.ContextClient inside the oauth2 package.
+			ctx := context.WithValue(t.Context(), oauth2.HTTPClient, httpClient)
+
+			// cfg.Endpoint is irrelevant because we supply a static token; the token URL
+			// is never called. We still provide a dummy endpoint to satisfy oauth2.Config.
+			cfg := &oauth2.Config{
+				ClientID:     "test-id",
+				ClientSecret: "test-secret",
+				Endpoint: oauth2.Endpoint{
+					AuthURL:   srv.URL + "/auth",
+					TokenURL:  srv.URL + "/token",
+					AuthStyle: oauth2.AuthStyleInParams,
+				},
+			}
+
+			_, _, gotName, _, err := relay.FetchOAuthIdentityForTest(ctx, tc.provider, cfg, tok)
+			if err != nil {
+				t.Fatalf("fetchOAuthIdentity returned error: %v", err)
+			}
+			if gotName != tc.wantName {
+				t.Errorf("displayName = %q, want %q", gotName, tc.wantName)
+			}
+		})
+	}
+}
+
+// hostRewriteTransport is an http.RoundTripper that rewrites the request host
+// from oldHost to newHost, redirecting provider API calls to a local httptest.Server.
+type hostRewriteTransport struct {
+	base    http.RoundTripper
+	oldHost string
+	newHost string
+}
+
+func (rt *hostRewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL.Host == rt.oldHost {
+		clone := req.Clone(req.Context())
+		clone.URL.Host = rt.newHost
+		clone.URL.Scheme = "http"
+		clone.Host = rt.newHost
+		return rt.base.RoundTrip(clone)
+	}
+	return rt.base.RoundTrip(req)
 }
 
 // TestGetProviders_WithOAuth returns the configured provider names.
