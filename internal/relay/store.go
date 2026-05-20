@@ -1846,6 +1846,27 @@ func (s *Store) SweepTombstones(retentionDays int) (int, error) {
 	return int(n), nil
 }
 
+// SweepStaleIdempotencyKeys NULLs the idempotency_key column on clip rows
+// older than maxAge so the partial unique index does not grow without bound.
+// The dedup window for real backlog retries is seconds-to-minutes; clearing
+// keys after ~24h reclaims index space with zero risk of late collisions.
+// Returns the number of rows updated.
+func (s *Store) SweepStaleIdempotencyKeys(maxAge time.Duration) (int, error) {
+	cutoff := time.Now().UTC().Add(-maxAge)
+	res, err := s.db.Exec(
+		`UPDATE clips
+		 SET idempotency_key = NULL
+		 WHERE idempotency_key IS NOT NULL
+		   AND created_at < $1`,
+		cutoff,
+	)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
 // GetUserCapabilities loads quota limits for a user.
 func (s *Store) GetUserCapabilities(userID string) (UserCapabilities, error) {
 	var cap UserCapabilities

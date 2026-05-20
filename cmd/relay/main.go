@@ -229,4 +229,10 @@ func runRetentionSweep(store *relay.Store, ms media.Store) {
 	} else if n > 0 {
 		slog.Info("request count sweep removed old rows", "count", n)
 	}
+
+	if n, err := store.SweepStaleIdempotencyKeys(24 * time.Hour); err != nil {
+		slog.Warn("idempotency key sweep failed", "err", err)
+	} else if n > 0 {
+		slog.Info("idempotency key sweep nulled stale keys", "count", n)
+	}
 }
