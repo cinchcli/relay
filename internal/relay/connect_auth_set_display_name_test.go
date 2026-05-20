@@ -2,6 +2,8 @@ package relay_test
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -74,5 +76,77 @@ func TestSetDisplayName_RequiresAuth(t *testing.T) {
 	_, err := client.SetDisplayName(context.Background(), req)
 	if err == nil || connect.CodeOf(err) != connect.CodeUnauthenticated {
 		t.Fatalf("expected Unauthenticated, got %v", err)
+	}
+}
+
+func TestSetDisplayName_REST_HappyPath(t *testing.T) {
+	ts, _, store := setupTestServerWithStore(t)
+	token, _, userID := login(t, ts.URL)
+
+	body := strings.NewReader(`{"display_name":"  Alice  "}`)
+	req, _ := http.NewRequest("POST", ts.URL+"/auth/display-name", body)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, string(b))
+	}
+	var got struct {
+		Ok          bool   `json:"ok"`
+		DisplayName string `json:"display_name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Ok || got.DisplayName != "Alice" {
+		t.Fatalf("got %+v", got)
+	}
+
+	var stored string
+	_ = store.DB().QueryRow(`SELECT display_name FROM users WHERE id = $1`, userID).Scan(&stored)
+	if stored != "Alice" {
+		t.Fatalf("stored = %q", stored)
+	}
+}
+
+func TestSetDisplayName_REST_RejectsEmpty(t *testing.T) {
+	ts, _, _ := setupTestServerWithStore(t)
+	_, _, _ = login(t, ts.URL)
+	token, _, _ := login(t, ts.URL)
+
+	body := strings.NewReader(`{"display_name":"   "}`)
+	req, _ := http.NewRequest("POST", ts.URL+"/auth/display-name", body)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestSetDisplayName_REST_RequiresAuth(t *testing.T) {
+	ts, _, _ := setupTestServerWithStore(t)
+	_, _, _ = login(t, ts.URL) // ensure store has data but don't use token
+
+	body := strings.NewReader(`{"display_name":"Alice"}`)
+	req, _ := http.NewRequest("POST", ts.URL+"/auth/display-name", body)
+	req.Header.Set("Content-Type", "application/json")
+	// intentionally no Authorization header
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 401 {
+		t.Fatalf("status = %d, want 401", resp.StatusCode)
 	}
 }

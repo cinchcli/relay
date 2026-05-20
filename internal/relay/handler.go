@@ -1661,6 +1661,38 @@ func (h *Handler) CompleteDeviceCodeHTTP(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "complete"})
 }
 
+// SetDisplayNameHTTP handles POST /auth/display-name.
+// Body: {"display_name": "string"} → {"ok": true, "display_name": "trimmed"}.
+// Mirrors AuthService.SetDisplayName (Connect-RPC).
+// RequireAuth sets X-User-ID before this handler is called.
+func (h *Handler) SetDisplayNameHTTP(w http.ResponseWriter, r *http.Request) {
+	userID := r.Header.Get("X-User-ID")
+	var body struct {
+		DisplayName string `json:"display_name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error(), "")
+		return
+	}
+	trimmed := strings.TrimSpace(body.DisplayName)
+	if trimmed == "" {
+		writeError(w, http.StatusBadRequest, "invalid_argument", "display_name must not be empty", "")
+		return
+	}
+	if len(trimmed) > 64 {
+		writeError(w, http.StatusBadRequest, "invalid_argument", "display_name max 64 bytes", "")
+		return
+	}
+	if err := h.store.SetUserDisplayName(userID, trimmed); err != nil {
+		writeInternalError(w, "set_display_name_failed", "store update", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		Ok          bool   `json:"ok"`
+		DisplayName string `json:"display_name"`
+	}{Ok: true, DisplayName: trimmed})
+}
+
 // IssueWsTicket issues a short-lived single-use ticket for WebSocket auth.
 // POST /ws/ticket — RequireAuth sets X-User-ID and X-Device-ID headers.
 // The ticket is valid for 30 s and consumed on first use, so the long-lived
@@ -1854,6 +1886,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /devices", h.RequireAuth(h.ListDevices))
 	mux.HandleFunc("PUT /devices/{id}/nickname", h.RequireAuth(h.SetDeviceNickname))
 	mux.HandleFunc("PUT /devices/self/retention", h.RequireAuth(h.UpdateDeviceRetention))
+	mux.HandleFunc("POST /auth/display-name", h.RequireAuth(h.SetDisplayNameHTTP))
 	mux.HandleFunc("POST /auth/key-bundle", h.RequireAuth(h.PostKeyBundle))
 	mux.HandleFunc("GET /auth/key-bundle", h.RequireAuth(h.GetKeyBundle))
 	mux.HandleFunc("POST /auth/key-bundle/retry", h.RequireAuth(h.KeyBundleRetry))
