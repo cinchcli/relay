@@ -3,8 +3,7 @@ package main
 import (
 	"context"
 	"flag"
-	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -30,7 +29,33 @@ func main() {
 	runServer()
 }
 
+// initLogger configures slog.Default based on LOG_LEVEL and LOG_FORMAT env vars.
+// LOG_LEVEL: debug | info (default) | warn | error (case-insensitive).
+// LOG_FORMAT: text (default) | json (case-insensitive).
+// Output goes to stderr.
+func initLogger() {
+	level := slog.LevelInfo
+	switch strings.ToLower(os.Getenv("LOG_LEVEL")) {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	}
+	opts := &slog.HandlerOptions{Level: level}
+	var h slog.Handler
+	if strings.EqualFold(os.Getenv("LOG_FORMAT"), "json") {
+		h = slog.NewJSONHandler(os.Stderr, opts)
+	} else {
+		h = slog.NewTextHandler(os.Stderr, opts)
+	}
+	slog.SetDefault(slog.New(h))
+}
+
 func runServer() {
+	initLogger()
+
 	fs := flag.NewFlagSet("server", flag.ExitOnError)
 	var portFlag string
 	fs.StringVar(&portFlag, "port", "", "TCP port to listen on (overrides PORT env; default 8080)")
@@ -47,25 +72,29 @@ func runServer() {
 
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
-		log.Fatal("DATABASE_URL is required")
+		slog.Error("DATABASE_URL is required")
+		os.Exit(1)
 	}
 
 	store, err := relay.NewStore(dsn)
 	if err != nil {
-		log.Fatalf("failed to open database: %v", err)
+		slog.Error("failed to open database", "err", err)
+		os.Exit(1)
 	}
 	defer store.Close()
 
 	if code := os.Getenv("RELAY_BOOTSTRAP_INVITE_CODE"); code != "" {
 		if err := relay.ApplyBootstrapInvite(store, code, os.Stderr); err != nil {
-			log.Fatalf("bootstrap invite: %v", err)
+			slog.Error("bootstrap invite failed", "err", err)
+			os.Exit(1)
 		}
 	}
 
 	// Build media backend from env (MEDIA_BACKEND=local|s3; see DEPLOY.md).
 	mediaStore, err := media.NewStore()
 	if err != nil {
-		log.Fatalf("failed to init media backend: %v", err)
+		slog.Error("failed to init media backend", "err", err)
+		os.Exit(1)
 	}
 
 	// Retention sweep: deletes expired remote clips hourly and purges their
@@ -115,7 +144,7 @@ func runServer() {
 
 	logStartupStatus(mediaStore, handler.OAuth)
 
-	fmt.Printf("cinch relay v%s listening on :%s\n", version, port)
+	slog.Info("relay listening", "version", version, "port", port)
 	srv := &http.Server{
 		Addr:    ":" + port,
 		Handler: mux,
@@ -129,7 +158,8 @@ func runServer() {
 		IdleTimeout:       120 * time.Second,
 	}
 	if err := srv.ListenAndServe(); err != nil {
-		log.Fatalf("server error: %v", err)
+		slog.Error("server error", "err", err)
+		os.Exit(1)
 	}
 }
 
@@ -138,25 +168,25 @@ func runServer() {
 // DB connectivity is implicit: NewStore() above already Pings and exits on
 // failure, so reaching this point means the database is reachable.
 func logStartupStatus(mediaStore media.Store, oauth *relay.OAuthProviders) {
-	log.Printf("startup: database ok")
+	slog.Info("startup database ok")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := mediaStore.HealthCheck(ctx); err != nil {
-		log.Printf("startup: media (%s) FAILED: %v", mediaBackendName(), err)
+		slog.Error("startup media healthcheck failed", "backend", mediaBackendName(), "err", err)
 	} else {
-		log.Printf("startup: media (%s) ok", mediaBackendName())
+		slog.Info("startup media ok", "backend", mediaBackendName())
 	}
 
 	if oauth != nil && oauth.GitHub != nil {
-		log.Printf("startup: oauth github configured")
+		slog.Info("startup oauth github configured")
 	} else {
-		log.Printf("startup: oauth github not configured")
+		slog.Info("startup oauth github not configured")
 	}
 	if oauth != nil && oauth.Google != nil {
-		log.Printf("startup: oauth google configured")
+		slog.Info("startup oauth google configured")
 	} else {
-		log.Printf("startup: oauth google not configured")
+		slog.Info("startup oauth google not configured")
 	}
 }
 
@@ -171,25 +201,25 @@ func mediaBackendName() string {
 func runRetentionSweep(store *relay.Store, ms media.Store) {
 	mediaPaths, err := store.SweepAllUsersRetentionReturningMedia()
 	if err != nil {
-		log.Printf("retention sweep: %v", err)
+		slog.Error("retention sweep failed", "err", err)
 		return
 	}
 	ctx := context.Background()
 	for _, key := range mediaPaths {
 		if err := ms.Delete(ctx, key); err != nil {
-			log.Printf("retention sweep: delete %q: %v", key, err)
+			slog.Error("retention sweep media delete failed", "key", key, "err", err)
 		}
 	}
 
 	if n, err := store.SweepTombstones(7); err != nil {
-		log.Printf("tombstone sweep: %v", err)
+		slog.Warn("tombstone sweep failed", "err", err)
 	} else if n > 0 {
-		log.Printf("tombstone sweep: removed %d tombstones", n)
+		slog.Info("tombstone sweep removed tombstones", "count", n)
 	}
 
 	if n, err := store.SweepOldRequestCounts(7); err != nil {
-		log.Printf("request count sweep: %v", err)
+		slog.Warn("request count sweep failed", "err", err)
 	} else if n > 0 {
-		log.Printf("request count sweep: removed %d old rows", n)
+		slog.Info("request count sweep removed old rows", "count", n)
 	}
 }

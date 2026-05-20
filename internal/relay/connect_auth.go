@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -145,14 +145,14 @@ func (s *connectAuthServer) Login(ctx context.Context, req *connect.Request[cinc
 	}
 	if req.Msg.DisplayName != nil && *req.Msg.DisplayName != "" {
 		if err := s.h.store.SetUserDisplayName(userID, *req.Msg.DisplayName); err != nil {
-			log.Printf("set display name for %s: %v", userID, err)
+			slog.Error("set display name failed", "user", userID, "err", err)
 		}
 	}
 
 	// First user on the relay becomes admin automatically.
 	if n, err := s.h.store.CountUsers(); err == nil && n == 1 {
 		if err := s.h.store.SetUserAdmin(userID, true); err != nil {
-			log.Printf("promote first user %s to admin: %v", userID, err)
+			slog.Error("promote first user to admin failed", "user", userID, "err", err)
 		}
 	}
 

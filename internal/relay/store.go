@@ -6,7 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -1291,7 +1291,7 @@ func (s *Store) SweepAllUsersRetention() error {
 
 	for _, ur := range users {
 		if count, err := s.SweepExpiredClips(ur.userID, ur.days); err == nil && count > 0 {
-			log.Printf("retention sweep: deleted %d clips for user %s (>%d days)", count, ur.userID, ur.days)
+			slog.Info("retention sweep deleted clips", "count", count, "user", ur.userID, "retention_days", ur.days)
 		}
 	}
 	return nil
@@ -1320,7 +1320,7 @@ func (s *Store) SweepExpiredClipsReturningMedia(userID string, retentionDays int
 	for rows.Next() {
 		var r row
 		if scanErr := rows.Scan(&r.id, &r.key); scanErr != nil {
-			log.Printf("sweep: scan expired clip row for user %s: %v", userID, scanErr)
+			slog.Error("sweep scan expired clip row failed", "user", userID, "err", scanErr)
 			continue
 		}
 		toDelete = append(toDelete, r)
@@ -1347,7 +1347,7 @@ func (s *Store) SweepExpiredClipsReturningMedia(userID string, retentionDays int
 		if delErr := s.deleteClipsBatch(userID, ids); delErr != nil {
 			// Don't bail on the whole sweep — the next hourly tick retries.
 			// We log the chunk size rather than every ID to keep log volume sane.
-			log.Printf("sweep: batch delete (%d clips) for user %s: %v", len(ids), userID, delErr)
+			slog.Error("sweep batch delete failed", "count", len(ids), "user", userID, "err", delErr)
 			continue
 		}
 		// Only collect media keys after a successful delete so the caller
@@ -1359,7 +1359,7 @@ func (s *Store) SweepExpiredClipsReturningMedia(userID string, retentionDays int
 		}
 		count += len(ids)
 		if tErr := s.insertTombstonesBatch(userID, ids); tErr != nil {
-			log.Printf("sweep: batch tombstones (%d clips) for user %s: %v", len(ids), userID, tErr)
+			slog.Error("sweep batch tombstones failed", "count", len(ids), "user", userID, "err", tErr)
 		}
 	}
 	return count, mediaPaths, nil
@@ -1434,7 +1434,7 @@ func (s *Store) SweepAllUsersRetentionReturningMedia() (mediaPaths []string, err
 	for rows.Next() {
 		var u ur
 		if scanErr := rows.Scan(&u.userID, &u.deviceDays, &u.capRetention); scanErr != nil {
-			log.Printf("retention sweep: scan device row: %v", scanErr)
+			slog.Error("retention sweep scan device row failed", "err", scanErr)
 			continue
 		}
 		users = append(users, u)
@@ -1452,9 +1452,9 @@ func (s *Store) SweepAllUsersRetentionReturningMedia() (mediaPaths []string, err
 		}
 		count, paths, sweepErr := s.SweepExpiredClipsReturningMedia(u.userID, retentionDays)
 		if sweepErr != nil {
-			log.Printf("retention sweep: user %s: %v", u.userID, sweepErr)
+			slog.Error("retention sweep failed", "user", u.userID, "err", sweepErr)
 		} else if count > 0 {
-			log.Printf("retention sweep: deleted %d clips for user %s (>%d days)", count, u.userID, retentionDays)
+			slog.Info("retention sweep deleted clips", "count", count, "user", u.userID, "retention_days", retentionDays)
 		}
 		mediaPaths = append(mediaPaths, paths...)
 	}

@@ -7,7 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -177,7 +177,7 @@ func (h *Handler) OAuthCallback(providerName string) http.HandlerFunc {
 		// Exchange code for access token.
 		tok, err := prov.cfg.Exchange(context.Background(), code)
 		if err != nil {
-			log.Printf("oauth callback: token exchange failed (%s): %v", providerName, err)
+			slog.Error("oauth callback token exchange failed", "provider", providerName, "err", err)
 			http.Error(w, "Token exchange failed", http.StatusBadGateway)
 			return
 		}
@@ -189,7 +189,7 @@ func (h *Handler) OAuthCallback(providerName string) http.HandlerFunc {
 		}
 		subject, email, emailVerified, err := fetcher(providerName, prov.cfg, tok)
 		if err != nil {
-			log.Printf("oauth callback: profile fetch failed (%s): %v", providerName, err)
+			slog.Error("oauth callback profile fetch failed", "provider", providerName, "err", err)
 			http.Error(w, "Failed to fetch profile", http.StatusBadGateway)
 			return
 		}
@@ -202,7 +202,7 @@ func (h *Handler) OAuthCallback(providerName string) http.HandlerFunc {
 		// Upsert user + device.
 		userID, deviceID, deviceToken, err := h.store.UpsertOAuthUser(providerName, subject, email, emailVerified, hostname, machineID)
 		if err != nil {
-			log.Printf("oauth callback: upsert failed: %v", err)
+			slog.Error("oauth callback upsert failed", "err", err)
 			http.Error(w, "Account provisioning failed", http.StatusInternalServerError)
 			return
 		}
@@ -227,7 +227,7 @@ func (h *Handler) OAuthCallback(providerName string) http.HandlerFunc {
 
 		// Mark the device-code flow complete so the CLI poll picks it up.
 		if err := h.store.CompleteDeviceCode(userCode, userID, deviceID, deviceToken); err != nil {
-			log.Printf("oauth callback: CompleteDeviceCode failed: %v", err)
+			slog.Error("oauth callback CompleteDeviceCode failed", "err", err)
 			// Don't error out — credentials were created; user can re-auth if needed.
 		}
 

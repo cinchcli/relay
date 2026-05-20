@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
-	"log"
+	"log/slog"
 	"mime"
 	"net/http"
 	"os"
@@ -197,7 +197,7 @@ func (h *Handler) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 		deviceID, revoked, derr := h.store.DeviceIDByToken(token)
 		if derr != nil {
 			if derr != sql.ErrNoRows {
-				log.Printf("DeviceIDByToken error: %v", derr)
+				slog.Error("DeviceIDByToken error", "err", derr)
 			}
 			writeError(w, http.StatusUnauthorized, "invalid token", "Token is invalid or expired", "Run: cinch auth login")
 			return
@@ -293,7 +293,7 @@ func (h *Handler) AuthLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.DisplayName != nil && *req.DisplayName != "" {
 		if err := h.store.SetUserDisplayName(userID, *req.DisplayName); err != nil {
-			log.Printf("set display name for %s: %v", userID, err)
+			slog.Error("set display name failed", "user", userID, "err", err)
 		}
 	}
 
@@ -301,7 +301,7 @@ func (h *Handler) AuthLogin(w http.ResponseWriter, r *http.Request) {
 	// called after the insert, so the freshly-created user is included.
 	if n, err := h.store.CountUsers(); err == nil && n == 1 {
 		if err := h.store.SetUserAdmin(userID, true); err != nil {
-			log.Printf("promote first user %s to admin: %v", userID, err)
+			slog.Error("promote first user to admin failed", "user", userID, "err", err)
 		}
 	}
 
@@ -556,7 +556,7 @@ func (h *Handler) PushClip(w http.ResponseWriter, r *http.Request) {
 				NewClip: &cinchv1.NewClipEvent{Clip: clip},
 			},
 		}); err != nil {
-			log.Printf("SendToDevice failed after online check: %v", err)
+			slog.Error("SendToDevice failed after online check", "err", err)
 		}
 		writeJSON(w, http.StatusOK, cinchv1.PushClipResponse{
 			ClipId: clip.ClipId, ByteSize: clip.ByteSize,
@@ -590,19 +590,19 @@ func (h *Handler) PushClip(w http.ResponseWriter, r *http.Request) {
 
 	if isDemoUser {
 		if err := h.store.IncrementDemoCounter(); err != nil {
-			log.Printf("demo counter increment failed: %v", err)
+			slog.Error("demo counter increment failed", "err", err)
 		}
 	}
 
 	// Update device activity stats
 	if req.Source != "" {
 		if err := h.store.UpdateDeviceActivity(userID, req.Source); err != nil {
-			log.Printf("device activity update failed: %v", err)
+			slog.Error("device activity update failed", "err", err)
 		}
 	}
 
 	if err := h.hub.SendClip(userID, clip); err != nil {
-		log.Printf("ws broadcast failed for %s: %v", userID, err)
+		slog.Error("ws broadcast failed", "user", userID, "err", err)
 	}
 
 	writeJSON(w, http.StatusOK, cinchv1.PushClipResponse{
@@ -689,12 +689,12 @@ func (h *Handler) DeleteClip(w http.ResponseWriter, r *http.Request) {
 
 	if mediaPath != "" && h.media != nil {
 		if err := h.media.Delete(r.Context(), mediaPath); err != nil {
-			log.Printf("media delete %q: %v", mediaPath, err)
+			slog.Error("media delete failed", "media_path", mediaPath, "err", err)
 		}
 	}
 
 	if err := h.store.InsertTombstone(userID, clipID); err != nil {
-		log.Printf("InsertTombstone %s: %v", clipID, err)
+		slog.Error("InsertTombstone failed", "clip_id", clipID, "err", err)
 	}
 
 	h.hub.SendClipDeleted(userID, clipID)
@@ -850,7 +850,7 @@ func (h *Handler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		ug := h.wsUpgrader()
 		conn, err := ug.Upgrade(w, r, nil)
 		if err != nil {
-			log.Printf("ws upgrade failed: %v", err)
+			slog.Info("ws upgrade failed", "err", err)
 			return
 		}
 		h.hub.Register(userID, deviceID, conn)
@@ -859,7 +859,7 @@ func (h *Handler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		go func() {
 			pending, err := h.store.ListPendingKeyExchanges(userID)
 			if err != nil {
-				log.Printf("ListPendingKeyExchanges: %v", err)
+				slog.Error("ListPendingKeyExchanges failed", "err", err)
 				return
 			}
 			for _, d := range pending {
@@ -877,7 +877,7 @@ func (h *Handler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		go func() {
 			pendingCodes, err := h.store.ListPendingDeviceCodes(userID)
 			if err != nil {
-				log.Printf("ListPendingDeviceCodes: %v", err)
+				slog.Error("ListPendingDeviceCodes failed", "err", err)
 				return
 			}
 			for _, p := range pendingCodes {
@@ -903,7 +903,7 @@ func (h *Handler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 						websocket.CloseNormalClosure,
 						websocket.CloseAbnormalClosure,
 					) {
-						log.Printf("ws read error for %s: %v", userID[:8], err)
+						slog.Info("ws read error", "user", userID[:8], "err", err)
 					}
 					return
 				}
@@ -927,7 +927,7 @@ func (h *Handler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid token", http.StatusUnauthorized)
 			return
 		}
-		log.Printf("DeviceIDByToken WS error: %v", derr)
+		slog.Error("DeviceIDByToken WS error", "err", derr)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -944,7 +944,7 @@ func (h *Handler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	ug := h.wsUpgrader()
 	conn, err := ug.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("ws upgrade failed: %v", err)
+		slog.Info("ws upgrade failed", "err", err)
 		return
 	}
 
@@ -955,7 +955,7 @@ func (h *Handler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		pending, err := h.store.ListPendingKeyExchanges(userID)
 		if err != nil {
-			log.Printf("ListPendingKeyExchanges: %v", err)
+			slog.Error("ListPendingKeyExchanges failed", "err", err)
 			return
 		}
 		for _, d := range pending {
@@ -973,7 +973,7 @@ func (h *Handler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		pendingCodes, err := h.store.ListPendingDeviceCodes(userID)
 		if err != nil {
-			log.Printf("ListPendingDeviceCodes: %v", err)
+			slog.Error("ListPendingDeviceCodes failed", "err", err)
 			return
 		}
 		for _, p := range pendingCodes {
@@ -999,7 +999,7 @@ func (h *Handler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 					websocket.CloseNormalClosure,
 					websocket.CloseAbnormalClosure,
 				) {
-					log.Printf("ws read error for %s: %v", userID[:8], err)
+					slog.Info("ws read error", "user", userID[:8], "err", err)
 				}
 				return
 			}
@@ -1052,7 +1052,7 @@ func (h *Handler) PushBinaryClip(w http.ResponseWriter, r *http.Request) {
 	n := header.Size
 
 	if err := h.media.Upload(r.Context(), mediaPath, file, n, contentType); err != nil {
-		log.Printf("media upload failed: %v", err)
+		slog.Error("media upload failed", "err", err)
 		writeError(w, http.StatusInternalServerError, "save failed", "Could not upload file", "")
 		return
 	}
@@ -1077,11 +1077,11 @@ func (h *Handler) PushBinaryClip(w http.ResponseWriter, r *http.Request) {
 
 	if source != "" {
 		if err := h.store.UpdateDeviceActivity(userID, source); err != nil {
-			log.Printf("device activity update: %v", err)
+			slog.Error("device activity update failed", "err", err)
 		}
 	}
 	if err := h.hub.SendClip(userID, clip); err != nil {
-		log.Printf("ws broadcast: %v", err)
+		slog.Error("ws broadcast failed", "err", err)
 	}
 
 	writeJSON(w, http.StatusOK, cinchv1.PushClipResponse{
@@ -1108,7 +1108,7 @@ func (h *Handler) GetClipMedia(w http.ResponseWriter, r *http.Request) {
 
 	body, err := h.media.Download(r.Context(), mediaPath)
 	if err != nil {
-		log.Printf("media download %q: %v", mediaPath, err)
+		slog.Error("media download failed", "media_path", mediaPath, "err", err)
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
@@ -1146,7 +1146,7 @@ func writeError(w http.ResponseWriter, status int, errType, message, fix string)
 // downstream services — leaking raw err.Error() exposes driver versions,
 // schema details, and file paths.
 func writeInternalError(w http.ResponseWriter, errType, opName string, err error) {
-	log.Printf("%s: %v", opName, err)
+	slog.Error("internal error", "op", opName, "err", err)
 	writeError(w, http.StatusInternalServerError, errType, "Internal error", "")
 }
 
@@ -1562,7 +1562,7 @@ func (h *Handler) AuthBrowser(w http.ResponseWriter, r *http.Request) {
 			data.GoogleURL = template.URL("/auth/oauth/google/start?device_code=" + deviceCode)
 		}
 		if err := tmpl.Execute(w, data); err != nil {
-			log.Printf("AuthBrowser: template execute error: %v", err)
+			slog.Error("AuthBrowser template execute failed", "err", err)
 		}
 		return
 	}
@@ -1570,7 +1570,7 @@ func (h *Handler) AuthBrowser(w http.ResponseWriter, r *http.Request) {
 	// Self-host fallback: render the invite + display-name form via template.
 	selfHost := !hasGitHub && !hasGoogle
 	if err := authBrowserTemplate.Execute(w, authBrowserData{SelfHost: selfHost}); err != nil {
-		log.Printf("AuthBrowser: template execute error: %v", err)
+		slog.Error("AuthBrowser template execute failed", "err", err)
 	}
 }
 

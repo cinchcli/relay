@@ -64,6 +64,8 @@ docker compose up -d
 | `GITHUB_CLIENT_SECRET` | _(unset)_ | GitHub OAuth App client secret |
 | `GOOGLE_CLIENT_ID` | _(unset)_ | Google OAuth client ID (enables Google sign-in) |
 | `GOOGLE_CLIENT_SECRET` | _(unset)_ | Google OAuth client secret |
+| `LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error` |
+| `LOG_FORMAT` | `text` | Log format: `text` (human-readable) or `json` (structured) |
 
 ## OAuth Sign-in (optional)
 

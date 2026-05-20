@@ -1,7 +1,7 @@
 package relay
 
 import (
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -93,7 +93,7 @@ func (h *Hub) RegisterEventSub(userID, deviceID string) <-chan *cinchv1.ServerEv
 	}
 	h.eventSubs[userID][deviceID] = ch
 	h.eventSubsMu.Unlock()
-	log.Printf("event stream connected: %s device: %s", userID[:min(8, len(userID))], deviceID[:min(8, len(deviceID))])
+	slog.Info("event stream connected", "user", userID[:min(8, len(userID))], "device", deviceID[:min(8, len(deviceID))])
 	return ch
 }
 
@@ -104,7 +104,7 @@ func (h *Hub) UnregisterEventSub(userID, deviceID string) {
 		if ch, ok := devs[deviceID]; ok {
 			close(ch)
 			delete(devs, deviceID)
-			log.Printf("event stream disconnected: %s device: %s", userID[:min(8, len(userID))], deviceID[:min(8, len(deviceID))])
+			slog.Info("event stream disconnected", "user", userID[:min(8, len(userID))], "device", deviceID[:min(8, len(deviceID))])
 		}
 		if len(devs) == 0 {
 			delete(h.eventSubs, userID)
@@ -132,7 +132,7 @@ func (h *Hub) sendToEventSubs(userID string, event *cinchv1.ServerEvent) {
 		select {
 		case ch <- event:
 		default:
-			log.Printf("event sub buffer full for user %s", userID[:8])
+			slog.Warn("event sub buffer full for user", "user", userID[:8])
 		}
 	}
 }
@@ -151,7 +151,7 @@ func (h *Hub) sendToEventSub(userID, deviceID string, event *cinchv1.ServerEvent
 	select {
 	case ch <- event:
 	default:
-		log.Printf("event sub buffer full for device %s", deviceID[:8])
+		slog.Warn("event sub buffer full for device", "device", deviceID[:8])
 	}
 }
 
@@ -177,7 +177,7 @@ func (h *Hub) Run() {
 
 		for _, e := range all {
 			if err := e.ac.Conn.WriteJSON(protocol.WSMessage{Action: protocol.ActionPing}); err != nil {
-				log.Printf("heartbeat failed for %s: %v", e.uid[:8], err)
+				slog.Warn("heartbeat failed", "user", e.uid[:8], "err", err)
 				// Guard against reconnect race: only remove if the conn pointer still matches.
 				// A new Register() call between the snapshot and here replaces the pointer;
 				// removing by key alone would evict the newly-registered connection instead.
@@ -216,7 +216,7 @@ func (h *Hub) Register(userID, deviceID string, conn *websocket.Conn) {
 		old.Conn.Close()
 	}
 	h.conns[userID][key] = &AgentConn{UserID: userID, DeviceID: deviceID, Conn: conn}
-	log.Printf("agent connected: %s device: %s", userID[:8], key[:8])
+	slog.Info("agent connected", "user", userID[:8], "device", key[:8])
 }
 
 // Remove disconnects and removes a specific (userID, deviceID) connection.
@@ -232,7 +232,7 @@ func (h *Hub) Remove(userID, deviceID string) {
 		if ac, ok := devs[key]; ok {
 			ac.Conn.Close()
 			delete(devs, key)
-			log.Printf("agent disconnected: %s device: %s", userID[:8], key[:8])
+			slog.Info("agent disconnected", "user", userID[:8], "device", key[:8])
 		}
 		if len(devs) == 0 {
 			delete(h.conns, userID)
@@ -292,7 +292,7 @@ func (h *Hub) SendClipDeleted(userID, clipID string) {
 
 	for _, ac := range conns {
 		if err := ac.Conn.WriteJSON(wsMsg); err != nil {
-			log.Printf("SendClipDeleted write error for device %s: %v", ac.DeviceID, err)
+			slog.Warn("SendClipDeleted write error", "device", ac.DeviceID, "err", err)
 		}
 	}
 
@@ -322,7 +322,7 @@ func (h *Hub) SendClipPinned(userID, clipID string, isPinned bool, pinNote *stri
 
 	for _, ac := range conns {
 		if err := ac.Conn.WriteJSON(wsMsg); err != nil {
-			log.Printf("SendClipPinned write error for device %s: %v", ac.DeviceID, err)
+			slog.Warn("SendClipPinned write error", "device", ac.DeviceID, "err", err)
 		}
 	}
 
@@ -344,7 +344,7 @@ func (h *Hub) BroadcastWSToUser(userID string, msg *protocol.WSMessage) {
 
 	for _, ac := range conns {
 		if err := ac.Conn.WriteJSON(msg); err != nil {
-			log.Printf("BroadcastWSToUser write to %s/%s: %v", userID, ac.DeviceID, err)
+			slog.Warn("BroadcastWSToUser write failed", "user", userID, "device", ac.DeviceID, "err", err)
 		}
 	}
 }
@@ -363,7 +363,7 @@ func (h *Hub) SendToUser(userID string, event *cinchv1.ServerEvent) {
 	if wsMsg := serverEventToWSMessage(event); wsMsg != nil {
 		for _, ac := range conns {
 			if err := ac.Conn.WriteJSON(wsMsg); err != nil {
-				log.Printf("SendToUser write error for device %s: %v", ac.DeviceID, err)
+				slog.Warn("SendToUser write error", "device", ac.DeviceID, "err", err)
 			}
 		}
 	}
