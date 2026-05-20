@@ -17,6 +17,13 @@ import (
 	"github.com/oklog/ulid/v2"
 )
 
+// idxClipsIdempotency is the name of the partial unique index on
+// clips(user_id, idempotency_key). Keep in sync with the
+// `CREATE UNIQUE INDEX IF NOT EXISTS idx_clips_idempotency` statement
+// in migrate(); the race-recovery branch in SaveClip uses this exact
+// name to identify 23505 unique_violation errors from that index.
+const idxClipsIdempotency = "idx_clips_idempotency"
+
 // Tombstone records that a clip was deleted, for offline-device sync.
 type Tombstone struct {
 	ClipID    string `json:"clip_id"`
@@ -306,6 +313,7 @@ func migrate(db *sql.DB) error {
 	// so unconstrained NULLs from online pushes remain allowed.
 	for _, stmt := range []string{
 		`ALTER TABLE clips ADD COLUMN IF NOT EXISTS idempotency_key TEXT`,
+		// Index name must stay in sync with idxClipsIdempotency above.
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_clips_idempotency
 			ON clips(user_id, idempotency_key)
 			WHERE idempotency_key IS NOT NULL`,
@@ -724,7 +732,7 @@ func (s *Store) SaveClip(userID string, req *cinchv1.PushClipRequest) (*cinchv1.
 		// idx_clips_idempotency. Fetch the winner and report duplicate.
 		var pgErr *pgconn.PgError
 		if idempotencyKey != "" && errors.As(err, &pgErr) &&
-			pgErr.Code == "23505" && strings.Contains(pgErr.ConstraintName, "idempotency") {
+			pgErr.Code == "23505" && pgErr.ConstraintName == idxClipsIdempotency {
 			winner, lookupErr := s.findClipByIdempotencyKey(userID, idempotencyKey)
 			if lookupErr != nil {
 				return nil, false, fmt.Errorf("idempotency race recovery lookup: %w", lookupErr)
