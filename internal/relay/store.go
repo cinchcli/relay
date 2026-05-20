@@ -203,6 +203,8 @@ func migrate(db *sql.DB) error {
 
 		ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin     BOOLEAN NOT NULL DEFAULT FALSE;
 		ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name TEXT;
+
+		ALTER TABLE oauth_identities ADD COLUMN IF NOT EXISTS display_name TEXT;
 	`)
 	if err != nil {
 		return fmt.Errorf("invites + user columns migration: %w", err)
@@ -359,7 +361,7 @@ func (s *Store) CreateUser(id string) error {
 // provider is "github" or "google"; subject is the stable provider-side user ID.
 // machineID, when non-empty, deduplicates same-machine sign-ins onto a single device row.
 // Returns (userID, deviceID, deviceToken).
-func (s *Store) UpsertOAuthUser(provider, subject, email string, emailVerified bool, hostname, machineID string) (string, string, string, error) {
+func (s *Store) UpsertOAuthUser(provider, subject, email string, emailVerified bool, displayName, hostname, machineID string) (string, string, string, error) {
 	if hostname == "" {
 		hostname = "unknown"
 	}
@@ -382,10 +384,14 @@ func (s *Store) UpsertOAuthUser(provider, subject, email string, emailVerified b
 			if linkErr == nil {
 				userID = linkedUserID
 				identityRowID = ulid.Make().String()
+				var displayNameArg interface{}
+				if displayName != "" {
+					displayNameArg = displayName
+				}
 				if _, err := s.db.Exec(
-					`INSERT INTO oauth_identities(id, user_id, provider, subject, email, email_verified)
-					 VALUES ($1, $2, $3, $4, $5, TRUE) ON CONFLICT(provider, subject) DO NOTHING`,
-					identityRowID, userID, provider, subject, email,
+					`INSERT INTO oauth_identities(id, user_id, provider, subject, email, email_verified, display_name)
+					 VALUES ($1, $2, $3, $4, $5, TRUE, $6) ON CONFLICT(provider, subject) DO NOTHING`,
+					identityRowID, userID, provider, subject, email, displayNameArg,
 				); err != nil {
 					return "", "", "", fmt.Errorf("linking cross-provider identity: %w", err)
 				}
@@ -395,10 +401,14 @@ func (s *Store) UpsertOAuthUser(provider, subject, email string, emailVerified b
 					return "", "", "", fmt.Errorf("creating oauth user: %w", err)
 				}
 				identityRowID = ulid.Make().String()
+				var displayNameArg interface{}
+				if displayName != "" {
+					displayNameArg = displayName
+				}
 				if _, err := s.db.Exec(
-					`INSERT INTO oauth_identities(id, user_id, provider, subject, email, email_verified)
-					 VALUES ($1, $2, $3, $4, $5, TRUE) ON CONFLICT(provider, subject) DO NOTHING`,
-					identityRowID, userID, provider, subject, email,
+					`INSERT INTO oauth_identities(id, user_id, provider, subject, email, email_verified, display_name)
+					 VALUES ($1, $2, $3, $4, $5, TRUE, $6) ON CONFLICT(provider, subject) DO NOTHING`,
+					identityRowID, userID, provider, subject, email, displayNameArg,
 				); err != nil {
 					return "", "", "", fmt.Errorf("inserting oauth identity: %w", err)
 				}
@@ -413,10 +423,14 @@ func (s *Store) UpsertOAuthUser(provider, subject, email string, emailVerified b
 			if email != "" {
 				emailArg = email
 			}
+			var displayNameArg interface{}
+			if displayName != "" {
+				displayNameArg = displayName
+			}
 			if _, err := s.db.Exec(
-				`INSERT INTO oauth_identities(id, user_id, provider, subject, email, email_verified)
-				 VALUES ($1, $2, $3, $4, $5, FALSE) ON CONFLICT(provider, subject) DO NOTHING`,
-				identityRowID, userID, provider, subject, emailArg,
+				`INSERT INTO oauth_identities(id, user_id, provider, subject, email, email_verified, display_name)
+				 VALUES ($1, $2, $3, $4, $5, FALSE, $6) ON CONFLICT(provider, subject) DO NOTHING`,
+				identityRowID, userID, provider, subject, emailArg, displayNameArg,
 			); err != nil {
 				return "", "", "", fmt.Errorf("inserting oauth identity: %w", err)
 			}
@@ -434,6 +448,14 @@ func (s *Store) UpsertOAuthUser(provider, subject, email string, emailVerified b
 			emailArg, emailVerified, identityRowID,
 		); err != nil {
 			return "", "", "", fmt.Errorf("updating oauth identity: %w", err)
+		}
+		if displayName != "" {
+			if _, err := s.db.Exec(
+				`UPDATE oauth_identities SET display_name = $1 WHERE provider = $2 AND subject = $3`,
+				displayName, provider, subject,
+			); err != nil {
+				return "", "", "", fmt.Errorf("refreshing oauth display_name: %w", err)
+			}
 		}
 	}
 
@@ -1205,19 +1227,29 @@ func (s *Store) PollDeviceCode(deviceCode string) (*cinchv1.DeviceCodePollRespon
 			UserId:   &u,
 			DeviceId: &d,
 		}
-		var email, provider sql.NullString
+		var email, provider, displayName sql.NullString
 		if u != "" {
 			_ = s.db.QueryRow(
-				`SELECT email, provider FROM oauth_identities WHERE user_id = $1 AND email IS NOT NULL
-				 ORDER BY last_seen_at DESC LIMIT 1`,
+				`SELECT
+					oi.email,
+					oi.provider,
+					COALESCE(NULLIF(u.display_name, ''), oi.display_name, '') AS effective_name
+				 FROM oauth_identities oi
+				 JOIN users u ON u.id = oi.user_id
+				 WHERE oi.user_id = $1 AND oi.email IS NOT NULL
+				 ORDER BY oi.last_seen_at DESC LIMIT 1`,
 				u,
-			).Scan(&email, &provider)
+			).Scan(&email, &provider, &displayName)
 		}
 		if email.Valid && email.String != "" {
 			resp.Email = &email.String
 		}
 		if provider.Valid && provider.String != "" {
 			resp.IdentityProvider = &provider.String
+		}
+		if displayName.Valid && displayName.String != "" {
+			name := displayName.String
+			resp.DisplayName = &name
 		}
 		return resp, nil
 	}

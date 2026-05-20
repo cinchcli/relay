@@ -438,6 +438,51 @@ func TestUpdateDeviceRetention(t *testing.T) {
 }
 
 // columnExists checks information_schema instead of SQLite PRAGMA.
+func TestUpsertOAuthUser_StoresDisplayName(t *testing.T) {
+	s := newTestStore(t)
+	_, _, _, err := s.UpsertOAuthUser("github", "42", "alice@example.com", true, "Alice Example", "alice-host", "")
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	var got sql.NullString
+	if err := s.db.QueryRow(`
+		SELECT display_name FROM oauth_identities WHERE provider = 'github' AND subject = '42'
+	`).Scan(&got); err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if !got.Valid || got.String != "Alice Example" {
+		t.Fatalf("display_name = %q, want %q", got.String, "Alice Example")
+	}
+}
+
+func TestUpsertOAuthUser_UpdatesDisplayNameOnReSignIn(t *testing.T) {
+	s := newTestStore(t)
+	_, _, _, _ = s.UpsertOAuthUser("github", "42", "alice@example.com", true, "Alice Old", "host1", "")
+	_, _, _, err := s.UpsertOAuthUser("github", "42", "alice@example.com", true, "Alice New", "host2", "")
+	if err != nil {
+		t.Fatalf("re-upsert: %v", err)
+	}
+	var got string
+	_ = s.db.QueryRow(`SELECT display_name FROM oauth_identities WHERE provider='github' AND subject='42'`).Scan(&got)
+	if got != "Alice New" {
+		t.Fatalf("display_name = %q, want %q", got, "Alice New")
+	}
+}
+
+func TestUpsertOAuthUser_BlankDisplayNamePreservesExisting(t *testing.T) {
+	s := newTestStore(t)
+	_, _, _, _ = s.UpsertOAuthUser("github", "42", "alice@example.com", true, "Alice Original", "host1", "")
+	_, _, _, err := s.UpsertOAuthUser("github", "42", "alice@example.com", true, "", "host2", "")
+	if err != nil {
+		t.Fatalf("re-upsert: %v", err)
+	}
+	var got string
+	_ = s.db.QueryRow(`SELECT display_name FROM oauth_identities WHERE provider='github' AND subject='42'`).Scan(&got)
+	if got != "Alice Original" {
+		t.Fatalf("display_name = %q, want %q (blank should not clobber)", got, "Alice Original")
+	}
+}
+
 func columnExists(t *testing.T, s *Store, table, col string) bool {
 	t.Helper()
 	var count int
@@ -455,7 +500,7 @@ func columnExists(t *testing.T, s *Store, table, col string) bool {
 func TestCreateDeviceCode_KnownEmailSetsPendingUserID(t *testing.T) {
 	store := newTestStore(t)
 
-	userID, _, _, err := store.UpsertOAuthUser("google", "sub-123", "alice@example.com", true, "alice-mbp", "machine-1")
+	userID, _, _, err := store.UpsertOAuthUser("google", "sub-123", "alice@example.com", true, "", "alice-mbp", "machine-1")
 	if err != nil {
 		t.Fatalf("seed user: %v", err)
 	}
@@ -816,5 +861,61 @@ func TestListInternalUserAggregates_PaginatesByCursor(t *testing.T) {
 	}
 	if p3.NextCursor != "" {
 		t.Fatalf("page 3 should not have a NextCursor, got %q", p3.NextCursor)
+	}
+}
+
+// mustIssueAndCompleteDeviceCode issues a device code, completes it for the
+// given userID/deviceID, and returns the device_code string ready for
+// PollDeviceCode.
+func mustIssueAndCompleteDeviceCode(t *testing.T, s *Store, userID, deviceID string) string {
+	t.Helper()
+	startResp, _, err := s.CreateDeviceCode("test-host", "", "", "")
+	if err != nil {
+		t.Fatalf("mustIssueAndCompleteDeviceCode CreateDeviceCode: %v", err)
+	}
+	token := generateStoreToken()
+	if err := s.CompleteDeviceCode(startResp.UserCode, userID, deviceID, token); err != nil {
+		t.Fatalf("mustIssueAndCompleteDeviceCode CompleteDeviceCode: %v", err)
+	}
+	return startResp.DeviceCode
+}
+
+func TestPollDeviceCode_ReturnsDisplayName(t *testing.T) {
+	s := newTestStore(t)
+	userID, deviceID, _, err := s.UpsertOAuthUser("github", "42", "alice@example.com", true, "Alice Example", "host", "")
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	cases := []struct {
+		name             string
+		usersDisplayName string
+		want             string
+	}{
+		{"oauth_name_when_user_unset", "", "Alice Example"},
+		{"user_override_wins", "Custom", "Custom"},
+		{"user_blank_falls_back_to_oauth", "", "Alice Example"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Issue a fresh device code per sub-test so polling is always valid.
+			code := mustIssueAndCompleteDeviceCode(t, s, userID, deviceID)
+
+			if tc.usersDisplayName == "" {
+				_, _ = s.DB().Exec(`UPDATE users SET display_name = NULL WHERE id = $1`, userID)
+			} else {
+				_, _ = s.DB().Exec(`UPDATE users SET display_name = $1 WHERE id = $2`, tc.usersDisplayName, userID)
+			}
+			resp, err := s.PollDeviceCode(code)
+			if err != nil {
+				t.Fatalf("poll: %v", err)
+			}
+			if resp.DisplayName == nil {
+				t.Fatalf("DisplayName is nil; want %q", tc.want)
+			}
+			if *resp.DisplayName != tc.want {
+				t.Fatalf("display_name = %q, want %q", *resp.DisplayName, tc.want)
+			}
+		})
 	}
 }

@@ -79,6 +79,7 @@ func (h *Handler) authConnectInterceptor() connect.UnaryInterceptorFunc {
 		cinchv1connect.AuthServiceKeyBundleGetProcedure:            true,
 		cinchv1connect.AuthServiceKeyBundleRetryProcedure:          true,
 		cinchv1connect.AuthServiceRegisterDevicePublicKeyProcedure: true,
+		cinchv1connect.AuthServiceSetDisplayNameProcedure:          true,
 	}
 	return func(next connect.UnaryFunc) connect.UnaryFunc {
 		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
@@ -444,6 +445,35 @@ func (s *connectAuthServer) RegisterDevicePublicKey(
 		}
 	}
 	return connect.NewResponse(&cinchv1.RegisterDevicePublicKeyResponse{Ok: true}), nil
+}
+
+// ─── SetDisplayName ──────────────────────────────────────
+
+// SetDisplayName updates users.display_name for the calling user.
+// Trims whitespace; rejects empty input and inputs over 64 bytes.
+// Mirrors POST /auth/display-name (Task 8).
+func (s *connectAuthServer) SetDisplayName(
+	ctx context.Context,
+	req *connect.Request[cinchv1.SetDisplayNameRequest],
+) (*connect.Response[cinchv1.SetDisplayNameResponse], error) {
+	userID := req.Header().Get("X-User-ID")
+	if userID == "" {
+		return nil, connect.NewError(connect.CodeUnauthenticated, errMsg("auth required"))
+	}
+	trimmed := strings.TrimSpace(req.Msg.DisplayName)
+	if trimmed == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errMsg("display_name must not be empty"))
+	}
+	if len(trimmed) > 64 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errMsg("display_name max 64 bytes"))
+	}
+	if err := s.h.store.SetUserDisplayName(userID, trimmed); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	return connect.NewResponse(&cinchv1.SetDisplayNameResponse{
+		Ok:          true,
+		DisplayName: trimmed,
+	}), nil
 }
 
 // newAuthConnectHandler wraps the Connect AuthService handler with auth interceptor.

@@ -165,7 +165,7 @@ func TestDeviceCodeStart_BroadcastsPendingToHintedUser(t *testing.T) {
 
 	// Seed verified-email user "alice" and capture her user_id so we can
 	// re-parent the WS-connected device onto her account.
-	aliceID, _, _, err := store.UpsertOAuthUser("google", "sub-1", "alice@example.com", true, "alice-mbp", "machine-1")
+	aliceID, _, _, err := store.UpsertOAuthUser("google", "sub-1", "alice@example.com", true, "", "alice-mbp", "machine-1")
 	if err != nil {
 		t.Fatalf("seed alice: %v", err)
 	}
@@ -291,7 +291,7 @@ func TestDeviceCodeStart_UnknownHintSilent(t *testing.T) {
 func TestDeviceCodeStart_PerUserRateLimit_DropsExcessBroadcast(t *testing.T) {
 	ts, store, hub := keyExchangeTestServer(t)
 
-	aliceID, _, _, err := store.UpsertOAuthUser("google", "sub-1", "alice@example.com", true, "alice-mbp", "machine-1")
+	aliceID, _, _, err := store.UpsertOAuthUser("google", "sub-1", "alice@example.com", true, "", "alice-mbp", "machine-1")
 	if err != nil {
 		t.Fatalf("seed alice: %v", err)
 	}
@@ -380,7 +380,7 @@ func TestWSConnect_ReplaysPendingDeviceCodes(t *testing.T) {
 
 	// Seed verified-email user "alice" — DeviceCodeStart will resolve
 	// alice@example.com to her user_id and mark the pending row.
-	aliceID, _, _, err := store.UpsertOAuthUser("google", "sub-1", "alice@example.com", true, "alice-mbp", "machine-1")
+	aliceID, _, _, err := store.UpsertOAuthUser("google", "sub-1", "alice@example.com", true, "", "alice-mbp", "machine-1")
 	if err != nil {
 		t.Fatalf("seed alice: %v", err)
 	}
@@ -451,11 +451,11 @@ func TestWSConnect_ReplaysPendingDeviceCodes(t *testing.T) {
 func TestListPendingDeviceCodes_FiltersByUserAndStatus(t *testing.T) {
 	_, store, _ := keyExchangeTestServer(t)
 
-	aliceID, _, _, err := store.UpsertOAuthUser("google", "sub-a", "alice@example.com", true, "alice-mac", "m1")
+	aliceID, _, _, err := store.UpsertOAuthUser("google", "sub-a", "alice@example.com", true, "", "alice-mac", "m1")
 	if err != nil {
 		t.Fatalf("seed alice: %v", err)
 	}
-	bobID, _, _, err := store.UpsertOAuthUser("google", "sub-b", "bob@example.com", true, "bob-mac", "m2")
+	bobID, _, _, err := store.UpsertOAuthUser("google", "sub-b", "bob@example.com", true, "", "bob-mac", "m2")
 	if err != nil {
 		t.Fatalf("seed bob: %v", err)
 	}

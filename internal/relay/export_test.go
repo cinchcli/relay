@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"context"
 	"database/sql"
 	"net/http"
 	"testing"
@@ -52,9 +53,26 @@ func NewTestStore(t *testing.T) *Store { return newTestStore(t) }
 // DB exposes the underlying *sql.DB for tests.
 func (s *Store) DB() *sql.DB { return s.db }
 
+// FetchOAuthIdentityForTest exposes fetchOAuthIdentity for unit tests that stub
+// the provider HTTP endpoints via httptest. Callers inject a custom http.Client
+// (with a host-rewriting transport) into ctx via context.WithValue and the
+// oauth2.HTTPClient key so that provider API calls are redirected to a local
+// httptest.Server.
+func FetchOAuthIdentityForTest(ctx context.Context, providerName string, cfg *oauth2.Config, tok *oauth2.Token) (subject, email, displayName string, emailVerified bool, err error) {
+	return fetchOAuthIdentity(ctx, providerName, cfg, tok)
+}
+
 // NewTestOAuthProvider creates an OAuthProvider with a fake token endpoint and
 // an injected identityFetcher — no real OAuth round-trip needed in tests.
+// The fetcher signature matches identityFetcher: (ctx, providerName, cfg, tok).
+// To keep existing call sites concise, callers supply a legacy 4-return closure
+// (subject, email, emailVerified, err) and this wrapper adapts it to the new 5-return
+// signature with an empty displayName.
 func NewTestOAuthProvider(clientSecret, tokenURL, redirectURL string, fetcher func(string, *oauth2.Config, *oauth2.Token) (string, string, bool, error)) *OAuthProvider {
+	adapted := func(ctx context.Context, providerName string, cfg *oauth2.Config, tok *oauth2.Token) (string, string, string, bool, error) {
+		subject, email, emailVerified, err := fetcher(providerName, cfg, tok)
+		return subject, email, "", emailVerified, err
+	}
 	return &OAuthProvider{
 		clientSecret: clientSecret,
 		cfg: &oauth2.Config{
@@ -67,6 +85,6 @@ func NewTestOAuthProvider(clientSecret, tokenURL, redirectURL string, fetcher fu
 			},
 			RedirectURL: redirectURL,
 		},
-		identityFetcher: fetcher,
+		identityFetcher: adapted,
 	}
 }

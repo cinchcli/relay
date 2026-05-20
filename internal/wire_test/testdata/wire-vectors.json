@@ -1,6 +1,5 @@
 {
   "_doc": "Shared wire vectors for cinch.v1 messages. Both Rust (cinch/crates/client-core/tests/wire_vectors.rs) and Go (relay/internal/gen/cinch/v1/wire_vectors_test.go) round-trip every named vector through their generated types and assert byte-equal output modulo JSON object key order. Vectors reflect the canonical wire shape the relay emits today (Go encoding/json with `,omitempty`); the Rust prost-build pipeline injects matching skip_serializing_if predicates so both sides produce identical output. Note: Device vectors must populate every field with a non-default value because Device skips the predicate injection (tauri-specta validation constraint, see proto-cinch/build.rs). Exception: ClipDeletedEvent and ServerEvent vectors are Go-only; event_stream.proto is excluded from the proto-cinch Rust crate (tauri-specta compatibility, see proto-cinch/build.rs).",
-
   "Clip": {
     "minimal": {
       "clip_id": "01HABC0000000000000000000",
@@ -51,7 +50,6 @@
       "pin_note": "remember this"
     }
   },
-
   "PushClipRequest": {
     "minimal": {
       "content": "hi",
@@ -68,14 +66,12 @@
       "target_device_id": "01HDEV0000000000000000000"
     }
   },
-
   "PushClipResponse": {
     "ok": {
       "clip_id": "01HABC0000000000000000000",
       "byte_size": 42
     }
   },
-
   "DeviceCodeStartResponse": {
     "ok": {
       "device_code": "ABCDEF",
@@ -85,7 +81,6 @@
       "interval": 5
     }
   },
-
   "DeviceCodePollResponse": {
     "pending": {
       "status": "pending"
@@ -95,9 +90,17 @@
       "token": "tok_01H",
       "user_id": "user_42",
       "device_id": "dev_01H"
+    },
+    "complete_with_display_name": {
+      "status": "complete",
+      "token": "tok_xyz",
+      "user_id": "01HZ000000000000000000USER",
+      "device_id": "01HZ000000000000000000DEV0",
+      "email": "alice@example.com",
+      "identity_provider": "github",
+      "display_name": "Alice Example"
     }
   },
-
   "LoginRequest": {
     "minimal": {
       "hostname": "my-macbook"
@@ -108,7 +111,6 @@
       "display_name": "han"
     }
   },
-
   "LoginResponse": {
     "ok": {
       "token": "tok_01H",
@@ -116,7 +118,6 @@
       "device_id": "dev_01H"
     }
   },
-
   "ErrorResponse": {
     "minimal": {
       "error": "auth_failed"
@@ -127,7 +128,6 @@
       "fix": "Run cinch auth login"
     }
   },
-
   "Device": {
     "full": {
       "id": "dev_01H",
@@ -140,10 +140,28 @@
       "nickname": "main",
       "public_key": "abc123base64",
       "public_key_fingerprint": "deadbeef",
-      "machine_id": "23856754c515bc5a"
+      "machine_id": "23856754c515bc5a",
+      "client_version": "0.1.7",
+      "client_type": "desktop",
+      "client_version_at": "2026-04-30T12:34:56Z"
+    },
+    "with_version_reported": {
+      "id": "dev_01HX9V1ABCDEF",
+      "hostname": "alice-vm",
+      "source_key": "remote:alice-vm",
+      "clip_count": 1,
+      "paired_at": "2026-04-01T12:00:00Z",
+      "last_push_at": "2026-05-18T09:15:30Z",
+      "online": true,
+      "nickname": "Linux VM",
+      "public_key": "vmpubkey",
+      "public_key_fingerprint": "vmfingerprint",
+      "machine_id": "vm-machine-id",
+      "client_version": "0.1.8",
+      "client_type": "cli",
+      "client_version_at": "2026-05-18T09:15:30Z"
     }
   },
-
   "ListClipsRequest": {
     "empty": {},
     "with_since_and_limit": {
@@ -151,7 +169,6 @@
       "limit": 25
     }
   },
-
   "ListClipsResponse": {
     "empty": {},
     "mixed": {
@@ -177,13 +194,11 @@
       ]
     }
   },
-
   "ClipDeletedEvent": {
     "basic": {
       "clip_id": "01HABC0000000000000000000"
     }
   },
-
   "ServerEvent": {
     "clip_deleted": {
       "Event": {
@@ -193,7 +208,6 @@
       }
     }
   },
-
   "WSMessage": {
     "device_code_pending": {
       "action": "device_code_pending",
@@ -201,6 +215,17 @@
       "user_code": "ABCD-1234",
       "requested_at": 1747171200,
       "source_region": "us-west"
+    }
+  },
+  "SetDisplayNameRequest": {
+    "happy": {
+      "display_name": "Alice Example"
+    }
+  },
+  "SetDisplayNameResponse": {
+    "happy": {
+      "ok": true,
+      "display_name": "Alice Example"
     }
   }
 }
