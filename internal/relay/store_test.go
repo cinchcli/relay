@@ -998,15 +998,12 @@ func TestPollDeviceCode_ReturnsDisplayName(t *testing.T) {
 	}
 }
 
-// TestEnforcementDisabled_SkipsAllChecks is a forward-looking regression
-// guard. The device-limit check on CompleteDeviceCode and the
-// plan-derived retention clamp on UpdateDeviceRetention are added in
-// later tasks of the plan-enforcement series; both will be gated on
-// !s.EnforcementDisabled. This test trivially passes today because
-// those gates don't yet have anything to skip — but it locks in the
-// contract that once they exist, flipping the carve-out flag must
-// short-circuit both. If a future change adds an enforcement check
-// that ignores s.EnforcementDisabled, this test will fail.
+// TestEnforcementDisabled_SkipsAllChecks is a regression guard for the
+// EnforcementDisabled carve-out. It covers all three enforcement sites
+// — CompleteDeviceCode, UpdateDeviceRetention, and UpsertOAuthUser —
+// and asserts that flipping the flag short-circuits every one of them.
+// If a future change adds an enforcement check that ignores
+// s.EnforcementDisabled, this test will fail.
 func TestEnforcementDisabled_SkipsAllChecks(t *testing.T) {
 	s := newTestStore(t)
 	s.EnforcementDisabled = true
@@ -1058,6 +1055,25 @@ func TestEnforcementDisabled_SkipsAllChecks(t *testing.T) {
 	}
 	if stored != 30 {
 		t.Fatalf("retention with EnforcementDisabled=true: got %d, want 30 (no clamp)", stored)
+	}
+
+	// OAuth login path: first call creates a fresh user + device 1.
+	// Then we tighten caps to device_limit=1 (matching the existing
+	// device count) and confirm a second OAuth login with a new machine
+	// — which would normally return device_limit_exceeded — succeeds
+	// because EnforcementDisabled short-circuits the cap check.
+	oauthUserID, _, _, err := s.UpsertOAuthUser("github", "subj-enf-disabled", "", false, "", "oauth-host-1", "oauth-machine-1")
+	if err != nil {
+		t.Fatalf("UpsertOAuthUser #1: %v", err)
+	}
+	if err := s.UpsertUserCapabilities(UserCapabilities{
+		UserID:      oauthUserID,
+		DeviceLimit: 1,
+	}); err != nil {
+		t.Fatalf("UpsertUserCapabilities (oauth): %v", err)
+	}
+	if _, _, _, err := s.UpsertOAuthUser("github", "subj-enf-disabled", "", false, "", "oauth-host-2", "oauth-machine-2"); err != nil {
+		t.Fatalf("UpsertOAuthUser #2 with EnforcementDisabled=true must succeed: %v", err)
 	}
 }
 

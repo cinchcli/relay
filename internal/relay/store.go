@@ -545,18 +545,20 @@ func (s *Store) UpsertOAuthUser(provider, subject, email string, emailVerified b
 		return userID, existingID, deviceToken, nil
 	}
 
-	cap, err := s.GetUserCapabilities(userID)
-	if err != nil {
-		return "", "", "", fmt.Errorf("checking device capabilities: %w", err)
-	}
-	if cap.DeviceLimit > 0 {
-		count, err := s.CountActiveDevices(userID)
+	if !s.EnforcementDisabled {
+		cap, err := s.GetUserCapabilities(userID)
 		if err != nil {
-			return "", "", "", fmt.Errorf("counting active devices: %w", err)
+			return "", "", "", fmt.Errorf("checking device capabilities: %w", err)
 		}
-		if count >= cap.DeviceLimit {
-			if cap.GraceExpiresAt.IsZero() || time.Now().After(cap.GraceExpiresAt) {
-				return "", "", "", fmt.Errorf("device_limit_exceeded: user has %d/%d active devices", count, cap.DeviceLimit)
+		if cap.DeviceLimit > 0 {
+			count, err := s.CountActiveDevices(userID)
+			if err != nil {
+				return "", "", "", fmt.Errorf("counting active devices: %w", err)
+			}
+			if count >= cap.DeviceLimit {
+				if cap.GraceExpiresAt.IsZero() || time.Now().After(cap.GraceExpiresAt) {
+					return "", "", "", fmt.Errorf("device_limit_exceeded: user has %d/%d active devices", count, cap.DeviceLimit)
+				}
 			}
 		}
 	}
