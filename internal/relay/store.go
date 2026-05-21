@@ -1271,7 +1271,38 @@ func (s *Store) CreateDeviceForUser(userID, hostname, machineID string) (deviceI
 }
 
 // CompleteDeviceCode marks a device code as complete with the provided credentials.
+// Enforces the user's device_limit (matching UpsertOAuthUser) so the approve-flow
+// cannot bypass the cap. If the limit is exceeded the freshly-provisioned device
+// is revoked and the device-code row is left pending (the approver sees the
+// error; the polling client keeps polling and eventually expires).
 func (s *Store) CompleteDeviceCode(userCode, userID, deviceID, token string) error {
+	if !s.EnforcementDisabled {
+		cap, err := s.GetUserCapabilities(userID)
+		if err != nil {
+			return fmt.Errorf("checking device capabilities: %w", err)
+		}
+		if cap.DeviceLimit > 0 {
+			count, err := s.CountActiveDevices(userID)
+			if err != nil {
+				return fmt.Errorf("counting active devices: %w", err)
+			}
+			// The to-be-approved device was already inserted by
+			// CreateDeviceForUser, so it counts toward `count`.
+			// Allow count == DeviceLimit; reject when count > DeviceLimit.
+			if count > cap.DeviceLimit {
+				if cap.GraceExpiresAt.IsZero() || time.Now().After(cap.GraceExpiresAt) {
+					// Roll back the device row we just provisioned so the
+					// user isn't stuck with a phantom over-limit device.
+					_, _ = s.db.Exec(
+						`UPDATE devices SET revoked_at = NOW() WHERE id = $1`,
+						deviceID,
+					)
+					return fmt.Errorf("device_limit_exceeded: user has %d/%d active devices", count, cap.DeviceLimit)
+				}
+			}
+		}
+	}
+
 	res, err := s.db.Exec(
 		`UPDATE device_codes SET status = 'complete', user_id = $1, device_id = $2, token = $3
 		 WHERE user_code = $4 AND status = 'pending' AND expires_at > NOW()`,

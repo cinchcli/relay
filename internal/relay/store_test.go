@@ -982,3 +982,76 @@ func TestEnforcementDisabled_SkipsAllChecks(t *testing.T) {
 		t.Fatalf("retention with EnforcementDisabled=true: got %d, want 30 (no clamp)", stored)
 	}
 }
+
+// TestCompleteDeviceCode_DeviceLimitExceeded verifies that the
+// approve-from-an-already-signed-in-device path enforces the user's
+// device_limit. The OAuth login path (UpsertOAuthUser) already enforces
+// the cap, but `cinch auth approve` calls CompleteDeviceCode directly
+// with a pre-provisioned device — so the check must also live there.
+//
+// When the limit is exceeded, the freshly-provisioned device row must
+// be rolled back (revoked_at set) so the user is not left with a
+// phantom over-limit device, and the device-code row must remain
+// pending so the polling client eventually expires cleanly.
+func TestCompleteDeviceCode_DeviceLimitExceeded(t *testing.T) {
+	s := newTestStore(t)
+
+	const userID = "user-approve-limit"
+	if err := s.CreateUser(userID); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := s.UpsertUserCapabilities(UserCapabilities{
+		UserID:      userID,
+		DeviceLimit: 1,
+	}); err != nil {
+		t.Fatalf("UpsertUserCapabilities: %v", err)
+	}
+
+	// First device fills the single allowed slot.
+	if _, _, err := s.CreateDeviceForUser(userID, "host-1", "machine-1"); err != nil {
+		t.Fatalf("CreateDeviceForUser #1: %v", err)
+	}
+
+	// Approve flow: a remote device asks to log in (device code), then
+	// an already-signed-in device of the same user provisions a fresh
+	// device row and calls CompleteDeviceCode to attach it.
+	startResp, _, err := s.CreateDeviceCode("host-2", "machine-2", "", "")
+	if err != nil {
+		t.Fatalf("CreateDeviceCode: %v", err)
+	}
+	newDeviceID, newToken, err := s.CreateDeviceForUser(userID, "host-2", "machine-2")
+	if err != nil {
+		t.Fatalf("CreateDeviceForUser #2: %v", err)
+	}
+
+	err = s.CompleteDeviceCode(startResp.UserCode, userID, newDeviceID, newToken)
+	if err == nil {
+		t.Fatalf("CompleteDeviceCode: expected device_limit_exceeded error, got nil")
+	}
+	if !strings.Contains(err.Error(), "device_limit_exceeded") {
+		t.Fatalf("CompleteDeviceCode: error %q does not contain device_limit_exceeded", err.Error())
+	}
+
+	// The newly-provisioned device must have been rolled back to
+	// revoked so the active-device count stays at 1.
+	count, err := s.CountActiveDevices(userID)
+	if err != nil {
+		t.Fatalf("CountActiveDevices: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("CountActiveDevices after rejection: got %d, want 1", count)
+	}
+
+	// The device-code row stays pending — the polling client gets a
+	// clean expiry instead of a bogus "complete" with a revoked device.
+	var status string
+	if err := s.db.QueryRow(
+		`SELECT status FROM device_codes WHERE user_code = $1`,
+		startResp.UserCode,
+	).Scan(&status); err != nil {
+		t.Fatalf("read device_codes status: %v", err)
+	}
+	if status != "pending" {
+		t.Fatalf("device_codes.status after rejection: got %q, want %q", status, "pending")
+	}
+}
