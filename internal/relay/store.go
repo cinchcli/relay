@@ -1293,10 +1293,13 @@ func (s *Store) CompleteDeviceCode(userCode, userID, deviceID, token string) err
 				if cap.GraceExpiresAt.IsZero() || time.Now().After(cap.GraceExpiresAt) {
 					// Roll back the device row we just provisioned so the
 					// user isn't stuck with a phantom over-limit device.
-					_, _ = s.db.Exec(
+					if _, rbErr := s.db.Exec(
 						`UPDATE devices SET revoked_at = NOW() WHERE id = $1`,
 						deviceID,
-					)
+					); rbErr != nil {
+						slog.Error("device_limit rollback failed",
+							"user", userID, "device", deviceID, "err", rbErr)
+					}
 					return fmt.Errorf("device_limit_exceeded: user has %d/%d active devices", count, cap.DeviceLimit)
 				}
 			}
