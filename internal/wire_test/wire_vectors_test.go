@@ -1,18 +1,20 @@
 // Cross-language wire-format gate.
 //
 // Loads testdata/wire-vectors.json (vendored alongside this test) and
-// round-trips every named vector through the protoc-gen-go types pulled
-// from cinch-core. The Rust client runs an equivalent test against an
-// identical fixture in cinch-core (`testdata/wire-vectors.json`). If
-// both pass, the wire format is shape-equivalent across languages.
+// round-trips every named vector through the locally-generated protoc-gen-go
+// types at internal/cinchv1 (regenerated from proto/cinch/v1/*.proto, which
+// are synced from the github.com/cinchcli/cinch monorepo). The Rust client
+// runs an equivalent test against an identical fixture in the monorepo
+// (`testdata/wire-vectors.json`). If both pass, the wire format is
+// shape-equivalent across languages.
 //
 // Round-trip: input JSON -> typed unmarshal -> re-marshal -> compare both
 // sides parsed as map[string]any so JSON object key ordering is irrelevant.
 //
 // Cross-repo invariant: this fixture must stay byte-equivalent to
-// `testdata/wire-vectors.json` in github.com/cinchcli/cinch-core. Updates
-// land in cinch-core first; copy them here on the next bump of the
-// cinch-core dependency.
+// `testdata/wire-vectors.json` in github.com/cinchcli/cinch. Updates land in
+// the monorepo first; the auto-sync workflow opens a PR to this repo with
+// the refreshed protos + fixture.
 
 package wire_test
 
@@ -23,7 +25,7 @@ import (
 	"reflect"
 	"testing"
 
-	cinchv1 "github.com/cinchcli/cinch-core/go/cinch/v1"
+	cinchv1 "github.com/cinchcli/relay/internal/cinchv1"
 )
 
 //go:embed testdata/wire-vectors.json

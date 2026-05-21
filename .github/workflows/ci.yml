@@ -6,6 +6,9 @@ on:
     paths:
       - 'cmd/**'
       - 'internal/**'
+      - 'proto/**'
+      - 'scripts/**'
+      - 'buf.*'
       - 'go.*'
       - 'Dockerfile'
       - 'Makefile'
@@ -15,6 +18,9 @@ on:
     paths:
       - 'cmd/**'
       - 'internal/**'
+      - 'proto/**'
+      - 'scripts/**'
+      - 'buf.*'
       - 'go.*'
       - 'Dockerfile'
       - 'Makefile'
@@ -122,3 +128,20 @@ jobs:
 
       - name: Build relay
         run: CGO_ENABLED=1 go build -o dist/relay ./cmd/relay
+
+  verify-proto:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout relay
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6.0.2
+        with:
+          path: relay
+      - name: Checkout cinch monorepo
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # ratchet:actions/checkout@v6.0.2
+        with:
+          repository: cinchcli/cinch
+          path: cinch
+      - name: Verify proto vendor matches upstream
+        run: |
+          cd relay
+          UPSTREAM=../cinch ./scripts/verify-proto.sh

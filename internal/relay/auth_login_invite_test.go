@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	cinchv1 "github.com/cinchcli/cinch-core/go/cinch/v1"
+	cinchv1 "github.com/cinchcli/relay/internal/cinchv1"
 	relay "github.com/cinchcli/relay/internal/relay"
 )
 

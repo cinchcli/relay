@@ -12,8 +12,8 @@ import (
 	"connectrpc.com/connect"
 	"github.com/oklog/ulid/v2"
 
-	cinchv1 "github.com/cinchcli/cinch-core/go/cinch/v1"
-	"github.com/cinchcli/cinch-core/go/cinch/v1/cinchv1connect"
+	cinchv1 "github.com/cinchcli/relay/internal/cinchv1"
+	"github.com/cinchcli/relay/internal/cinchv1/cinchv1connect"
 	"github.com/cinchcli/relay/internal/protocol"
 )
 

@@ -1,15 +1,15 @@
 // Cross-language wire-format gate for the hand-written WSMessage envelope.
 //
 // The generated cinch.v1 messages are round-tripped in wire_vectors_test.go
-// against types from github.com/cinchcli/cinch-core. WSMessage stays
-// hand-written in internal/protocol/ because the WebSocket envelope's
-// "action + 8 optional siblings" shape doesn't map cleanly onto a proto
-// oneof. Co-locating both round-trips here keeps the embedded fixture
-// in one place and avoids the import cycle the original layout had to
-// dodge (protocol → cinchv1, so a test in cinchv1 couldn't import
-// protocol).
+// against the locally-generated types at internal/cinchv1 (synced from the
+// github.com/cinchcli/cinch monorepo). WSMessage stays hand-written in
+// internal/protocol/ because the WebSocket envelope's "action + 8 optional
+// siblings" shape doesn't map cleanly onto a proto oneof. Co-locating both
+// round-trips here keeps the embedded fixture in one place and avoids the
+// import cycle the original layout had to dodge (protocol → cinchv1, so a
+// test in cinchv1 couldn't import protocol).
 //
-// The Rust mirror lives at cinch-core's
+// The Rust mirror lives in the cinch monorepo at
 // `crates/client-core/tests/wire_vectors.rs` and round-trips the same
 // vectors through `client_core::protocol::WSMessage`.
 

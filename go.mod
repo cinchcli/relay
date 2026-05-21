@@ -4,12 +4,12 @@ go 1.26.2
 
 require (
 	connectrpc.com/connect v1.19.2
-	github.com/cinchcli/cinch-core v0.2.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/minio/minio-go/v7 v7.1.0
 	github.com/oklog/ulid/v2 v2.1.1
 	golang.org/x/oauth2 v0.36.0
+	google.golang.org/protobuf v1.36.11
 )
 
 require (
@@ -38,5 +38,4 @@ require (
 	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/text v0.32.0 // indirect
-	google.golang.org/protobuf v1.36.11 // indirect
 )

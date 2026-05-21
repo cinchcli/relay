@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	cinchv1 "github.com/cinchcli/cinch-core/go/cinch/v1"
+	cinchv1 "github.com/cinchcli/relay/internal/cinchv1"
 	"github.com/cinchcli/relay/internal/protocol"
 	"github.com/gorilla/websocket"
 )
