@@ -9,4 +9,7 @@ node_modules/
 *.test
 /relay
 cinch.db
-docs/
+docs/*
+# Operator runbooks are checked in; the broader docs/ ignore is for
+# generated artifacts (Markdown -> HTML output, OpenAPI bundles, etc.).
+!docs/operator/
