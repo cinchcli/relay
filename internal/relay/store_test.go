@@ -437,6 +437,84 @@ func TestUpdateDeviceRetention(t *testing.T) {
 	}
 }
 
+// TestUpdateDeviceRetention_ClampsToPlan verifies that when a user has a
+// plan retention_days cap, an UpdateDeviceRetention call asking for more
+// than the cap is silently clamped to the cap on write — so the device
+// row mirrors the effective ceiling that the retention sweep enforces.
+func TestUpdateDeviceRetention_ClampsToPlan(t *testing.T) {
+	store := newTestStore(t)
+
+	const userID = "user-retention-clamp"
+	if err := store.CreateUser(userID); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := store.UpsertUserCapabilities(UserCapabilities{
+		UserID:        userID,
+		RetentionDays: 7,
+	}); err != nil {
+		t.Fatalf("UpsertUserCapabilities: %v", err)
+	}
+
+	const deviceID = "dev-retention-clamp"
+	if _, err := store.db.Exec(
+		`INSERT INTO devices (id, user_id, hostname, source_key, remote_retention_days)
+		 VALUES ($1, $2, $3, $4, $5)`,
+		deviceID, userID, "clamp-host", "clamp-key", 1,
+	); err != nil {
+		t.Fatalf("insert device: %v", err)
+	}
+
+	if err := store.UpdateDeviceRetention(deviceID, 30); err != nil {
+		t.Fatalf("UpdateDeviceRetention: %v", err)
+	}
+
+	var stored int
+	if err := store.db.QueryRow(
+		"SELECT remote_retention_days FROM devices WHERE id = $1", deviceID,
+	).Scan(&stored); err != nil {
+		t.Fatalf("read stored retention: %v", err)
+	}
+	if stored != 7 {
+		t.Errorf("expected clamped retention=7, got %d", stored)
+	}
+}
+
+// TestUpdateDeviceRetention_NoPlanCapIsUnclamped verifies that a user
+// without a user_capabilities row (self-host default; RetentionDays == 0
+// means unlimited) keeps the literal 1..365 behavior — the request is
+// stored as-is.
+func TestUpdateDeviceRetention_NoPlanCapIsUnclamped(t *testing.T) {
+	store := newTestStore(t)
+
+	const userID = "user-retention-uncapped"
+	if err := store.CreateUser(userID); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	const deviceID = "dev-retention-uncapped"
+	if _, err := store.db.Exec(
+		`INSERT INTO devices (id, user_id, hostname, source_key, remote_retention_days)
+		 VALUES ($1, $2, $3, $4, $5)`,
+		deviceID, userID, "uncap-host", "uncap-key", 1,
+	); err != nil {
+		t.Fatalf("insert device: %v", err)
+	}
+
+	if err := store.UpdateDeviceRetention(deviceID, 30); err != nil {
+		t.Fatalf("UpdateDeviceRetention: %v", err)
+	}
+
+	var stored int
+	if err := store.db.QueryRow(
+		"SELECT remote_retention_days FROM devices WHERE id = $1", deviceID,
+	).Scan(&stored); err != nil {
+		t.Fatalf("read stored retention: %v", err)
+	}
+	if stored != 30 {
+		t.Errorf("expected unclamped retention=30, got %d", stored)
+	}
+}
+
 // columnExists checks information_schema instead of SQLite PRAGMA.
 func TestUpsertOAuthUser_StoresDisplayName(t *testing.T) {
 	s := newTestStore(t)

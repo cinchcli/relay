@@ -1643,11 +1643,35 @@ func (s *Store) SweepAllUsersRetentionReturningMedia() (mediaPaths []string, err
 	return mediaPaths, nil
 }
 
-// UpdateDeviceRetention sets the remote_retention_days for a specific device.
+// UpdateDeviceRetention sets the remote_retention_days for a specific device,
+// clamped to the user's plan retention_days when one is set. We look up the
+// owner user via the device row to keep the public signature unchanged.
 func (s *Store) UpdateDeviceRetention(deviceID string, days int) error {
 	if days < 1 || days > 365 {
 		return fmt.Errorf("retention days must be between 1 and 365, got %d", days)
 	}
+
+	if !s.EnforcementDisabled {
+		var ownerID string
+		err := s.db.QueryRow(
+			`SELECT user_id FROM devices WHERE id = $1 AND revoked_at IS NULL`,
+			deviceID,
+		).Scan(&ownerID)
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("device not found or revoked: %s", deviceID)
+		}
+		if err != nil {
+			return fmt.Errorf("looking up device owner: %w", err)
+		}
+		cap, err := s.GetUserCapabilities(ownerID)
+		if err != nil {
+			return fmt.Errorf("checking retention capabilities: %w", err)
+		}
+		if cap.RetentionDays > 0 && days > cap.RetentionDays {
+			days = cap.RetentionDays
+		}
+	}
+
 	result, err := s.db.Exec(
 		"UPDATE devices SET remote_retention_days = $1 WHERE id = $2 AND revoked_at IS NULL",
 		days, deviceID,
