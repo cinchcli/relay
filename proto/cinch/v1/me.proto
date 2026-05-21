@@ -27,9 +27,9 @@ message GetMeResponse {
 }
 
 message Plan {
-  int32 device_limit = 1;    // 0 = unlimited
-  int32 retention_days = 2;  // 0 = unlimited
-  int32 rate_limit = 3;      // 0 = unset (requests/day)
+  int32 device_limit = 1; // 0 = unlimited
+  int32 retention_days = 2; // 0 = unlimited
+  int32 rate_limit = 3; // 0 = unset (requests/day)
 }
 
 message Usage {
