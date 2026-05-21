@@ -146,6 +146,17 @@ func runServer() {
 	handler.TelemetryAPIKey = os.Getenv("TELEMETRY_API_KEY")
 	handler.SetInternalServiceSecret(os.Getenv("INTERNAL_SERVICE_SECRET"))
 
+	// Self-host carve-out: when CINCH_PLAN_ENFORCEMENT_DISABLED is "1"
+	// or "true" (case-insensitive), skip plan-tier enforcement checks
+	// (device limit on CompleteDeviceCode, plan-derived retention clamp
+	// on UpdateDeviceRetention). Operators of self-hosted relays pay
+	// for their own Postgres + storage, so we don't gate them. Hosted
+	// cinchcli.com leaves this unset.
+	if v := os.Getenv("CINCH_PLAN_ENFORCEMENT_DISABLED"); v == "1" || strings.EqualFold(v, "true") {
+		store.EnforcementDisabled = true
+		slog.Warn("plan enforcement disabled via CINCH_PLAN_ENFORCEMENT_DISABLED — self-host mode")
+	}
+
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
 

@@ -919,3 +919,66 @@ func TestPollDeviceCode_ReturnsDisplayName(t *testing.T) {
 		})
 	}
 }
+
+// TestEnforcementDisabled_SkipsAllChecks is a forward-looking regression
+// guard. The device-limit check on CompleteDeviceCode and the
+// plan-derived retention clamp on UpdateDeviceRetention are added in
+// later tasks of the plan-enforcement series; both will be gated on
+// !s.EnforcementDisabled. This test trivially passes today because
+// those gates don't yet have anything to skip — but it locks in the
+// contract that once they exist, flipping the carve-out flag must
+// short-circuit both. If a future change adds an enforcement check
+// that ignores s.EnforcementDisabled, this test will fail.
+func TestEnforcementDisabled_SkipsAllChecks(t *testing.T) {
+	s := newTestStore(t)
+	s.EnforcementDisabled = true
+
+	// Seed a user with the tightest possible caps: 1 device, 1-day retention.
+	const userID = "user-enforcement-disabled"
+	if err := s.CreateUser(userID); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := s.UpsertUserCapabilities(UserCapabilities{
+		UserID:        userID,
+		DeviceLimit:   1,
+		RetentionDays: 1,
+	}); err != nil {
+		t.Fatalf("UpsertUserCapabilities: %v", err)
+	}
+
+	// Provision the first device directly so we have a baseline holder
+	// of the (would-be) device_limit slot.
+	if _, _, err := s.CreateDeviceForUser(userID, "host-1", "machine-1"); err != nil {
+		t.Fatalf("CreateDeviceForUser #1: %v", err)
+	}
+
+	// Drive the device-code flow for a second device. With enforcement
+	// disabled, CompleteDeviceCode must succeed even though the user is
+	// already at device_limit=1.
+	startResp, _, err := s.CreateDeviceCode("host-2", "machine-2", "", "")
+	if err != nil {
+		t.Fatalf("CreateDeviceCode: %v", err)
+	}
+	deviceID2, token2, err := s.CreateDeviceForUser(userID, "host-2", "machine-2")
+	if err != nil {
+		t.Fatalf("CreateDeviceForUser #2: %v", err)
+	}
+	if err := s.CompleteDeviceCode(startResp.UserCode, userID, deviceID2, token2); err != nil {
+		t.Fatalf("CompleteDeviceCode with EnforcementDisabled=true must succeed: %v", err)
+	}
+
+	// Retention clamp: ask for 30 days even though plan caps at 1.
+	// With enforcement disabled, the value must land verbatim.
+	if err := s.UpdateDeviceRetention(deviceID2, 30); err != nil {
+		t.Fatalf("UpdateDeviceRetention: %v", err)
+	}
+	var stored int
+	if err := s.db.QueryRow(
+		"SELECT remote_retention_days FROM devices WHERE id = $1", deviceID2,
+	).Scan(&stored); err != nil {
+		t.Fatalf("read back retention: %v", err)
+	}
+	if stored != 30 {
+		t.Fatalf("retention with EnforcementDisabled=true: got %d, want 30 (no clamp)", stored)
+	}
+}

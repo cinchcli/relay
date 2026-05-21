@@ -42,6 +42,14 @@ type UserCapabilities struct {
 
 type Store struct {
 	db *sql.DB
+
+	// EnforcementDisabled short-circuits plan-tier enforcement checks
+	// (device limit on CompleteDeviceCode, retention clamp on
+	// UpdateDeviceRetention). Self-hosters set this via the
+	// CINCH_PLAN_ENFORCEMENT_DISABLED env var; hosted cinchcli.com
+	// leaves it false. Exported so tests can flip it directly without
+	// reaching through the constructor.
+	EnforcementDisabled bool
 }
 
 func NewStore(dsn string) (*Store, error) {
