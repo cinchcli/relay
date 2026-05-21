@@ -21,7 +21,7 @@ cp "$UPSTREAM_PROTO_DIR"/*.proto proto/cinch/v1/
 
 # Fix go_package — upstream points at cinchcli/cinch, relay needs its own path.
 for f in proto/cinch/v1/*.proto; do
-  sed -i '' 's|github.com/cinchcli/cinch/go/cinch/v1|github.com/cinchcli/relay/internal/cinchv1|g' "$f"
+  sed 's|github.com/cinchcli/cinch/go/cinch/v1|github.com/cinchcli/relay/internal/cinchv1|g' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
 done
 
 make generate
