@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package cinch.v1;
+
+option go_package = "github.com/cinchcli/relay/internal/cinchv1;cinchv1";
+
+// MeService returns information about the authenticated user. The first RPC
+// exposes plan caps + current usage so the CLI / desktop can render plan state.
+service MeService {
+  // GetMe returns the caller's plan + usage. Auth required.
+  // Mirrors GET /v1/me (no REST passthrough yet — Connect-only).
+  rpc GetMe(GetMeRequest) returns (GetMeResponse);
+}
+
+message GetMeRequest {}
+
+message GetMeResponse {
+  // The plan the user is currently on. "free" if no user_capabilities row
+  // exists. Otherwise derived from the caps (see plan_name in relay).
+  string plan_name = 1;
+
+  // Caps applied to this user. Zero means "unlimited" / unset.
+  Plan plan = 2;
+
+  // Current usage measured server-side.
+  Usage usage = 3;
+}
+
+message Plan {
+  int32 device_limit = 1;    // 0 = unlimited
+  int32 retention_days = 2;  // 0 = unlimited
+  int32 rate_limit = 3;      // 0 = unset (requests/day)
+}
+
+message Usage {
+  int32 active_devices = 1;
+}
