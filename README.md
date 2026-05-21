@@ -110,6 +110,25 @@ See [`DEPLOY.md`](DEPLOY.md) for a full production runbook (OCI, Cloudflare prox
 
 Full Connect-RPC service definitions live in [`proto/cinch/v1/`](proto/cinch/v1/).
 
+## Wire Schema
+
+The `.proto` files at `proto/cinch/v1/` are **vendored from the [cinch monorepo](https://github.com/cinchcli/cinch)**. The canonical source of truth lives at `crates/client-core/proto/cinch/v1/` in that repo. Changes to the wire schema flow into this repo via an auto-PR from the cinch monorepo's `proto-sync-relay.yml` workflow.
+
+To regenerate Go bindings after a sync:
+
+```bash
+make generate
+```
+
+To verify your local proto matches upstream:
+
+```bash
+make verify-proto                                          # uses ../../cinch/main as upstream
+UPSTREAM=/path/to/cinch make verify-proto                  # custom path
+```
+
+The generated Go code lives at `internal/cinchv1/` (imported as `cinchv1 "github.com/cinchcli/relay/internal/cinchv1"`). Connect-RPC service stubs are at `internal/cinchv1/cinchv1connect/`.
+
 ## Building from Source
 
 ```bash
@@ -131,9 +150,11 @@ Full docs at [cinchcli.com/docs](https://cinchcli.com/docs).
 - [cinchcli/desktop](https://github.com/cinchcli/desktop) — Tauri v2 desktop app (macOS)
 
 The wire-format DTOs (`Clip`, `Device`, push/pull/auth requests, etc.) are
-defined in `proto/cinch/v1/*.proto` here; the Rust CLI and desktop generate
-their types from this same schema via the `proto-cinch` crate in
-[cinchcli/cinch](https://github.com/cinchcli/cinch).
+defined in the cinch monorepo at `crates/client-core/proto/cinch/v1/*.proto`
+and vendored into this repo under `proto/cinch/v1/`. The Rust CLI and
+desktop generate their types from the same `.proto` source via
+`client-core` in [cinchcli/cinch](https://github.com/cinchcli/cinch).
+See [Wire Schema](#wire-schema) above for the sync workflow.
 
 ## License
 

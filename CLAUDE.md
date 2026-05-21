@@ -23,26 +23,31 @@ persistence uses Postgres (clip rows) plus a local media store on disk.
   schema.
 - **internal/wire_test/** — Cross-language wire-format gate
   (`//go:embed testdata/wire-vectors.json`). Round-trips both the
-  cinch-core proto types and the local `WSMessage` envelope.
+  vendored proto types and the local `WSMessage` envelope.
 
 ### Wire types
 
-All shared DTOs (`Clip`, `Device`, `PushClipRequest`, etc.) come from
-[`cinchcli/cinch-core`](https://github.com/cinchcli/cinch-core), which
-ships generated Go bindings as a regular Go module:
+All shared DTOs (`Clip`, `Device`, `PushClipRequest`, etc.) are defined
+in `.proto` files **vendored from the [cinchcli/cinch monorepo](https://github.com/cinchcli/cinch)**.
+The canonical source of truth lives at `crates/client-core/proto/cinch/v1/`
+in that repo. The vendored copies sit at `proto/cinch/v1/` here, and Go
+bindings are generated locally into `internal/cinchv1/`:
 
 ```go
-import cinchv1 "github.com/cinchcli/cinch-core/go/cinch/v1"
-import "github.com/cinchcli/cinch-core/go/cinch/v1/cinchv1connect"
+import cinchv1 "github.com/cinchcli/relay/internal/cinchv1"
+import "github.com/cinchcli/relay/internal/cinchv1/cinchv1connect"
 ```
 
-Wire changes flow PR → cinch-core → publish + tag → `make
-update-cinch-core REV=v0.1.x` here. There is no relay-side proto
-codegen anymore.
+Wire changes flow:
+
+1. PR against `cinchcli/cinch` editing `crates/client-core/proto/cinch/v1/*.proto`.
+2. The cinch monorepo's `proto-sync-relay.yml` workflow auto-opens a PR
+   here updating `proto/cinch/v1/` and regenerated `internal/cinchv1/`.
+3. CI gate (`make verify-proto`) enforces byte-equality between the
+   vendored copies and upstream.
 
 ### Dependencies
 
-- `github.com/cinchcli/cinch-core` — wire schema and generated Go bindings.
 - `connectrpc.com/connect` — Connect-RPC framework.
 - `google.golang.org/protobuf` — Protocol Buffers runtime.
 - `github.com/gorilla/websocket` — WebSocket upgrade for the legacy
@@ -51,11 +56,13 @@ codegen anymore.
 ### Build & Run
 
 ```bash
-make build                              # → dist/relay
-make test                               # go test ./... -v -race -count=1
-make lint                               # go vet ./...
-make update-cinch-core REV=v0.1.x       # bump the cinch-core go.mod entry
-make docker-build                       # docker build -t ghcr.io/cinchcli/relay:latest .
+make build                                                # → dist/relay
+make test                                                 # go test ./... -v -race -count=1
+make lint                                                 # go vet ./...
+make generate                                             # regenerate internal/cinchv1/ from proto/
+make verify-proto                                         # gate: proto/ matches ../../cinch/main
+UPSTREAM=/path/to/cinch make verify-proto                 # custom upstream path
+make docker-build                                         # docker build -t ghcr.io/cinchcli/relay:latest .
 ```
 
 Direct run:
@@ -75,9 +82,11 @@ module github.com/cinchcli/relay
 
 The previously separate `github.com/cinchcli/protocol` Go module was
 folded into `internal/protocol/` (WSMessage + HTTP-only DTOs). The
-proto-generated types that used to live in-tree under
-`internal/gen/cinch/v1/` were extracted into `cinchcli/cinch-core` and
-are now imported as `github.com/cinchcli/cinch-core/go/cinch/v1`.
+proto-generated types that used to live under `internal/gen/cinch/v1/`
+moved to `internal/cinchv1/`, generated from the vendored `.proto` files
+at `proto/cinch/v1/`. There is no external Go module dependency for the
+wire schema — the source of truth is the cinch monorepo, kept in sync
+via the `proto-sync-relay.yml` auto-PR workflow.
 
 ### URLs
 
