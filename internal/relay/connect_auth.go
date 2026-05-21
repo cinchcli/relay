@@ -255,6 +255,9 @@ func (s *connectAuthServer) DeviceCodeComplete(ctx context.Context, req *connect
 	}
 
 	if err := s.h.store.CompleteDeviceCode(req.Msg.UserCode, req.Msg.UserId, req.Msg.DeviceId, req.Msg.Token); err != nil {
+		if strings.Contains(err.Error(), "device_limit_exceeded") {
+			return nil, connect.NewError(connect.CodeResourceExhausted, err)
+		}
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
