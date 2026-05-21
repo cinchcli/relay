@@ -10,6 +10,19 @@ import (
 	"github.com/cinchcli/relay/internal/cinchv1/cinchv1connect"
 )
 
+// Plan-tier device-limit constants. The relay encodes plan identity in the
+// DeviceLimit cap until user_capabilities gains an explicit plan_name column.
+// Keep this table aligned with the pricing page at cinchcli.com/pricing.
+//
+// TODO: replace heuristic with a plan_name column on user_capabilities so
+// the relay isn't inferring plan identity from one cap and so we can
+// distinguish self-host (no row) from paid-unlimited.
+const (
+	freeDeviceLimit = 3
+	proDeviceLimit  = 10
+	teamDeviceLimit = 25
+)
+
 // connectMeServer implements cinchv1connect.MeServiceHandler. Exposes the
 // caller's plan caps + current usage so the CLI / desktop can render plan
 // state without scraping the legacy /internal/users endpoint.
@@ -63,11 +76,11 @@ func planNameFromCaps(cap UserCapabilities) string {
 			return "free"
 		}
 		return "custom"
-	case 3:
+	case freeDeviceLimit:
 		return "free"
-	case 10:
+	case proDeviceLimit:
 		return "pro"
-	case 25:
+	case teamDeviceLimit:
 		return "team"
 	default:
 		return "custom"
