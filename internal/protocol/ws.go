@@ -5,7 +5,7 @@
 // module dependency.
 package protocol
 
-import cinchv1 "github.com/cinchcli/cinch-core/go/cinch/v1"
+import cinchv1 "github.com/cinchcli/relay/internal/cinchv1"
 
 // WSMessage is the envelope for all WebSocket communication.
 //

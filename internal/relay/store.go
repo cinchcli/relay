@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	cinchv1 "github.com/cinchcli/cinch-core/go/cinch/v1"
+	cinchv1 "github.com/cinchcli/relay/internal/cinchv1"
 	"github.com/cinchcli/relay/internal/protocol"
 	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -307,7 +307,7 @@ func migrate(db *sql.DB) error {
 	}
 
 	// Add idempotency_key column + partial unique index for backlog-flush dedup.
-	// The cinch-core backlog flusher sets idempotency_key on retried offline
+	// The client backlog flusher (in cinchcli/cinch) sets idempotency_key on retried offline
 	// captures; normal online pushes leave it NULL. The partial unique index
 	// enforces (user_id, idempotency_key) uniqueness only when the key is set,
 	// so unconstrained NULLs from online pushes remain allowed.

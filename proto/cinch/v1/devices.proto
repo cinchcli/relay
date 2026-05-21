@@ -1,0 +1,80 @@
+syntax = "proto3";
+
+package cinch.v1;
+
+option go_package = "github.com/cinchcli/relay/internal/cinchv1;cinchv1";
+
+// DevicesService manages paired devices.
+service DevicesService {
+  // ListDevices returns paired devices with online status.
+  // Mirrors GET /devices — auth required.
+  rpc ListDevices(ListDevicesRequest) returns (ListDevicesResponse);
+
+  // SetNickname updates the display name of a device owned by the caller.
+  // Mirrors PUT /devices/{id}/nickname — auth required.
+  rpc SetNickname(SetNicknameRequest) returns (SetNicknameResponse);
+
+  // SetRetention updates remote retention days for the calling device.
+  // Mirrors PUT /devices/self/retention — per-device auth required.
+  rpc SetRetention(SetRetentionRequest) returns (SetRetentionResponse);
+}
+
+// ─── Device ──────────────────────────────────────────────────
+//
+// `paired_at` and `last_push_at` are RFC3339 strings (matching the legacy
+// REST wire). Per-language Timestamp types do not round-trip cleanly under
+// encoding/json which the relay still uses for the legacy /devices endpoint.
+
+message Device {
+  string id = 1;
+  string hostname = 2;
+  string source_key = 3;
+  int32 clip_count = 4;
+  string paired_at = 5;
+  optional string last_push_at = 6;
+  bool online = 7;
+  string nickname = 8;
+  string public_key = 9;
+  string public_key_fingerprint = 10;
+  optional string machine_id = 11;
+
+  // Semver string of the client binary as reported via WS client_hello or
+  // X-Cinch-Client-Version. Empty if the device has not reported yet.
+  optional string client_version = 12;
+
+  // "cli" or "desktop". Determines which GitHub repo's latest release to
+  // compare against. Empty if not reported.
+  optional string client_type = 13;
+
+  // RFC3339 timestamp of the last version report.
+  optional string client_version_at = 14;
+}
+
+// ─── ListDevices ─────────────────────────────────────────────
+
+message ListDevicesRequest {}
+
+message ListDevicesResponse {
+  repeated Device devices = 1;
+}
+
+// ─── SetNickname ─────────────────────────────────────────────
+
+message SetNicknameRequest {
+  string device_id = 1;
+  string nickname = 2;
+}
+
+message SetNicknameResponse {
+  bool ok = 1;
+}
+
+// ─── SetRetention ────────────────────────────────────────────
+
+message SetRetentionRequest {
+  int32 remote_retention_days = 1;
+}
+
+message SetRetentionResponse {
+  bool ok = 1;
+}
