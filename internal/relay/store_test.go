@@ -437,6 +437,84 @@ func TestUpdateDeviceRetention(t *testing.T) {
 	}
 }
 
+// TestUpdateDeviceRetention_ClampsToPlan verifies that when a user has a
+// plan retention_days cap, an UpdateDeviceRetention call asking for more
+// than the cap is silently clamped to the cap on write — so the device
+// row mirrors the effective ceiling that the retention sweep enforces.
+func TestUpdateDeviceRetention_ClampsToPlan(t *testing.T) {
+	store := newTestStore(t)
+
+	const userID = "user-retention-clamp"
+	if err := store.CreateUser(userID); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := store.UpsertUserCapabilities(UserCapabilities{
+		UserID:        userID,
+		RetentionDays: 7,
+	}); err != nil {
+		t.Fatalf("UpsertUserCapabilities: %v", err)
+	}
+
+	const deviceID = "dev-retention-clamp"
+	if _, err := store.db.Exec(
+		`INSERT INTO devices (id, user_id, hostname, source_key, remote_retention_days)
+		 VALUES ($1, $2, $3, $4, $5)`,
+		deviceID, userID, "clamp-host", "clamp-key", 1,
+	); err != nil {
+		t.Fatalf("insert device: %v", err)
+	}
+
+	if err := store.UpdateDeviceRetention(deviceID, 30); err != nil {
+		t.Fatalf("UpdateDeviceRetention: %v", err)
+	}
+
+	var stored int
+	if err := store.db.QueryRow(
+		"SELECT remote_retention_days FROM devices WHERE id = $1", deviceID,
+	).Scan(&stored); err != nil {
+		t.Fatalf("read stored retention: %v", err)
+	}
+	if stored != 7 {
+		t.Errorf("expected clamped retention=7, got %d", stored)
+	}
+}
+
+// TestUpdateDeviceRetention_NoPlanCapIsUnclamped verifies that a user
+// without a user_capabilities row (self-host default; RetentionDays == 0
+// means unlimited) keeps the literal 1..365 behavior — the request is
+// stored as-is.
+func TestUpdateDeviceRetention_NoPlanCapIsUnclamped(t *testing.T) {
+	store := newTestStore(t)
+
+	const userID = "user-retention-uncapped"
+	if err := store.CreateUser(userID); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	const deviceID = "dev-retention-uncapped"
+	if _, err := store.db.Exec(
+		`INSERT INTO devices (id, user_id, hostname, source_key, remote_retention_days)
+		 VALUES ($1, $2, $3, $4, $5)`,
+		deviceID, userID, "uncap-host", "uncap-key", 1,
+	); err != nil {
+		t.Fatalf("insert device: %v", err)
+	}
+
+	if err := store.UpdateDeviceRetention(deviceID, 30); err != nil {
+		t.Fatalf("UpdateDeviceRetention: %v", err)
+	}
+
+	var stored int
+	if err := store.db.QueryRow(
+		"SELECT remote_retention_days FROM devices WHERE id = $1", deviceID,
+	).Scan(&stored); err != nil {
+		t.Fatalf("read stored retention: %v", err)
+	}
+	if stored != 30 {
+		t.Errorf("expected unclamped retention=30, got %d", stored)
+	}
+}
+
 // columnExists checks information_schema instead of SQLite PRAGMA.
 func TestUpsertOAuthUser_StoresDisplayName(t *testing.T) {
 	s := newTestStore(t)
@@ -917,5 +995,157 @@ func TestPollDeviceCode_ReturnsDisplayName(t *testing.T) {
 				t.Fatalf("display_name = %q, want %q", *resp.DisplayName, tc.want)
 			}
 		})
+	}
+}
+
+// TestEnforcementDisabled_SkipsAllChecks is a regression guard for the
+// EnforcementDisabled carve-out. It covers all three enforcement sites
+// — CompleteDeviceCode, UpdateDeviceRetention, and UpsertOAuthUser —
+// and asserts that flipping the flag short-circuits every one of them.
+// If a future change adds an enforcement check that ignores
+// s.EnforcementDisabled, this test will fail.
+func TestEnforcementDisabled_SkipsAllChecks(t *testing.T) {
+	s := newTestStore(t)
+	s.EnforcementDisabled = true
+
+	// Seed a user with the tightest possible caps: 1 device, 1-day retention.
+	const userID = "user-enforcement-disabled"
+	if err := s.CreateUser(userID); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := s.UpsertUserCapabilities(UserCapabilities{
+		UserID:        userID,
+		DeviceLimit:   1,
+		RetentionDays: 1,
+	}); err != nil {
+		t.Fatalf("UpsertUserCapabilities: %v", err)
+	}
+
+	// Provision the first device directly so we have a baseline holder
+	// of the (would-be) device_limit slot.
+	if _, _, err := s.CreateDeviceForUser(userID, "host-1", "machine-1"); err != nil {
+		t.Fatalf("CreateDeviceForUser #1: %v", err)
+	}
+
+	// Drive the device-code flow for a second device. With enforcement
+	// disabled, CompleteDeviceCode must succeed even though the user is
+	// already at device_limit=1.
+	startResp, _, err := s.CreateDeviceCode("host-2", "machine-2", "", "")
+	if err != nil {
+		t.Fatalf("CreateDeviceCode: %v", err)
+	}
+	deviceID2, token2, err := s.CreateDeviceForUser(userID, "host-2", "machine-2")
+	if err != nil {
+		t.Fatalf("CreateDeviceForUser #2: %v", err)
+	}
+	if err := s.CompleteDeviceCode(startResp.UserCode, userID, deviceID2, token2); err != nil {
+		t.Fatalf("CompleteDeviceCode with EnforcementDisabled=true must succeed: %v", err)
+	}
+
+	// Retention clamp: ask for 30 days even though plan caps at 1.
+	// With enforcement disabled, the value must land verbatim.
+	if err := s.UpdateDeviceRetention(deviceID2, 30); err != nil {
+		t.Fatalf("UpdateDeviceRetention: %v", err)
+	}
+	var stored int
+	if err := s.db.QueryRow(
+		"SELECT remote_retention_days FROM devices WHERE id = $1", deviceID2,
+	).Scan(&stored); err != nil {
+		t.Fatalf("read back retention: %v", err)
+	}
+	if stored != 30 {
+		t.Fatalf("retention with EnforcementDisabled=true: got %d, want 30 (no clamp)", stored)
+	}
+
+	// OAuth login path: first call creates a fresh user + device 1.
+	// Then we tighten caps to device_limit=1 (matching the existing
+	// device count) and confirm a second OAuth login with a new machine
+	// — which would normally return device_limit_exceeded — succeeds
+	// because EnforcementDisabled short-circuits the cap check.
+	oauthUserID, _, _, err := s.UpsertOAuthUser("github", "subj-enf-disabled", "", false, "", "oauth-host-1", "oauth-machine-1")
+	if err != nil {
+		t.Fatalf("UpsertOAuthUser #1: %v", err)
+	}
+	if err := s.UpsertUserCapabilities(UserCapabilities{
+		UserID:      oauthUserID,
+		DeviceLimit: 1,
+	}); err != nil {
+		t.Fatalf("UpsertUserCapabilities (oauth): %v", err)
+	}
+	if _, _, _, err := s.UpsertOAuthUser("github", "subj-enf-disabled", "", false, "", "oauth-host-2", "oauth-machine-2"); err != nil {
+		t.Fatalf("UpsertOAuthUser #2 with EnforcementDisabled=true must succeed: %v", err)
+	}
+}
+
+// TestCompleteDeviceCode_DeviceLimitExceeded verifies that the
+// approve-from-an-already-signed-in-device path enforces the user's
+// device_limit. The OAuth login path (UpsertOAuthUser) already enforces
+// the cap, but `cinch auth approve` calls CompleteDeviceCode directly
+// with a pre-provisioned device — so the check must also live there.
+//
+// When the limit is exceeded, the freshly-provisioned device row must
+// be rolled back (revoked_at set) so the user is not left with a
+// phantom over-limit device, and the device-code row must remain
+// pending so the polling client eventually expires cleanly.
+func TestCompleteDeviceCode_DeviceLimitExceeded(t *testing.T) {
+	s := newTestStore(t)
+
+	const userID = "user-approve-limit"
+	if err := s.CreateUser(userID); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := s.UpsertUserCapabilities(UserCapabilities{
+		UserID:      userID,
+		DeviceLimit: 1,
+	}); err != nil {
+		t.Fatalf("UpsertUserCapabilities: %v", err)
+	}
+
+	// First device fills the single allowed slot.
+	if _, _, err := s.CreateDeviceForUser(userID, "host-1", "machine-1"); err != nil {
+		t.Fatalf("CreateDeviceForUser #1: %v", err)
+	}
+
+	// Approve flow: a remote device asks to log in (device code), then
+	// an already-signed-in device of the same user provisions a fresh
+	// device row and calls CompleteDeviceCode to attach it.
+	startResp, _, err := s.CreateDeviceCode("host-2", "machine-2", "", "")
+	if err != nil {
+		t.Fatalf("CreateDeviceCode: %v", err)
+	}
+	newDeviceID, newToken, err := s.CreateDeviceForUser(userID, "host-2", "machine-2")
+	if err != nil {
+		t.Fatalf("CreateDeviceForUser #2: %v", err)
+	}
+
+	err = s.CompleteDeviceCode(startResp.UserCode, userID, newDeviceID, newToken)
+	if err == nil {
+		t.Fatalf("CompleteDeviceCode: expected device_limit_exceeded error, got nil")
+	}
+	if !strings.Contains(err.Error(), "device_limit_exceeded") {
+		t.Fatalf("CompleteDeviceCode: error %q does not contain device_limit_exceeded", err.Error())
+	}
+
+	// The newly-provisioned device must have been rolled back to
+	// revoked so the active-device count stays at 1.
+	count, err := s.CountActiveDevices(userID)
+	if err != nil {
+		t.Fatalf("CountActiveDevices: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("CountActiveDevices after rejection: got %d, want 1", count)
+	}
+
+	// The device-code row stays pending — the polling client gets a
+	// clean expiry instead of a bogus "complete" with a revoked device.
+	var status string
+	if err := s.db.QueryRow(
+		`SELECT status FROM device_codes WHERE user_code = $1`,
+		startResp.UserCode,
+	).Scan(&status); err != nil {
+		t.Fatalf("read device_codes status: %v", err)
+	}
+	if status != "pending" {
+		t.Fatalf("device_codes.status after rejection: got %q, want %q", status, "pending")
 	}
 }

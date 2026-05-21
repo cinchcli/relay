@@ -1946,4 +1946,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 	eventsSvcPath, eventsSvcHandler := h.newEventsConnectHandler()
 	mux.Handle(eventsSvcPath, eventsSvcHandler)
+
+	meSvcPath, meSvcHandler := h.newMeConnectHandler()
+	mux.Handle(meSvcPath, meSvcHandler)
 }

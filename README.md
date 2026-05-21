@@ -144,6 +144,11 @@ Requires Go 1.24+. No CGO needed (`CGO_ENABLED=0`).
 
 Full docs at [cinchcli.com/docs](https://cinchcli.com/docs).
 
+Operator runbooks:
+
+- [Plan management](docs/operator/plan-management.md) — setting per-user
+  device / retention caps, grace periods, and the self-host carve-out.
+
 ## Related Repos
 
 - [cinchcli/cinch](https://github.com/cinchcli/cinch) — CLI client (`cinch push` / `pull` / `auth`)

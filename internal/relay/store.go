@@ -42,6 +42,14 @@ type UserCapabilities struct {
 
 type Store struct {
 	db *sql.DB
+
+	// EnforcementDisabled short-circuits plan-tier enforcement checks
+	// (device limit on CompleteDeviceCode, retention clamp on
+	// UpdateDeviceRetention). Self-hosters set this via the
+	// CINCH_PLAN_ENFORCEMENT_DISABLED env var; hosted cinchcli.com
+	// leaves it false. Exported so tests can flip it directly without
+	// reaching through the constructor.
+	EnforcementDisabled bool
 }
 
 func NewStore(dsn string) (*Store, error) {
@@ -537,18 +545,20 @@ func (s *Store) UpsertOAuthUser(provider, subject, email string, emailVerified b
 		return userID, existingID, deviceToken, nil
 	}
 
-	cap, err := s.GetUserCapabilities(userID)
-	if err != nil {
-		return "", "", "", fmt.Errorf("checking device capabilities: %w", err)
-	}
-	if cap.DeviceLimit > 0 {
-		count, err := s.CountActiveDevices(userID)
+	if !s.EnforcementDisabled {
+		cap, err := s.GetUserCapabilities(userID)
 		if err != nil {
-			return "", "", "", fmt.Errorf("counting active devices: %w", err)
+			return "", "", "", fmt.Errorf("checking device capabilities: %w", err)
 		}
-		if count >= cap.DeviceLimit {
-			if cap.GraceExpiresAt.IsZero() || time.Now().After(cap.GraceExpiresAt) {
-				return "", "", "", fmt.Errorf("device_limit_exceeded: user has %d/%d active devices", count, cap.DeviceLimit)
+		if cap.DeviceLimit > 0 {
+			count, err := s.CountActiveDevices(userID)
+			if err != nil {
+				return "", "", "", fmt.Errorf("counting active devices: %w", err)
+			}
+			if count >= cap.DeviceLimit {
+				if cap.GraceExpiresAt.IsZero() || time.Now().After(cap.GraceExpiresAt) {
+					return "", "", "", fmt.Errorf("device_limit_exceeded: user has %d/%d active devices", count, cap.DeviceLimit)
+				}
 			}
 		}
 	}
@@ -1263,7 +1273,41 @@ func (s *Store) CreateDeviceForUser(userID, hostname, machineID string) (deviceI
 }
 
 // CompleteDeviceCode marks a device code as complete with the provided credentials.
+// Enforces the user's device_limit (matching UpsertOAuthUser) so the approve-flow
+// cannot bypass the cap. If the limit is exceeded the freshly-provisioned device
+// is revoked and the device-code row is left pending (the approver sees the
+// error; the polling client keeps polling and eventually expires).
 func (s *Store) CompleteDeviceCode(userCode, userID, deviceID, token string) error {
+	if !s.EnforcementDisabled {
+		cap, err := s.GetUserCapabilities(userID)
+		if err != nil {
+			return fmt.Errorf("checking device capabilities: %w", err)
+		}
+		if cap.DeviceLimit > 0 {
+			count, err := s.CountActiveDevices(userID)
+			if err != nil {
+				return fmt.Errorf("counting active devices: %w", err)
+			}
+			// The to-be-approved device was already inserted by
+			// CreateDeviceForUser, so it counts toward `count`.
+			// Allow count == DeviceLimit; reject when count > DeviceLimit.
+			if count > cap.DeviceLimit {
+				if cap.GraceExpiresAt.IsZero() || time.Now().After(cap.GraceExpiresAt) {
+					// Roll back the device row we just provisioned so the
+					// user isn't stuck with a phantom over-limit device.
+					if _, rbErr := s.db.Exec(
+						`UPDATE devices SET revoked_at = NOW() WHERE id = $1`,
+						deviceID,
+					); rbErr != nil {
+						slog.Error("device_limit rollback failed",
+							"user", userID, "device", deviceID, "err", rbErr)
+					}
+					return fmt.Errorf("device_limit_exceeded: user has %d/%d active devices", count, cap.DeviceLimit)
+				}
+			}
+		}
+	}
+
 	res, err := s.db.Exec(
 		`UPDATE device_codes SET status = 'complete', user_id = $1, device_id = $2, token = $3
 		 WHERE user_code = $4 AND status = 'pending' AND expires_at > NOW()`,
@@ -1601,11 +1645,35 @@ func (s *Store) SweepAllUsersRetentionReturningMedia() (mediaPaths []string, err
 	return mediaPaths, nil
 }
 
-// UpdateDeviceRetention sets the remote_retention_days for a specific device.
+// UpdateDeviceRetention sets the remote_retention_days for a specific device,
+// clamped to the user's plan retention_days when one is set. We look up the
+// owner user via the device row to keep the public signature unchanged.
 func (s *Store) UpdateDeviceRetention(deviceID string, days int) error {
 	if days < 1 || days > 365 {
 		return fmt.Errorf("retention days must be between 1 and 365, got %d", days)
 	}
+
+	if !s.EnforcementDisabled {
+		var ownerID string
+		err := s.db.QueryRow(
+			`SELECT user_id FROM devices WHERE id = $1 AND revoked_at IS NULL`,
+			deviceID,
+		).Scan(&ownerID)
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("device not found or revoked: %s", deviceID)
+		}
+		if err != nil {
+			return fmt.Errorf("looking up device owner: %w", err)
+		}
+		cap, err := s.GetUserCapabilities(ownerID)
+		if err != nil {
+			return fmt.Errorf("checking retention capabilities: %w", err)
+		}
+		if cap.RetentionDays > 0 && days > cap.RetentionDays {
+			days = cap.RetentionDays
+		}
+	}
+
 	result, err := s.db.Exec(
 		"UPDATE devices SET remote_retention_days = $1 WHERE id = $2 AND revoked_at IS NULL",
 		days, deviceID,
