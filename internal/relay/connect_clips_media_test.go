@@ -101,9 +101,12 @@ func TestUploadImageMedia_LegacyMimeContentTypeAlsoRoutes(t *testing.T) {
 	}
 }
 
-func TestUploadImageMedia_PreservesInlineContent(t *testing.T) {
-	// D1 dual-write: the inline `Content` field stays populated so existing
-	// clients that read clips.content keep working. Only D2 will clear it.
+func TestUploadImageMedia_ClearsInlineContent(t *testing.T) {
+	// D2b cutover: after the bytes land in the media store, the inline
+	// `Content` field must be emptied so SaveClip persists only the
+	// pointer (privacy + storage). The pre-clear bytes are captured
+	// inside uploadImageMedia and shipped to Upload, so the media store
+	// still receives the full ciphertext.
 	ms := &fakeMediaStore{}
 	req := &cinchv1.PushClipRequest{
 		ContentType: "image",
@@ -112,8 +115,31 @@ func TestUploadImageMedia_PreservesInlineContent(t *testing.T) {
 	if err := uploadImageMedia(context.Background(), ms, req); err != nil {
 		t.Fatalf("uploadImageMedia: %v", err)
 	}
-	if req.Content != "stay-put" {
-		t.Errorf("Content was mutated to %q; D1 must preserve inline content", req.Content)
+	if req.Content != "" {
+		t.Errorf("Content not cleared after upload: %q; D2b must drop inline content", req.Content)
+	}
+	if req.MediaPath == nil {
+		t.Fatal("MediaPath must be set after upload")
+	}
+	if got, want := string(ms.uploads[*req.MediaPath]), "stay-put"; got != want {
+		t.Errorf("media store received truncated bytes: got %q want %q", got, want)
+	}
+}
+
+func TestUploadImageMedia_LeavesInlineContentOnUploadError(t *testing.T) {
+	// If the upload fails, the relay falls back to the inline-content path
+	// (existing clients keep working) rather than landing a half-empty row.
+	// The error itself surfaces to PushClip for an honest 500.
+	ms := &fakeMediaStore{uploadErr: errors.New("backend down")}
+	req := &cinchv1.PushClipRequest{
+		ContentType: "image",
+		Content:     "keep",
+	}
+	if err := uploadImageMedia(context.Background(), ms, req); err == nil {
+		t.Fatal("expected upload error to surface")
+	}
+	if req.Content != "keep" {
+		t.Errorf("Content cleared despite upload error: %q", req.Content)
 	}
 }
 

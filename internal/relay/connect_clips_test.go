@@ -79,6 +79,52 @@ func TestConnectPushClip_ImageRoutesToMediaStore(t *testing.T) {
 	}
 }
 
+func TestConnectPushClip_ImageClipReturnsEmptyContentAndMediaPath(t *testing.T) {
+	// D2b cutover: pushing an image clip must persist a row with empty
+	// `content` and a populated `media_path`. ListClips replay (used by
+	// `cinch pull` and desktop backfill) is the most realistic proxy for
+	// what every consumer sees — assert through that path rather than
+	// poking the DB directly.
+	ts, _ := setupTestServerWithMediaDir(t)
+	token, _, _ := login(t, ts.URL)
+
+	client := cinchv1connect.NewClipsServiceClient(http.DefaultClient, ts.URL)
+	pushReq := connect.NewRequest(&cinchv1.PushClipRequest{
+		Content:     "encrypted-image-blob",
+		ContentType: "image",
+		Encrypted:   true,
+	})
+	pushReq.Header().Set("Authorization", "Bearer "+token)
+	pushResp, err := client.PushClip(t.Context(), pushReq)
+	if err != nil {
+		t.Fatalf("PushClip: %v", err)
+	}
+
+	listReq := connect.NewRequest(&cinchv1.ListClipsRequest{Limit: 10})
+	listReq.Header().Set("Authorization", "Bearer "+token)
+	listResp, err := client.ListClips(t.Context(), listReq)
+	if err != nil {
+		t.Fatalf("ListClips: %v", err)
+	}
+
+	var clip *cinchv1.Clip
+	for _, c := range listResp.Msg.GetClips() {
+		if c.ClipId == pushResp.Msg.ClipId {
+			clip = c
+			break
+		}
+	}
+	if clip == nil {
+		t.Fatalf("pushed clip %s not returned by ListClips", pushResp.Msg.ClipId)
+	}
+	if clip.Content != "" {
+		t.Errorf("image clip Content not cleared: %q; D2b must drop inline content", clip.Content)
+	}
+	if clip.MediaPath == nil || *clip.MediaPath == "" {
+		t.Error("image clip MediaPath empty; clients have no way to fetch the bytes")
+	}
+}
+
 func TestConnectPushClip_TextDoesNotTouchMediaStore(t *testing.T) {
 	ts, mediaDir := setupTestServerWithMediaDir(t)
 	token, _, _ := login(t, ts.URL)

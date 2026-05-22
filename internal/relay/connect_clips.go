@@ -51,16 +51,19 @@ func (h *Handler) clipsConnectInterceptor() connect.UnaryInterceptorFunc {
 	}
 }
 
-// uploadImageMedia dual-writes the encrypted bytes of an image clip into the
-// configured media store (S3 or local FS) at a fresh `clips/<ulid>.bin` key
-// and stamps `MediaPath` on the request. The inline `Content` is left in
-// place so existing clients that read clips.content continue to work —
-// clients that learn to follow `media_path` (a D2 follow-up) can switch the
-// read source without a server change. Skips silently for non-image clips,
-// when no media backend is wired (`MEDIA_BACKEND` unset), or when the request
-// carries empty content. Free-standing (not a method on connectClipsServer)
-// so unit tests can drive it with a fake media.Store without spinning up the
-// full Connect-RPC handler.
+// uploadImageMedia offloads the encrypted bytes of an image clip into the
+// configured media store (S3 or local FS) at a fresh `clips/<ulid>.bin` key,
+// stamps `MediaPath` on the request, and then clears the inline `Content`
+// field so the DB row stores only the pointer. Clients must follow
+// `media_path` (D2a, shipped in cinchcli-core) to fetch the ciphertext.
+//
+// Skips silently for non-image clips, when no media backend is wired
+// (`MEDIA_BACKEND` unset), or when the request carries empty content — in
+// those cases the inline content path remains the source of truth.
+//
+// Free-standing (not a method on connectClipsServer) so unit tests can drive
+// it with a fake media.Store without spinning up the full Connect-RPC
+// handler.
 func uploadImageMedia(ctx context.Context, m media.Store, req *cinchv1.PushClipRequest) error {
 	if !strings.HasPrefix(req.ContentType, "image") || m == nil || req.Content == "" {
 		return nil
@@ -76,6 +79,10 @@ func uploadImageMedia(ctx context.Context, m media.Store, req *cinchv1.PushClipR
 	if req.ByteSize == 0 {
 		req.ByteSize = int64(len(contentBytes))
 	}
+	// D2b cutover: once the bytes live in the media store, the inline
+	// `content` column becomes dead weight (and a privacy footgun on shared
+	// DB dumps). Clear it so the saved row carries only the pointer.
+	req.Content = ""
 	return nil
 }
 
