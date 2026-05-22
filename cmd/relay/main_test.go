@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -103,6 +105,123 @@ func TestNewLoggerHandler_Format(t *testing.T) {
 		slog.New(newLoggerHandler("info", "logfmt", &buf)).Info("hi")
 		if !strings.Contains(buf.String(), "msg=hi") {
 			t.Errorf("unknown format should fall back to text, got: %s", buf.String())
+		}
+	})
+}
+
+func TestResolveDSN(t *testing.T) {
+	t.Run("env URL wins when set", func(t *testing.T) {
+		got, err := resolveDSN("postgres://from-env/db", "/tmp/should-not-be-read")
+		if err != nil {
+			t.Fatalf("resolveDSN: %v", err)
+		}
+		if got != "postgres://from-env/db" {
+			t.Errorf("got %q, want from-env", got)
+		}
+	})
+
+	t.Run("env URL wins even when both set", func(t *testing.T) {
+		// Order matters for local debugging — operator overrides a
+		// file-mounted secret by exporting DATABASE_URL in their shell.
+		dir := t.TempDir()
+		path := filepath.Join(dir, "dsn")
+		if err := os.WriteFile(path, []byte("postgres://from-file/db"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got, err := resolveDSN("postgres://from-env/db", path)
+		if err != nil {
+			t.Fatalf("resolveDSN: %v", err)
+		}
+		if got != "postgres://from-env/db" {
+			t.Errorf("env URL must win when both set; got %q", got)
+		}
+	})
+
+	t.Run("reads from file when only path set", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "dsn")
+		if err := os.WriteFile(path, []byte("postgres://from-file/db"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got, err := resolveDSN("", path)
+		if err != nil {
+			t.Fatalf("resolveDSN: %v", err)
+		}
+		if got != "postgres://from-file/db" {
+			t.Errorf("got %q, want from-file", got)
+		}
+	})
+
+	t.Run("strips trailing newline from file content", func(t *testing.T) {
+		// Many secret stores append a newline when rendering — Docker
+		// secrets, k8s Secret volume mounts, vault-agent templates.
+		// Without TrimSpace, the trailing \n turns the DSN into garbage.
+		dir := t.TempDir()
+		path := filepath.Join(dir, "dsn")
+		if err := os.WriteFile(path, []byte("postgres://from-file/db\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got, err := resolveDSN("", path)
+		if err != nil {
+			t.Fatalf("resolveDSN: %v", err)
+		}
+		if got != "postgres://from-file/db" {
+			t.Errorf("trailing newline not stripped; got %q", got)
+		}
+	})
+
+	t.Run("strips surrounding whitespace from file content", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "dsn")
+		if err := os.WriteFile(path, []byte("\t  postgres://from-file/db  \n\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got, err := resolveDSN("", path)
+		if err != nil {
+			t.Fatalf("resolveDSN: %v", err)
+		}
+		if got != "postgres://from-file/db" {
+			t.Errorf("surrounding whitespace not stripped; got %q", got)
+		}
+	})
+
+	t.Run("errors when both empty", func(t *testing.T) {
+		_, err := resolveDSN("", "")
+		if err == nil {
+			t.Fatal("expected error when both env vars empty")
+		}
+		if !strings.Contains(err.Error(), "DATABASE_URL") {
+			t.Errorf("error must mention DATABASE_URL so operator knows what to set; got %q", err.Error())
+		}
+	})
+
+	t.Run("errors when file is missing", func(t *testing.T) {
+		_, err := resolveDSN("", "/tmp/this-path-does-not-exist-resolveDSN-test")
+		if err == nil {
+			t.Fatal("expected error for missing file")
+		}
+		// The OS error must surface so the operator can debug
+		// permission-denied vs not-found.
+		if !strings.Contains(err.Error(), "DATABASE_URL_FILE") {
+			t.Errorf("error must mention DATABASE_URL_FILE so operator knows which path failed; got %q", err.Error())
+		}
+	})
+
+	t.Run("errors when file is empty after trim", func(t *testing.T) {
+		// Empty file is a misconfiguration (the secret didn't render) —
+		// surface it rather than letting pgx fail with a cryptic
+		// "missing user" error 30 seconds later.
+		dir := t.TempDir()
+		path := filepath.Join(dir, "dsn")
+		if err := os.WriteFile(path, []byte("   \n\t\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := resolveDSN("", path)
+		if err == nil {
+			t.Fatal("expected error for empty file")
+		}
+		if !strings.Contains(err.Error(), "empty") {
+			t.Errorf("error must call out emptiness; got %q", err.Error())
 		}
 	})
 }

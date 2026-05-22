@@ -11,9 +11,9 @@ import (
 )
 
 func mustStore() *relay.Store {
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		fmt.Fprintln(os.Stderr, "DATABASE_URL is required")
+	dsn, err := resolveDSN(os.Getenv("DATABASE_URL"), os.Getenv("DATABASE_URL_FILE"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err.Error())
 		os.Exit(1)
 	}
 	s, err := relay.NewStore(dsn)
