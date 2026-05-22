@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -51,6 +53,36 @@ func newLoggerHandler(levelStr, formatStr string, w io.Writer) slog.Handler {
 	return slog.NewTextHandler(w, opts)
 }
 
+// resolveDSN returns the Postgres DSN from either DATABASE_URL or
+// DATABASE_URL_FILE. DATABASE_URL wins when both are set so operators can
+// override a file-mounted secret in a local debug session without unmounting
+// it. Trailing whitespace and newlines in file contents are stripped — many
+// secret stores (Docker secrets, k8s Secret volume mounts, vault-agent
+// templates) append a newline when rendering the value.
+//
+// Returns an error if both env vars are empty, or if DATABASE_URL_FILE
+// points at a path that cannot be read. The file-read error is returned
+// verbatim so the operator sees the exact OS error (permission denied,
+// no such file, etc.) — these are the failure modes that actually bite
+// in production.
+func resolveDSN(envURL, envPath string) (string, error) {
+	if envURL != "" {
+		return envURL, nil
+	}
+	if envPath == "" {
+		return "", errors.New("set DATABASE_URL or DATABASE_URL_FILE")
+	}
+	b, err := os.ReadFile(envPath)
+	if err != nil {
+		return "", fmt.Errorf("read DATABASE_URL_FILE %q: %w", envPath, err)
+	}
+	dsn := strings.TrimSpace(string(b))
+	if dsn == "" {
+		return "", fmt.Errorf("DATABASE_URL_FILE %q is empty", envPath)
+	}
+	return dsn, nil
+}
+
 // initLogger configures slog.Default based on LOG_LEVEL and LOG_FORMAT env vars.
 // LOG_LEVEL: debug | info (default) | warn | error (case-insensitive).
 // LOG_FORMAT: text (default) | json (case-insensitive).
@@ -77,9 +109,9 @@ func runServer() {
 		port = "8080"
 	}
 
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		slog.Error("DATABASE_URL is required")
+	dsn, err := resolveDSN(os.Getenv("DATABASE_URL"), os.Getenv("DATABASE_URL_FILE"))
+	if err != nil {
+		slog.Error("DATABASE_URL resolution failed", "err", err)
 		os.Exit(1)
 	}
 
