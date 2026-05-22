@@ -2,13 +2,109 @@ package relay_test
 
 import (
 	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"connectrpc.com/connect"
 
 	cinchv1 "github.com/cinchcli/relay/internal/cinchv1"
 	"github.com/cinchcli/relay/internal/cinchv1/cinchv1connect"
+	"github.com/cinchcli/relay/internal/media"
+	relay "github.com/cinchcli/relay/internal/relay"
 )
+
+// setupTestServerWithMediaDir is like setupTestServerWithDisk but also returns
+// the absolute media directory path so callers can read back the objects the
+// relay wrote (proving uploadImageMedia actually ran end-to-end).
+func setupTestServerWithMediaDir(t *testing.T) (*httptest.Server, string) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	mediaDir := filepath.Join(tmpDir, "media")
+	mediaStore, err := media.NewLocalStore(mediaDir)
+	if err != nil {
+		t.Fatalf("create media store: %v", err)
+	}
+	store := relay.NewTestStore(t)
+	installBootstrapInvite(t, store)
+	hub := relay.NewHub()
+	go hub.Run()
+	handler := relay.NewHandler(store, hub)
+	handler.SetMediaStore(mediaStore)
+	mux := http.NewServeMux()
+	handler.RegisterRoutes(mux)
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	return ts, mediaDir
+}
+
+func TestConnectPushClip_ImageRoutesToMediaStore(t *testing.T) {
+	ts, mediaDir := setupTestServerWithMediaDir(t)
+	token, _, _ := login(t, ts.URL)
+
+	client := cinchv1connect.NewClipsServiceClient(http.DefaultClient, ts.URL)
+	req := connect.NewRequest(&cinchv1.PushClipRequest{
+		Content:     "encrypted-image-blob",
+		ContentType: "image",
+		Encrypted:   true,
+	})
+	req.Header().Set("Authorization", "Bearer "+token)
+
+	resp, err := client.PushClip(t.Context(), req)
+	if err != nil {
+		t.Fatalf("PushClip: %v", err)
+	}
+	if resp.Msg.ClipId == "" {
+		t.Fatal("expected clip_id in response")
+	}
+
+	// The relay should have written exactly one object into media/clips/.
+	clipsDir := filepath.Join(mediaDir, "clips")
+	entries, err := os.ReadDir(clipsDir)
+	if err != nil {
+		t.Fatalf("read media dir %s: %v", clipsDir, err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 media object in %s, got %d", clipsDir, len(entries))
+	}
+
+	objPath := filepath.Join(clipsDir, entries[0].Name())
+	body, err := os.ReadFile(objPath)
+	if err != nil {
+		t.Fatalf("read media file: %v", err)
+	}
+	if string(body) != "encrypted-image-blob" {
+		t.Errorf("media object content: got %q want %q", body, "encrypted-image-blob")
+	}
+}
+
+func TestConnectPushClip_TextDoesNotTouchMediaStore(t *testing.T) {
+	ts, mediaDir := setupTestServerWithMediaDir(t)
+	token, _, _ := login(t, ts.URL)
+
+	client := cinchv1connect.NewClipsServiceClient(http.DefaultClient, ts.URL)
+	req := connect.NewRequest(&cinchv1.PushClipRequest{
+		Content:     "hello",
+		ContentType: "text",
+		Encrypted:   true,
+	})
+	req.Header().Set("Authorization", "Bearer "+token)
+
+	if _, err := client.PushClip(t.Context(), req); err != nil {
+		t.Fatalf("PushClip: %v", err)
+	}
+
+	// The clips/ subdir must not exist (no upload happened) or be empty.
+	clipsDir := filepath.Join(mediaDir, "clips")
+	entries, err := os.ReadDir(clipsDir)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("read media dir: %v", err)
+	}
+	if len(entries) > 0 {
+		t.Errorf("text clip wrote %d media objects; expected 0", len(entries))
+	}
+}
 
 func TestConnectPushClip_RejectsPlaintext(t *testing.T) {
 	ts, _ := setupTestServer(t)

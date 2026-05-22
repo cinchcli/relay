@@ -1,18 +1,22 @@
 package relay
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/oklog/ulid/v2"
 
 	cinchv1 "github.com/cinchcli/relay/internal/cinchv1"
 	"github.com/cinchcli/relay/internal/cinchv1/cinchv1connect"
+	"github.com/cinchcli/relay/internal/media"
 )
 
 type connectClipsServer struct {
@@ -45,6 +49,34 @@ func (h *Handler) clipsConnectInterceptor() connect.UnaryInterceptorFunc {
 			return next(ctx, req)
 		}
 	}
+}
+
+// uploadImageMedia dual-writes the encrypted bytes of an image clip into the
+// configured media store (S3 or local FS) at a fresh `clips/<ulid>.bin` key
+// and stamps `MediaPath` on the request. The inline `Content` is left in
+// place so existing clients that read clips.content continue to work —
+// clients that learn to follow `media_path` (a D2 follow-up) can switch the
+// read source without a server change. Skips silently for non-image clips,
+// when no media backend is wired (`MEDIA_BACKEND` unset), or when the request
+// carries empty content. Free-standing (not a method on connectClipsServer)
+// so unit tests can drive it with a fake media.Store without spinning up the
+// full Connect-RPC handler.
+func uploadImageMedia(ctx context.Context, m media.Store, req *cinchv1.PushClipRequest) error {
+	if !strings.HasPrefix(req.ContentType, "image") || m == nil || req.Content == "" {
+		return nil
+	}
+	mediaKey := "clips/" + ulid.Make().String() + ".bin"
+	contentBytes := []byte(req.Content)
+	if err := m.Upload(ctx, mediaKey, bytes.NewReader(contentBytes),
+		int64(len(contentBytes)), "application/octet-stream"); err != nil {
+		return err
+	}
+	mediaPath := mediaKey
+	req.MediaPath = &mediaPath
+	if req.ByteSize == 0 {
+		req.ByteSize = int64(len(contentBytes))
+	}
+	return nil
 }
 
 // ─── PushClip ────────────────────────────────────────────────
@@ -85,6 +117,9 @@ func (s *connectClipsServer) PushClip(ctx context.Context, req *connect.Request[
 		if !s.h.hub.IsDeviceOnline(userID, targetDeviceID) {
 			return nil, connect.NewError(connect.CodeUnavailable, errMsg("device is not currently online"))
 		}
+		if err := uploadImageMedia(ctx, s.h.media, req.Msg); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("media upload: %w", err))
+		}
 		clip, isDup, err := s.h.store.SaveClip(userID, req.Msg)
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
@@ -119,6 +154,10 @@ func (s *connectClipsServer) PushClip(ctx context.Context, req *connect.Request[
 		if count >= demoMaxClips {
 			return nil, connect.NewError(connect.CodeResourceExhausted, errMsg("demo clip limit reached"))
 		}
+	}
+
+	if err := uploadImageMedia(ctx, s.h.media, req.Msg); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("media upload: %w", err))
 	}
 
 	clip, isDup, err := s.h.store.SaveClip(userID, req.Msg)
