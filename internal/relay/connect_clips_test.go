@@ -2,13 +2,160 @@ package relay_test
 
 import (
 	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"connectrpc.com/connect"
 
 	cinchv1 "github.com/cinchcli/relay/internal/cinchv1"
 	"github.com/cinchcli/relay/internal/cinchv1/cinchv1connect"
+	"github.com/cinchcli/relay/internal/media"
+	relay "github.com/cinchcli/relay/internal/relay"
 )
+
+// setupTestServerWithMediaDir is like setupTestServerWithDisk but also returns
+// the absolute media directory path so callers can read back the objects the
+// relay wrote (proving uploadImageMedia actually ran end-to-end).
+func setupTestServerWithMediaDir(t *testing.T) (*httptest.Server, string) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	mediaDir := filepath.Join(tmpDir, "media")
+	mediaStore, err := media.NewLocalStore(mediaDir)
+	if err != nil {
+		t.Fatalf("create media store: %v", err)
+	}
+	store := relay.NewTestStore(t)
+	installBootstrapInvite(t, store)
+	hub := relay.NewHub()
+	go hub.Run()
+	handler := relay.NewHandler(store, hub)
+	handler.SetMediaStore(mediaStore)
+	mux := http.NewServeMux()
+	handler.RegisterRoutes(mux)
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	return ts, mediaDir
+}
+
+func TestConnectPushClip_ImageRoutesToMediaStore(t *testing.T) {
+	ts, mediaDir := setupTestServerWithMediaDir(t)
+	token, _, _ := login(t, ts.URL)
+
+	client := cinchv1connect.NewClipsServiceClient(http.DefaultClient, ts.URL)
+	req := connect.NewRequest(&cinchv1.PushClipRequest{
+		Content:     "encrypted-image-blob",
+		ContentType: "image",
+		Encrypted:   true,
+	})
+	req.Header().Set("Authorization", "Bearer "+token)
+
+	resp, err := client.PushClip(t.Context(), req)
+	if err != nil {
+		t.Fatalf("PushClip: %v", err)
+	}
+	if resp.Msg.ClipId == "" {
+		t.Fatal("expected clip_id in response")
+	}
+
+	// `LocalStore.path` calls `filepath.Base(key)` (internal/media/local.go),
+	// which flattens any "clips/" prefix — the file lands directly in
+	// `mediaDir`, not in `mediaDir/clips/`. S3CompatStore preserves the
+	// prefix, but the local backend is intentionally flat for legacy
+	// compatibility. Assert against the actual on-disk layout.
+	entries, err := os.ReadDir(mediaDir)
+	if err != nil {
+		t.Fatalf("read media dir %s: %v", mediaDir, err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 media object in %s, got %d", mediaDir, len(entries))
+	}
+
+	objPath := filepath.Join(mediaDir, entries[0].Name())
+	body, err := os.ReadFile(objPath)
+	if err != nil {
+		t.Fatalf("read media file: %v", err)
+	}
+	if string(body) != "encrypted-image-blob" {
+		t.Errorf("media object content: got %q want %q", body, "encrypted-image-blob")
+	}
+}
+
+func TestConnectPushClip_ImageClipReturnsEmptyContentAndMediaPath(t *testing.T) {
+	// D2b cutover: pushing an image clip must persist a row with empty
+	// `content` and a populated `media_path`. ListClips replay (used by
+	// `cinch pull` and desktop backfill) is the most realistic proxy for
+	// what every consumer sees — assert through that path rather than
+	// poking the DB directly.
+	ts, _ := setupTestServerWithMediaDir(t)
+	token, _, _ := login(t, ts.URL)
+
+	client := cinchv1connect.NewClipsServiceClient(http.DefaultClient, ts.URL)
+	pushReq := connect.NewRequest(&cinchv1.PushClipRequest{
+		Content:     "encrypted-image-blob",
+		ContentType: "image",
+		Encrypted:   true,
+	})
+	pushReq.Header().Set("Authorization", "Bearer "+token)
+	pushResp, err := client.PushClip(t.Context(), pushReq)
+	if err != nil {
+		t.Fatalf("PushClip: %v", err)
+	}
+
+	listReq := connect.NewRequest(&cinchv1.ListClipsRequest{Limit: 10})
+	listReq.Header().Set("Authorization", "Bearer "+token)
+	listResp, err := client.ListClips(t.Context(), listReq)
+	if err != nil {
+		t.Fatalf("ListClips: %v", err)
+	}
+
+	var clip *cinchv1.Clip
+	for _, c := range listResp.Msg.GetClips() {
+		if c.ClipId == pushResp.Msg.ClipId {
+			clip = c
+			break
+		}
+	}
+	if clip == nil {
+		t.Fatalf("pushed clip %s not returned by ListClips", pushResp.Msg.ClipId)
+	}
+	if clip.Content != "" {
+		t.Errorf("image clip Content not cleared: %q; D2b must drop inline content", clip.Content)
+	}
+	if clip.MediaPath == nil || *clip.MediaPath == "" {
+		t.Error("image clip MediaPath empty; clients have no way to fetch the bytes")
+	}
+}
+
+func TestConnectPushClip_TextDoesNotTouchMediaStore(t *testing.T) {
+	ts, mediaDir := setupTestServerWithMediaDir(t)
+	token, _, _ := login(t, ts.URL)
+
+	client := cinchv1connect.NewClipsServiceClient(http.DefaultClient, ts.URL)
+	req := connect.NewRequest(&cinchv1.PushClipRequest{
+		Content:     "hello",
+		ContentType: "text",
+		Encrypted:   true,
+	})
+	req.Header().Set("Authorization", "Bearer "+token)
+
+	if _, err := client.PushClip(t.Context(), req); err != nil {
+		t.Fatalf("PushClip: %v", err)
+	}
+
+	// mediaDir is created by NewLocalStore at setup time, so it always
+	// exists. After a text push, it must still be empty — no Upload call
+	// should have happened. (LocalStore flattens keys via filepath.Base,
+	// so a "clips/" prefix on the upload key never produces a subdir.)
+	entries, err := os.ReadDir(mediaDir)
+	if err != nil {
+		t.Fatalf("read media dir: %v", err)
+	}
+	if len(entries) > 0 {
+		t.Errorf("text clip wrote %d media objects; expected 0", len(entries))
+	}
+}
 
 func TestConnectPushClip_RejectsPlaintext(t *testing.T) {
 	ts, _ := setupTestServer(t)
