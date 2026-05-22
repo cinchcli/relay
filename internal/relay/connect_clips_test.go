@@ -59,17 +59,20 @@ func TestConnectPushClip_ImageRoutesToMediaStore(t *testing.T) {
 		t.Fatal("expected clip_id in response")
 	}
 
-	// The relay should have written exactly one object into media/clips/.
-	clipsDir := filepath.Join(mediaDir, "clips")
-	entries, err := os.ReadDir(clipsDir)
+	// `LocalStore.path` calls `filepath.Base(key)` (internal/media/local.go),
+	// which flattens any "clips/" prefix — the file lands directly in
+	// `mediaDir`, not in `mediaDir/clips/`. S3CompatStore preserves the
+	// prefix, but the local backend is intentionally flat for legacy
+	// compatibility. Assert against the actual on-disk layout.
+	entries, err := os.ReadDir(mediaDir)
 	if err != nil {
-		t.Fatalf("read media dir %s: %v", clipsDir, err)
+		t.Fatalf("read media dir %s: %v", mediaDir, err)
 	}
 	if len(entries) != 1 {
-		t.Fatalf("expected 1 media object in %s, got %d", clipsDir, len(entries))
+		t.Fatalf("expected 1 media object in %s, got %d", mediaDir, len(entries))
 	}
 
-	objPath := filepath.Join(clipsDir, entries[0].Name())
+	objPath := filepath.Join(mediaDir, entries[0].Name())
 	body, err := os.ReadFile(objPath)
 	if err != nil {
 		t.Fatalf("read media file: %v", err)
@@ -141,10 +144,12 @@ func TestConnectPushClip_TextDoesNotTouchMediaStore(t *testing.T) {
 		t.Fatalf("PushClip: %v", err)
 	}
 
-	// The clips/ subdir must not exist (no upload happened) or be empty.
-	clipsDir := filepath.Join(mediaDir, "clips")
-	entries, err := os.ReadDir(clipsDir)
-	if err != nil && !os.IsNotExist(err) {
+	// mediaDir is created by NewLocalStore at setup time, so it always
+	// exists. After a text push, it must still be empty — no Upload call
+	// should have happened. (LocalStore flattens keys via filepath.Base,
+	// so a "clips/" prefix on the upload key never produces a subdir.)
+	entries, err := os.ReadDir(mediaDir)
+	if err != nil {
 		t.Fatalf("read media dir: %v", err)
 	}
 	if len(entries) > 0 {
