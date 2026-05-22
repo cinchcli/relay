@@ -56,8 +56,6 @@ docker compose up -d
 | Variable | Default | Description |
 |---|---|---|
 | `PORT` | `8080` | TCP port the server listens on |
-| `DATABASE_URL` | _(unset)_ | Postgres DSN. Required unless `DATABASE_URL_FILE` is set. See [Database connection](#database-connection). |
-| `DATABASE_URL_FILE` | _(unset)_ | Path to a file containing the Postgres DSN. Used when `DATABASE_URL` is unset. Trailing whitespace is trimmed. See [Database connection](#database-connection). |
 | `DB_PATH` | `cinch.db` | Path to the SQLite database file |
 | `BASE_URL` | _(unset)_ | Public HTTPS root of the relay, e.g. `https://relay.example.com`. Required for OAuth sign-in. |
 | `RELAY_REGION` | _(unset)_ | Optional region label returned in health responses |
@@ -68,40 +66,6 @@ docker compose up -d
 | `GOOGLE_CLIENT_SECRET` | _(unset)_ | Google OAuth client secret |
 | `LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error` |
 | `LOG_FORMAT` | `text` | Log format: `text` (human-readable) or `json` (structured) |
-
-## Database connection
-
-The relay reads the Postgres DSN from either `DATABASE_URL` or
-`DATABASE_URL_FILE`. `DATABASE_URL` wins when both are set.
-
-**Direct env var** — simplest, fine for local dev:
-
-```bash
-DATABASE_URL=postgres://user:pass@host:5432/dbname?sslmode=require
-```
-
-**From file** — recommended for production. Any secret store that can
-mount a file (Docker secrets, Kubernetes `Secret` volumes, ECS
-`secrets:` task definitions, HashiCorp Vault agent templates, GCP
-Secret Manager CSI, systemd `LoadCredential=`) can drop the DSN into a
-path and point `DATABASE_URL_FILE` at it. The file's trailing
-whitespace and newline are stripped, so the standard "secret + newline"
-output of these tools works without escaping.
-
-```bash
-# Docker secrets — secret is mounted at /run/secrets/<name>
-DATABASE_URL_FILE=/run/secrets/relay_db_url
-
-# Kubernetes — Secret mounted via volumeMounts
-DATABASE_URL_FILE=/var/run/secrets/relay/database_url
-
-# systemd unit with LoadCredential
-DATABASE_URL_FILE=${CREDENTIALS_DIRECTORY}/database_url
-```
-
-The file-based path also sidesteps shell escaping issues that bite when
-passwords contain `@`, `:`, `%`, or `?` — the file contents are raw
-bytes, not URL-encoded.
 
 ## OAuth Sign-in (optional)
 
