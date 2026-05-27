@@ -62,7 +62,7 @@ message PushClipRequest {
   // field 5 (ttl) removed — do not reuse
   int64 byte_size = 6;
   bool encrypted = 7;
-  optional string target_device_id = 8;
+  // field 8 (target_device_id) removed — do not reuse
   optional string media_path = 9;
   optional string client_created_at = 10; // RFC3339; relay clamps to [now-90d, now]
   optional string idempotency_key = 11; // (user_id, key) unique within 24h

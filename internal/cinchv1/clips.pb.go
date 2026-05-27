@@ -161,9 +161,9 @@ type PushClipRequest struct {
 	Label       string                 `protobuf:"bytes,3,opt,name=label,proto3" json:"label,omitempty"`
 	Source      string                 `protobuf:"bytes,4,opt,name=source,proto3" json:"source,omitempty"`
 	// field 5 (ttl) removed — do not reuse
-	ByteSize        int64   `protobuf:"varint,6,opt,name=byte_size,json=byteSize,proto3" json:"byte_size,omitempty"`
-	Encrypted       bool    `protobuf:"varint,7,opt,name=encrypted,proto3" json:"encrypted,omitempty"`
-	TargetDeviceId  *string `protobuf:"bytes,8,opt,name=target_device_id,json=targetDeviceId,proto3,oneof" json:"target_device_id,omitempty"`
+	ByteSize  int64 `protobuf:"varint,6,opt,name=byte_size,json=byteSize,proto3" json:"byte_size,omitempty"`
+	Encrypted bool  `protobuf:"varint,7,opt,name=encrypted,proto3" json:"encrypted,omitempty"`
+	// field 8 (target_device_id) removed — do not reuse
 	MediaPath       *string `protobuf:"bytes,9,opt,name=media_path,json=mediaPath,proto3,oneof" json:"media_path,omitempty"`
 	ClientCreatedAt *string `protobuf:"bytes,10,opt,name=client_created_at,json=clientCreatedAt,proto3,oneof" json:"client_created_at,omitempty"` // RFC3339; relay clamps to [now-90d, now]
 	IdempotencyKey  *string `protobuf:"bytes,11,opt,name=idempotency_key,json=idempotencyKey,proto3,oneof" json:"idempotency_key,omitempty"`      // (user_id, key) unique within 24h
@@ -241,13 +241,6 @@ func (x *PushClipRequest) GetEncrypted() bool {
 		return x.Encrypted
 	}
 	return false
-}
-
-func (x *PushClipRequest) GetTargetDeviceId() string {
-	if x != nil && x.TargetDeviceId != nil {
-		return *x.TargetDeviceId
-	}
-	return ""
 }
 
 func (x *PushClipRequest) GetMediaPath() string {
@@ -664,21 +657,19 @@ const file_cinch_v1_clips_proto_rawDesc = "" +
 	"\tis_pinned\x18\f \x01(\bR\bisPinned\x12\x1e\n" +
 	"\bpin_note\x18\r \x01(\tH\x01R\apinNote\x88\x01\x01B\r\n" +
 	"\v_media_pathB\v\n" +
-	"\t_pin_note\"\xb7\x03\n" +
+	"\t_pin_note\"\xf3\x02\n" +
 	"\x0fPushClipRequest\x12\x18\n" +
 	"\acontent\x18\x01 \x01(\tR\acontent\x12!\n" +
 	"\fcontent_type\x18\x02 \x01(\tR\vcontentType\x12\x14\n" +
 	"\x05label\x18\x03 \x01(\tR\x05label\x12\x16\n" +
 	"\x06source\x18\x04 \x01(\tR\x06source\x12\x1b\n" +
 	"\tbyte_size\x18\x06 \x01(\x03R\bbyteSize\x12\x1c\n" +
-	"\tencrypted\x18\a \x01(\bR\tencrypted\x12-\n" +
-	"\x10target_device_id\x18\b \x01(\tH\x00R\x0etargetDeviceId\x88\x01\x01\x12\"\n" +
+	"\tencrypted\x18\a \x01(\bR\tencrypted\x12\"\n" +
 	"\n" +
-	"media_path\x18\t \x01(\tH\x01R\tmediaPath\x88\x01\x01\x12/\n" +
+	"media_path\x18\t \x01(\tH\x00R\tmediaPath\x88\x01\x01\x12/\n" +
 	"\x11client_created_at\x18\n" +
-	" \x01(\tH\x02R\x0fclientCreatedAt\x88\x01\x01\x12,\n" +
-	"\x0fidempotency_key\x18\v \x01(\tH\x03R\x0eidempotencyKey\x88\x01\x01B\x13\n" +
-	"\x11_target_device_idB\r\n" +
+	" \x01(\tH\x01R\x0fclientCreatedAt\x88\x01\x01\x12,\n" +
+	"\x0fidempotency_key\x18\v \x01(\tH\x02R\x0eidempotencyKey\x88\x01\x01B\r\n" +
 	"\v_media_pathB\x14\n" +
 	"\x12_client_created_atB\x12\n" +
 	"\x10_idempotency_key\"H\n" +
