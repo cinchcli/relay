@@ -529,12 +529,7 @@ func (h *Handler) PushClip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	targetDeviceID := ""
-	if req.TargetDeviceId != nil {
-		targetDeviceID = *req.TargetDeviceId
-	}
-
-	// Rate limit check — applies to all non-demo users on both targeted and non-targeted paths.
+	// Rate limit check — applies to all non-demo users.
 	// Fail open on DB errors so a transient blip does not block all pushes.
 	if !isDemoUser {
 		cap, capErr := h.store.GetUserCapabilities(userID)
@@ -547,37 +542,6 @@ func (h *Handler) PushClip(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-	}
-
-	// Targeted push — check online BEFORE SaveClip (per D-10: no clip saved if device offline)
-	if targetDeviceID != "" {
-		if !h.hub.IsDeviceOnline(userID, targetDeviceID) {
-			writeError(w, http.StatusNotFound, "device_offline",
-				"Device is not currently online. Push was not delivered.",
-				"Wait for the device to come online and retry.")
-			return
-		}
-		clip, isDup, err := h.store.SaveClip(userID, &req)
-		if err != nil {
-			writeInternalError(w, "save_failed", "save clip", err)
-			return
-		}
-		if req.Source != "" {
-			h.store.UpdateDeviceActivity(userID, req.Source)
-		}
-		if !isDup {
-			if err := h.hub.SendToDevice(userID, targetDeviceID, &cinchv1.ServerEvent{
-				Event: &cinchv1.ServerEvent_NewClip{
-					NewClip: &cinchv1.NewClipEvent{Clip: clip},
-				},
-			}); err != nil {
-				slog.Error("SendToDevice failed after online check", "err", err)
-			}
-		}
-		writeJSON(w, http.StatusOK, cinchv1.PushClipResponse{
-			ClipId: clip.ClipId, ByteSize: clip.ByteSize,
-		})
-		return
 	}
 
 	// Demo sessions are restricted to prevent abuse: text-only, 1KB, 5 clips.

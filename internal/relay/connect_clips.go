@@ -101,12 +101,7 @@ func (s *connectClipsServer) PushClip(ctx context.Context, req *connect.Request[
 			errors.New("encryption_required: server requires end-to-end encrypted clips"))
 	}
 
-	targetDeviceID := ""
-	if req.Msg.TargetDeviceId != nil {
-		targetDeviceID = *req.Msg.TargetDeviceId
-	}
-
-	// Rate limit check — applies to all non-demo users on both targeted and non-targeted paths.
+	// Rate limit check — applies to all non-demo users.
 	// Fail open on DB errors so a transient blip does not block all pushes.
 	if !isDemoUser {
 		cap, capErr := s.h.store.GetUserCapabilities(userID)
@@ -117,36 +112,6 @@ func (s *connectClipsServer) PushClip(ctx context.Context, req *connect.Request[
 					fmt.Errorf("rate_limit_exceeded: daily push limit of %d reached", cap.RateLimit))
 			}
 		}
-	}
-
-	// Targeted push — check online before saving (D-10).
-	if targetDeviceID != "" {
-		if !s.h.hub.IsDeviceOnline(userID, targetDeviceID) {
-			return nil, connect.NewError(connect.CodeUnavailable, errMsg("device is not currently online"))
-		}
-		if err := uploadImageMedia(ctx, s.h.media, req.Msg); err != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("media upload: %w", err))
-		}
-		clip, isDup, err := s.h.store.SaveClip(userID, req.Msg)
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, err)
-		}
-		if req.Msg.Source != "" {
-			s.h.store.UpdateDeviceActivity(userID, req.Msg.Source)
-		}
-		if !isDup {
-			if err := s.h.hub.SendToDevice(userID, targetDeviceID, &cinchv1.ServerEvent{
-				Event: &cinchv1.ServerEvent_NewClip{
-					NewClip: &cinchv1.NewClipEvent{Clip: clip},
-				},
-			}); err != nil {
-				slog.Error("connectClipsServer.PushClip SendToDevice failed", "err", err)
-			}
-		}
-		return connect.NewResponse(&cinchv1.PushClipResponse{
-			ClipId:   clip.ClipId,
-			ByteSize: clip.ByteSize,
-		}), nil
 	}
 
 	// Demo restrictions. isDemoUser was resolved above for the E2EE gate; reuse it here.
