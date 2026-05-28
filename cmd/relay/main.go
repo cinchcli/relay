@@ -147,7 +147,7 @@ func runServer() {
 	handler.SetInternalServiceSecret(os.Getenv("INTERNAL_SERVICE_SECRET"))
 
 	// Self-host carve-out: when CINCH_PLAN_ENFORCEMENT_DISABLED is "1"
-	// or "true" (case-insensitive), skip plan-tier enforcement checks
+	// or "true" (case-insensitive), skip hosted-plan enforcement checks
 	// (device limit on CompleteDeviceCode, plan-derived retention clamp
 	// on UpdateDeviceRetention). Operators of self-hosted relays pay
 	// for their own Postgres + storage, so we don't gate them. Hosted

@@ -10,17 +10,16 @@ import (
 	"github.com/cinchcli/relay/internal/cinchv1/cinchv1connect"
 )
 
-// Plan-tier device-limit constants. The relay encodes plan identity in the
-// DeviceLimit cap until user_capabilities gains an explicit plan_name column.
-// Keep this table aligned with the pricing page at cinchcli.com/pricing.
+// Hosted relay device-limit constants. The relay encodes the public self-serve
+// plan identity in the DeviceLimit cap until user_capabilities gains an
+// explicit plan_name column.
 //
 // TODO: replace heuristic with a plan_name column on user_capabilities so
 // the relay isn't inferring plan identity from one cap and so we can
-// distinguish self-host (no row) from paid-unlimited.
+// distinguish self-host (no row) from paid/custom accounts.
 const (
 	freeDeviceLimit = 3
 	proDeviceLimit  = 10
-	teamDeviceLimit = 25
 )
 
 // connectMeServer implements cinchv1connect.MeServiceHandler. Exposes the
@@ -68,7 +67,8 @@ func (s *connectMeServer) GetMe(ctx context.Context, req *connect.Request[cinchv
 // owns the mapping so clients don't have to. "free" is the default for
 // users with no user_capabilities row; explicit caps are inferred from the
 // device_limit. Any cap shape the server hasn't named yet is reported as
-// "custom" so older clients still render something sensible.
+// "custom" so commercial/private-hosting accounts don't imply a self-serve
+// team product that does not exist yet.
 func planNameFromCaps(cap UserCapabilities) string {
 	switch cap.DeviceLimit {
 	case 0:
@@ -80,8 +80,6 @@ func planNameFromCaps(cap UserCapabilities) string {
 		return "free"
 	case proDeviceLimit:
 		return "pro"
-	case teamDeviceLimit:
-		return "team"
 	default:
 		return "custom"
 	}

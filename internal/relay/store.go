@@ -30,7 +30,7 @@ type Tombstone struct {
 	DeletedAt string `json:"deleted_at"`
 }
 
-// UserCapabilities stores plan-derived limits for a user.
+// UserCapabilities stores hosted-plan-derived limits for a user.
 // All zero values mean unlimited (self-host default).
 type UserCapabilities struct {
 	UserID         string
@@ -43,7 +43,7 @@ type UserCapabilities struct {
 type Store struct {
 	db *sql.DB
 
-	// EnforcementDisabled short-circuits plan-tier enforcement checks
+	// EnforcementDisabled short-circuits hosted-plan enforcement checks
 	// (device limit on CompleteDeviceCode, retention clamp on
 	// UpdateDeviceRetention). Self-hosters set this via the
 	// CINCH_PLAN_ENFORCEMENT_DISABLED env var; hosted cinchcli.com
