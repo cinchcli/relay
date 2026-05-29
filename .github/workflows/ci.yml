@@ -28,6 +28,7 @@ on:
 
 env:
   GONOSUMDB: github.com/cinchcli
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 concurrency:
   group: ci-${{ github.ref }}
