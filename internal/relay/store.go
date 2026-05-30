@@ -53,6 +53,7 @@ type Store struct {
 }
 
 func NewStore(dsn string) (*Store, error) {
+	dsn = normalizePostgresDSN(dsn)
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("opening db: %w", err)
