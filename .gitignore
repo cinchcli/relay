@@ -8,6 +8,5 @@ dist/
 node_modules/
 *.test
 /relay
-cinch.db
 # Internal product strategy (specs, plans, operator runbooks) — keep out of public repo
 docs/

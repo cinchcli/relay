@@ -97,7 +97,7 @@ func runServer() {
 		}
 	}
 
-	// Build media backend from env (MEDIA_BACKEND=local|s3; see DEPLOY.md).
+	// Build media backend from env (MEDIA_BACKEND=local|s3; see README.md).
 	mediaStore, err := media.NewStore()
 	if err != nil {
 		slog.Error("failed to init media backend", "err", err)

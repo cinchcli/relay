@@ -33,7 +33,7 @@ type Store interface {
 //
 //	MEDIA_BACKEND — "local" (default) | "s3"
 //
-// Backend-specific env vars are documented in DEPLOY.md.
+// Backend-specific env vars are documented in README.md.
 func NewStore() (Store, error) {
 	backend := os.Getenv("MEDIA_BACKEND")
 	if backend == "" {
