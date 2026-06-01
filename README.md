@@ -167,8 +167,9 @@ Full docs at [cinchcli.com/docs](https://cinchcli.com/docs).
 
 Operator runbooks:
 
-- [Plan management](docs/operator/plan-management.md) — setting per-user
-  device / retention caps, grace periods, and the self-host carve-out.
+- [Hosted relay capability management](docs/operator/plan-management.md) —
+  setting per-user device, retention, storage, clip-size caps, grace periods,
+  and the self-host carve-out.
 
 ## Related Repos
 

@@ -24,8 +24,21 @@ type Hub struct {
 // AgentConn wraps a WebSocket connection for one desktop agent.
 type AgentConn struct {
 	UserID   string
-	DeviceID string // Phase 2: required for device-keyed routing
+	DeviceID string
 	Conn     *websocket.Conn
+	send     chan protocol.WSMessage
+}
+
+func (ac *AgentConn) writer() {
+	for msg := range ac.send {
+		// Set a write deadline to prevent slow connections from lingering
+		ac.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		if err := ac.Conn.WriteJSON(msg); err != nil {
+			slog.Warn("ws write failed", "user", ac.UserID[:8], "device", ac.DeviceID[:8], "err", err)
+			ac.Conn.Close()
+			return
+		}
+	}
 }
 
 // serverEventToWSMessage converts a ServerEvent to a WSMessage for legacy WS delivery.
@@ -160,7 +173,7 @@ func (h *Hub) Run() {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 	for range ticker.C {
-		// Copy conn list while holding read lock to avoid holding across WriteJSON.
+		// Copy conn list while holding read lock to avoid holding across channel sends.
 		h.mu.RLock()
 		type connEntry struct {
 			uid string
@@ -176,23 +189,12 @@ func (h *Hub) Run() {
 		h.mu.RUnlock()
 
 		for _, e := range all {
-			if err := e.ac.Conn.WriteJSON(protocol.WSMessage{Action: protocol.ActionPing}); err != nil {
-				slog.Warn("heartbeat failed", "user", e.uid[:8], "err", err)
-				// Guard against reconnect race: only remove if the conn pointer still matches.
-				// A new Register() call between the snapshot and here replaces the pointer;
-				// removing by key alone would evict the newly-registered connection instead.
-				h.mu.Lock()
-				if devs, ok := h.conns[e.uid]; ok {
-					key := e.did
-					if key == "" {
-						key = e.uid
-					}
-					if existing, ok := devs[key]; ok && existing == e.ac {
-						existing.Conn.Close()
-						delete(devs, key)
-					}
-				}
-				h.mu.Unlock()
+			select {
+			case e.ac.send <- protocol.WSMessage{Action: protocol.ActionPing}:
+			default:
+				slog.Warn("heartbeat dropped, buffer full", "user", e.uid[:8])
+				// Connection is likely dead or extremely slow.
+				h.Remove(e.uid, e.did)
 			}
 		}
 	}
@@ -213,9 +215,17 @@ func (h *Hub) Register(userID, deviceID string, conn *websocket.Conn) {
 	}
 	// If this (user, device) already has a conn, close it — new conn wins.
 	if old, ok := h.conns[userID][key]; ok {
+		close(old.send)
 		old.Conn.Close()
 	}
-	h.conns[userID][key] = &AgentConn{UserID: userID, DeviceID: deviceID, Conn: conn}
+	ac := &AgentConn{
+		UserID:   userID,
+		DeviceID: deviceID,
+		Conn:     conn,
+		send:     make(chan protocol.WSMessage, 64),
+	}
+	h.conns[userID][key] = ac
+	go ac.writer()
 	slog.Info("agent connected", "user", userID[:8], "device", key[:8])
 }
 
@@ -230,6 +240,7 @@ func (h *Hub) Remove(userID, deviceID string) {
 			key = userID
 		}
 		if ac, ok := devs[key]; ok {
+			close(ac.send)
 			ac.Conn.Close()
 			delete(devs, key)
 			slog.Info("agent disconnected", "user", userID[:8], "device", key[:8])
@@ -251,22 +262,23 @@ func (h *Hub) SendClip(userID string, clip *cinchv1.Clip) error {
 	}
 	h.mu.RUnlock()
 
-	wsMsg := &protocol.WSMessage{Action: protocol.ActionNewClip, Clip: clip}
+	wsMsg := protocol.WSMessage{Action: protocol.ActionNewClip, Clip: clip}
 	event := &cinchv1.ServerEvent{
 		Event: &cinchv1.ServerEvent_NewClip{
 			NewClip: &cinchv1.NewClipEvent{Clip: clip},
 		},
 	}
 
-	var firstErr error
 	for _, ac := range conns {
-		if err := ac.Conn.WriteJSON(wsMsg); err != nil && firstErr == nil {
-			firstErr = err
+		select {
+		case ac.send <- wsMsg:
+		default:
+			slog.Warn("ws broadcast dropped, buffer full", "user", userID[:8], "device", ac.DeviceID[:8])
 		}
 	}
 
 	h.sendToEventSubs(userID, event)
-	return firstErr
+	return nil
 }
 
 // SendClipDeleted broadcasts a clip_deleted event to all connected devices of the user.
@@ -280,7 +292,7 @@ func (h *Hub) SendClipDeleted(userID, clipID string) {
 	}
 	h.mu.RUnlock()
 
-	wsMsg := &protocol.WSMessage{
+	wsMsg := protocol.WSMessage{
 		Action: protocol.ActionClipDeleted,
 		Clip:   &cinchv1.Clip{ClipId: clipID},
 	}
@@ -291,8 +303,10 @@ func (h *Hub) SendClipDeleted(userID, clipID string) {
 	}
 
 	for _, ac := range conns {
-		if err := ac.Conn.WriteJSON(wsMsg); err != nil {
-			slog.Warn("SendClipDeleted write error", "device", ac.DeviceID, "err", err)
+		select {
+		case ac.send <- wsMsg:
+		default:
+			slog.Warn("SendClipDeleted dropped", "device", ac.DeviceID[:8])
 		}
 	}
 
@@ -310,7 +324,7 @@ func (h *Hub) SendClipPinned(userID, clipID string, isPinned bool, pinNote *stri
 	}
 	h.mu.RUnlock()
 
-	wsMsg := &protocol.WSMessage{
+	wsMsg := protocol.WSMessage{
 		Action: protocol.ActionClipPinned,
 		Clip:   &cinchv1.Clip{ClipId: clipID, IsPinned: isPinned, PinNote: pinNote},
 	}
@@ -321,8 +335,10 @@ func (h *Hub) SendClipPinned(userID, clipID string, isPinned bool, pinNote *stri
 	}
 
 	for _, ac := range conns {
-		if err := ac.Conn.WriteJSON(wsMsg); err != nil {
-			slog.Warn("SendClipPinned write error", "device", ac.DeviceID, "err", err)
+		select {
+		case ac.send <- wsMsg:
+		default:
+			slog.Warn("SendClipPinned dropped", "device", ac.DeviceID[:8])
 		}
 	}
 
@@ -343,8 +359,10 @@ func (h *Hub) BroadcastWSToUser(userID string, msg *protocol.WSMessage) {
 	h.mu.RUnlock()
 
 	for _, ac := range conns {
-		if err := ac.Conn.WriteJSON(msg); err != nil {
-			slog.Warn("BroadcastWSToUser write failed", "user", userID, "device", ac.DeviceID, "err", err)
+		select {
+		case ac.send <- *msg:
+		default:
+			slog.Warn("BroadcastWSToUser dropped", "user", userID, "device", ac.DeviceID[:8])
 		}
 	}
 }
@@ -362,8 +380,10 @@ func (h *Hub) SendToUser(userID string, event *cinchv1.ServerEvent) {
 
 	if wsMsg := serverEventToWSMessage(event); wsMsg != nil {
 		for _, ac := range conns {
-			if err := ac.Conn.WriteJSON(wsMsg); err != nil {
-				slog.Warn("SendToUser write error", "device", ac.DeviceID, "err", err)
+			select {
+			case ac.send <- *wsMsg:
+			default:
+				slog.Warn("SendToUser dropped", "device", ac.DeviceID[:8])
 			}
 		}
 	}
@@ -388,7 +408,12 @@ func (h *Hub) SendToDevice(userID, deviceID string, event *cinchv1.ServerEvent) 
 		if wsMsg == nil {
 			return nil
 		}
-		return ac.Conn.WriteJSON(wsMsg)
+		select {
+		case ac.send <- *wsMsg:
+		default:
+			slog.Warn("SendToDevice dropped", "device", deviceID[:8])
+		}
+		return nil
 	}
 
 	h.sendToEventSub(userID, deviceID, event)

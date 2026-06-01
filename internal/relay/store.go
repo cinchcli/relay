@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -37,6 +39,8 @@ type UserCapabilities struct {
 	DeviceLimit    int
 	RetentionDays  int
 	RateLimit      int       // requests per day; 0 = unlimited
+	StorageLimitMb int       // total storage quota in MB; 0 = unlimited
+	MaxClipSizeKb  int       // max size of a single clip in KB; 0 = unlimited
 	GraceExpiresAt time.Time // zero = no active grace period
 }
 
@@ -59,17 +63,21 @@ func NewStore(dsn string) (*Store, error) {
 		return nil, fmt.Errorf("opening db: %w", err)
 	}
 
-	// Without an explicit cap, database/sql opens connections on demand up to
-	// MaxOpenConns=0 (unlimited). Under traffic spikes that lets us blow past
-	// Postgres' `max_connections` (typically 100–200 on managed instances
-	// shared with other services), which surfaces as cascading "too many
-	// clients" errors. 25 leaves headroom for the retention sweeper, the
-	// grace sweeper, and the demo cleanup running alongside user traffic.
-	// SetConnMaxLifetime forces stale conns to be recycled so long-running
-	// processes don't accumulate connections that Postgres has already
-	// closed server-side.
-	db.SetMaxOpenConns(25)
-	db.SetMaxIdleConns(5)
+	// Connection pool tuning. Defaults are conservative for t3.micro.
+	maxOpen := 25
+	if v := os.Getenv("DB_MAX_OPEN_CONNS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			maxOpen = n
+		}
+	}
+	maxIdle := 5
+	if v := os.Getenv("DB_MAX_IDLE_CONNS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			maxIdle = n
+		}
+	}
+	db.SetMaxOpenConns(maxOpen)
+	db.SetMaxIdleConns(maxIdle)
 	db.SetConnMaxLifetime(5 * time.Minute)
 
 	if err := db.Ping(); err != nil {
@@ -112,6 +120,7 @@ func migrate(db *sql.DB) error {
 		);
 
 		CREATE INDEX IF NOT EXISTS idx_clips_user_created ON clips(user_id, created_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_clips_user_source_created ON clips(user_id, source, created_at DESC);
 
 		CREATE TABLE IF NOT EXISTS devices (
 			id                       TEXT PRIMARY KEY,
@@ -174,6 +183,8 @@ func migrate(db *sql.DB) error {
 			device_limit     INTEGER NOT NULL DEFAULT 0,
 			retention_days   INTEGER NOT NULL DEFAULT 0,
 			rate_limit       INTEGER NOT NULL DEFAULT 0,
+			storage_limit_mb INTEGER NOT NULL DEFAULT 0,
+			max_clip_size_kb INTEGER NOT NULL DEFAULT 0,
 			grace_expires_at TIMESTAMPTZ,
 			updated_at       TIMESTAMPTZ DEFAULT NOW()
 		);
@@ -296,6 +307,16 @@ func migrate(db *sql.DB) error {
 			WHERE identity_provider IS NOT NULL
 	`); err != nil {
 		return err
+	}
+
+	// Add storage_limit_mb and max_clip_size_kb to user_capabilities (storage-limits phase 1).
+	for _, stmt := range []string{
+		`ALTER TABLE user_capabilities ADD COLUMN IF NOT EXISTS storage_limit_mb INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE user_capabilities ADD COLUMN IF NOT EXISTS max_clip_size_kb INTEGER NOT NULL DEFAULT 0`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("adding storage limit columns to user_capabilities: %w", err)
+		}
 	}
 
 	// Drop legacy auth columns from users if they exist (Phase 6 migration).
@@ -612,6 +633,48 @@ func (s *Store) IsDemoUser(userID string) (bool, error) {
 		return false, err
 	}
 	return isDemo, nil
+}
+
+// AuthContext holds the identifiers and status for an authenticated request.
+type AuthContext struct {
+	UserID   string
+	DeviceID string
+	IsDemo   bool
+	IsAdmin  bool
+}
+
+// GetAuthContext validates a token and returns the bound identity context in one query.
+// Replaces the sequential DeviceIDByToken + DeviceOwner + IsDemoUser pattern.
+func (s *Store) GetAuthContext(token string) (*AuthContext, error) {
+	var ctx AuthContext
+	var revokedAt sql.NullTime
+	var userCreatedAt time.Time
+
+	err := s.db.QueryRow(
+		`SELECT d.user_id, d.id, d.revoked_at, u.is_demo, u.is_admin, u.created_at
+		 FROM devices d
+		 JOIN users u ON u.id = d.user_id
+		 WHERE d.token = $1`,
+		token,
+	).Scan(&ctx.UserID, &ctx.DeviceID, &revokedAt, &ctx.IsDemo, &ctx.IsAdmin, &userCreatedAt)
+
+	if err == sql.ErrNoRows {
+		return nil, err
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if revokedAt.Valid {
+		return nil, fmt.Errorf("device_revoked")
+	}
+
+	// Demo TTL check
+	if ctx.IsDemo && time.Since(userCreatedAt) > 10*time.Minute {
+		return nil, fmt.Errorf("demo_expired")
+	}
+
+	return &ctx, nil
 }
 
 // DeviceIDByToken returns the device_id for an active or revoked per-device token.
@@ -1941,10 +2004,10 @@ func (s *Store) GetUserCapabilities(userID string) (UserCapabilities, error) {
 	var cap UserCapabilities
 	var graceAt sql.NullTime
 	err := s.db.QueryRow(
-		`SELECT user_id, device_limit, retention_days, rate_limit, grace_expires_at
+		`SELECT user_id, device_limit, retention_days, rate_limit, storage_limit_mb, max_clip_size_kb, grace_expires_at
 		 FROM user_capabilities WHERE user_id = $1`,
 		userID,
-	).Scan(&cap.UserID, &cap.DeviceLimit, &cap.RetentionDays, &cap.RateLimit, &graceAt)
+	).Scan(&cap.UserID, &cap.DeviceLimit, &cap.RetentionDays, &cap.RateLimit, &cap.StorageLimitMb, &cap.MaxClipSizeKb, &graceAt)
 	if err == sql.ErrNoRows {
 		return UserCapabilities{}, nil
 	}
@@ -1964,15 +2027,17 @@ func (s *Store) UpsertUserCapabilities(cap UserCapabilities) error {
 		graceAt = cap.GraceExpiresAt.UTC()
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO user_capabilities (user_id, device_limit, retention_days, rate_limit, grace_expires_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, NOW())
+		`INSERT INTO user_capabilities (user_id, device_limit, retention_days, rate_limit, storage_limit_mb, max_clip_size_kb, grace_expires_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
 		 ON CONFLICT(user_id) DO UPDATE SET
 		   device_limit     = EXCLUDED.device_limit,
 		   retention_days   = EXCLUDED.retention_days,
 		   rate_limit       = EXCLUDED.rate_limit,
+		   storage_limit_mb = EXCLUDED.storage_limit_mb,
+		   max_clip_size_kb = EXCLUDED.max_clip_size_kb,
 		   grace_expires_at = EXCLUDED.grace_expires_at,
 		   updated_at       = EXCLUDED.updated_at`,
-		cap.UserID, cap.DeviceLimit, cap.RetentionDays, cap.RateLimit, graceAt,
+		cap.UserID, cap.DeviceLimit, cap.RetentionDays, cap.RateLimit, cap.StorageLimitMb, cap.MaxClipSizeKb, graceAt,
 	)
 	return err
 }
@@ -1985,6 +2050,16 @@ func (s *Store) CountActiveDevices(userID string) (int, error) {
 		userID,
 	).Scan(&count)
 	return count, err
+}
+
+// GetUserStorageUsage returns the total byte_size of all clips for a user.
+func (s *Store) GetUserStorageUsage(userID string) (int64, error) {
+	var total int64
+	err := s.db.QueryRow(
+		`SELECT COALESCE(SUM(byte_size), 0) FROM clips WHERE user_id = $1`,
+		userID,
+	).Scan(&total)
+	return total, err
 }
 
 // IncrementDailyRequestCount atomically increments today's request count and returns the new total.
