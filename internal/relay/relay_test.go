@@ -1343,10 +1343,12 @@ func TestUserCapabilities_UpsertAndRead(t *testing.T) {
 	}
 
 	want := relay.UserCapabilities{
-		UserID:        userID,
-		DeviceLimit:   3,
-		RetentionDays: 7,
-		RateLimit:     100,
+		UserID:         userID,
+		DeviceLimit:    3,
+		RetentionDays:  7,
+		RateLimit:      100,
+		StorageLimitMb: 50,
+		MaxClipSizeKb:  5120,
 	}
 	if err := store.UpsertUserCapabilities(want); err != nil {
 		t.Fatalf("UpsertUserCapabilities: %v", err)
@@ -1356,7 +1358,7 @@ func TestUserCapabilities_UpsertAndRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUserCapabilities: %v", err)
 	}
-	if got.DeviceLimit != 3 || got.RetentionDays != 7 || got.RateLimit != 100 {
+	if got.DeviceLimit != 3 || got.RetentionDays != 7 || got.RateLimit != 100 || got.StorageLimitMb != 50 || got.MaxClipSizeKb != 5120 {
 		t.Fatalf("unexpected capabilities: %+v", got)
 	}
 }
@@ -1795,10 +1797,12 @@ func TestInternalQuota_WritesCapabilities(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(map[string]interface{}{
-		"user_id":        userID,
-		"device_limit":   3,
-		"retention_days": 7,
-		"rate_limit":     100,
+		"user_id":          userID,
+		"device_limit":     3,
+		"retention_days":   7,
+		"rate_limit":       100,
+		"storage_limit_mb": 100,
+		"max_clip_size_kb": 10240,
 	})
 	req, _ := http.NewRequest("POST", ts.URL+"/internal/quota", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer test-secret")
@@ -1818,7 +1822,11 @@ func TestInternalQuota_WritesCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUserCapabilities: %v", err)
 	}
-	if cap.DeviceLimit != 3 || cap.RetentionDays != 7 || cap.RateLimit != 100 {
+	if cap.DeviceLimit != 3 ||
+		cap.RetentionDays != 7 ||
+		cap.RateLimit != 100 ||
+		cap.StorageLimitMb != 100 ||
+		cap.MaxClipSizeKb != 10240 {
 		t.Fatalf("unexpected capabilities: %+v", cap)
 	}
 }

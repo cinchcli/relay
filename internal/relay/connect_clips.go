@@ -95,21 +95,36 @@ func (s *connectClipsServer) PushClip(ctx context.Context, req *connect.Request[
 	}
 
 	// E2EE is mandatory for non-demo users.
-	isDemoUser, _ := s.h.store.IsDemoUser(userID)
+	isDemoUser := req.Header().Get("X-Is-Demo") == "true"
 	if !isDemoUser && !req.Msg.Encrypted {
 		return nil, connect.NewError(connect.CodeFailedPrecondition,
 			errors.New("encryption_required: server requires end-to-end encrypted clips"))
 	}
 
-	// Rate limit check — applies to all non-demo users.
+	// Rate limit and storage limit check — applies to all non-demo users.
 	// Fail open on DB errors so a transient blip does not block all pushes.
 	if !isDemoUser {
 		cap, capErr := s.h.store.GetUserCapabilities(userID)
-		if capErr == nil && cap.RateLimit > 0 {
-			count, cntErr := s.h.store.IncrementDailyRequestCount(userID)
-			if cntErr == nil && count > cap.RateLimit {
-				return nil, connect.NewError(connect.CodeResourceExhausted,
-					fmt.Errorf("rate_limit_exceeded: daily push limit of %d reached", cap.RateLimit))
+		if capErr == nil {
+			if cap.RateLimit > 0 {
+				count, cntErr := s.h.store.IncrementDailyRequestCount(userID)
+				if cntErr == nil && count > cap.RateLimit {
+					return nil, connect.NewError(connect.CodeResourceExhausted,
+						fmt.Errorf("rate_limit_exceeded: daily push limit of %d reached", cap.RateLimit))
+				}
+			}
+			if cap.MaxClipSizeKb > 0 {
+				if req.Msg.ByteSize > int64(cap.MaxClipSizeKb)*1024 {
+					return nil, connect.NewError(connect.CodeInvalidArgument,
+						fmt.Errorf("clip_too_large: maximum allowed size is %d KB", cap.MaxClipSizeKb))
+				}
+			}
+			if cap.StorageLimitMb > 0 {
+				used, usedErr := s.h.store.GetUserStorageUsage(userID)
+				if usedErr == nil && used+req.Msg.ByteSize > int64(cap.StorageLimitMb)*1024*1024 {
+					return nil, connect.NewError(connect.CodeResourceExhausted,
+						fmt.Errorf("storage_quota_exceeded: total storage limit of %d MB reached", cap.StorageLimitMb))
+				}
 			}
 		}
 	}

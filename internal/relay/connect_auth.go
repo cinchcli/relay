@@ -48,19 +48,29 @@ func (h *Handler) requireConnectAuthHeaders(headers http.Header) error {
 		return connect.NewError(connect.CodeUnauthenticated, errMsg("no auth token provided"))
 	}
 
-	deviceID, revoked, derr := h.store.DeviceIDByToken(token)
-	if derr != nil {
-		return connect.NewError(connect.CodeUnauthenticated, errMsg("invalid or expired token"))
-	}
-	if revoked {
-		return connect.NewError(connect.CodePermissionDenied, errMsg("device revoked"))
-	}
-	userID, err := h.store.DeviceOwner(deviceID)
+	ctx, err := h.store.GetAuthContext(token)
 	if err != nil {
+		if err == sql.ErrNoRows {
+			return connect.NewError(connect.CodeUnauthenticated, errMsg("invalid or expired token"))
+		}
+		if err.Error() == "device_revoked" {
+			return connect.NewError(connect.CodePermissionDenied, errMsg("device revoked"))
+		}
+		if err.Error() == "demo_expired" {
+			return connect.NewError(connect.CodeUnauthenticated, errMsg("demo session expired"))
+		}
+		slog.Error("GetAuthContext error", "err", err)
 		return connect.NewError(connect.CodeUnauthenticated, errMsg("invalid token"))
 	}
-	headers.Set("X-Device-ID", deviceID)
-	headers.Set("X-User-ID", userID)
+
+	headers.Set("X-Device-ID", ctx.DeviceID)
+	headers.Set("X-User-ID", ctx.UserID)
+	if ctx.IsAdmin {
+		headers.Set("X-Is-Admin", "true")
+	}
+	if ctx.IsDemo {
+		headers.Set("X-Is-Demo", "true")
+	}
 	return nil
 }
 

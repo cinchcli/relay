@@ -183,12 +183,11 @@ func (h *Handler) SetMediaStore(s media.Store) { h.media = s }
 func (h *Handler) SetInternalServiceSecret(s string) { h.internalServiceSecret = s }
 
 // RequireAdmin wraps RequireAuth and additionally checks that the
-// authenticated user has is_admin = TRUE. Returns 403 admin_required otherwise.
+// authenticated user has is_admin = TRUE.
 func (h *Handler) RequireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return h.RequireAuth(func(w http.ResponseWriter, r *http.Request) {
-		uid := r.Header.Get("X-User-ID") // set by RequireAuth
-		admin, err := h.store.IsUserAdmin(uid)
-		if err != nil || !admin {
+		isAdmin := r.Header.Get("X-Is-Admin") == "true"
+		if !isAdmin {
 			writeError(w, http.StatusForbidden, "admin_required",
 				"This endpoint requires an admin account.", "")
 			return
@@ -208,41 +207,33 @@ func (h *Handler) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		deviceID, revoked, derr := h.store.DeviceIDByToken(token)
-		if derr != nil {
-			if derr != sql.ErrNoRows {
-				slog.Error("DeviceIDByToken error", "err", derr)
-			}
-			writeError(w, http.StatusUnauthorized, "invalid token", "Token is invalid or expired", "Run: cinch auth login")
-			return
-		}
-		if revoked {
-			writeError(w, http.StatusUnauthorized, "device_revoked",
-				"This device was revoked", "Run: cinch auth login")
-			return
-		}
-		userID, err := h.store.DeviceOwner(deviceID)
+		ctx, err := h.store.GetAuthContext(token)
 		if err != nil {
-			writeError(w, http.StatusUnauthorized, "invalid token", "Token is invalid or expired", "Run: cinch auth login")
-			return
-		}
-
-		// Demo TTL gate: demo sessions are bounded to 10 minutes; reject
-		// stale device tokens with a distinct error so the landing page
-		// can prompt the visitor to refresh for a fresh session.
-		var isDemo bool
-		var createdAt time.Time
-		if err := h.store.db.QueryRow(
-			"SELECT is_demo, created_at FROM users WHERE id = $1", userID,
-		).Scan(&isDemo, &createdAt); err == nil && isDemo {
-			if time.Since(createdAt) > demoTTL {
+			if err == sql.ErrNoRows {
+				writeError(w, http.StatusUnauthorized, "invalid token", "Token is invalid or expired", "Run: cinch auth login")
+				return
+			}
+			if err.Error() == "device_revoked" {
+				writeError(w, http.StatusUnauthorized, "device_revoked", "This device was revoked", "Run: cinch auth login")
+				return
+			}
+			if err.Error() == "demo_expired" {
 				writeError(w, http.StatusUnauthorized, "demo expired", "Demo session expired", "Refresh the page for a new session")
 				return
 			}
+			slog.Error("GetAuthContext error", "err", err)
+			writeError(w, http.StatusUnauthorized, "invalid token", "Token is invalid or expired", "Run: cinch auth login")
+			return
 		}
 
-		r.Header.Set("X-Device-ID", deviceID)
-		r.Header.Set("X-User-ID", userID)
+		r.Header.Set("X-Device-ID", ctx.DeviceID)
+		r.Header.Set("X-User-ID", ctx.UserID)
+		if ctx.IsAdmin {
+			r.Header.Set("X-Is-Admin", "true")
+		}
+		if ctx.IsDemo {
+			r.Header.Set("X-Is-Demo", "true")
+		}
 		next(w, r)
 	}
 }
@@ -521,7 +512,7 @@ func (h *Handler) PushClip(w http.ResponseWriter, r *http.Request) {
 	// E2EE is mandatory for non-demo users. Demo identities are server-side
 	// ephemeral with no client-side key exchange; demo data is intentionally
 	// public, capped at 1024 bytes, and TTL'd.
-	isDemoUser, _ := h.store.IsDemoUser(userID)
+	isDemoUser := r.Header.Get("X-Is-Demo") == "true"
 	if !isDemoUser && !req.Encrypted {
 		writeError(w, http.StatusUnprocessableEntity, "encryption_required",
 			"Server requires end-to-end encrypted clips. Plaintext push was rejected.",
@@ -529,17 +520,35 @@ func (h *Handler) PushClip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Rate limit check — applies to all non-demo users.
+	// Rate limit and storage limit check — applies to all non-demo users.
 	// Fail open on DB errors so a transient blip does not block all pushes.
 	if !isDemoUser {
 		cap, capErr := h.store.GetUserCapabilities(userID)
-		if capErr == nil && cap.RateLimit > 0 {
-			count, cntErr := h.store.IncrementDailyRequestCount(userID)
-			if cntErr == nil && count > cap.RateLimit {
-				writeError(w, http.StatusTooManyRequests, "rate_limit_exceeded",
-					fmt.Sprintf("Daily push limit of %d reached", cap.RateLimit),
-					"Upgrade your plan or wait until midnight UTC to reset")
-				return
+		if capErr == nil {
+			if cap.RateLimit > 0 {
+				count, cntErr := h.store.IncrementDailyRequestCount(userID)
+				if cntErr == nil && count > cap.RateLimit {
+					writeError(w, http.StatusTooManyRequests, "rate_limit_exceeded",
+						fmt.Sprintf("Daily push limit of %d reached", cap.RateLimit),
+						"Wait until midnight UTC to reset, self-host, or contact support if you need a private relay.")
+					return
+				}
+			}
+			if cap.MaxClipSizeKb > 0 {
+				if int64(len(req.Content)) > int64(cap.MaxClipSizeKb)*1024 {
+					writeError(w, http.StatusBadRequest, "clip_too_large",
+						fmt.Sprintf("Maximum allowed size is %d KB", cap.MaxClipSizeKb), "")
+					return
+				}
+			}
+			if cap.StorageLimitMb > 0 {
+				used, usedErr := h.store.GetUserStorageUsage(userID)
+				if usedErr == nil && used+int64(len(req.Content)) > int64(cap.StorageLimitMb)*1024*1024 {
+					writeError(w, http.StatusTooManyRequests, "storage_quota_exceeded",
+						fmt.Sprintf("Total storage limit of %d MB reached", cap.StorageLimitMb),
+						"Delete old clips, self-host the relay, or contact support if you need a private relay.")
+					return
+				}
 			}
 		}
 	}
@@ -1008,6 +1017,27 @@ func (h *Handler) PushBinaryClip(w http.ResponseWriter, r *http.Request) {
 	if !strings.HasPrefix(contentType, "image/") {
 		writeError(w, http.StatusBadRequest, "invalid type", "Only image files are supported", "")
 		return
+	}
+
+	// Rate limit and storage limit check.
+	cap, capErr := h.store.GetUserCapabilities(userID)
+	if capErr == nil {
+		if cap.MaxClipSizeKb > 0 {
+			if header.Size > int64(cap.MaxClipSizeKb)*1024 {
+				writeError(w, http.StatusBadRequest, "clip_too_large",
+					fmt.Sprintf("Maximum allowed size is %d KB", cap.MaxClipSizeKb), "")
+				return
+			}
+		}
+		if cap.StorageLimitMb > 0 {
+			used, usedErr := h.store.GetUserStorageUsage(userID)
+			if usedErr == nil && used+header.Size > int64(cap.StorageLimitMb)*1024*1024 {
+				writeError(w, http.StatusTooManyRequests, "storage_quota_exceeded",
+					fmt.Sprintf("Total storage limit of %d MB reached", cap.StorageLimitMb),
+					"Delete old clips, self-host the relay, or contact support if you need a private relay.")
+				return
+			}
+		}
 	}
 
 	exts, _ := mime.ExtensionsByType(contentType)
@@ -1795,6 +1825,8 @@ func (h *Handler) UpdateUserQuota(w http.ResponseWriter, r *http.Request) {
 		DeviceLimit    int     `json:"device_limit"`
 		RetentionDays  int     `json:"retention_days"`
 		RateLimit      int     `json:"rate_limit"`
+		StorageLimitMb int     `json:"storage_limit_mb"`
+		MaxClipSizeKb  int     `json:"max_clip_size_kb"`
 		GraceExpiresAt *string `json:"grace_expires_at"` // RFC 3339, optional
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
@@ -1806,16 +1838,18 @@ func (h *Handler) UpdateUserQuota(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "missing_user_id", "user_id is required", "")
 		return
 	}
-	if req.DeviceLimit < 0 || req.RetentionDays < 0 || req.RateLimit < 0 {
+	if req.DeviceLimit < 0 || req.RetentionDays < 0 || req.RateLimit < 0 || req.StorageLimitMb < 0 || req.MaxClipSizeKb < 0 {
 		writeError(w, http.StatusBadRequest, "invalid_limits", "Limits must be non-negative", "")
 		return
 	}
 
 	cap := UserCapabilities{
-		UserID:        req.UserID,
-		DeviceLimit:   req.DeviceLimit,
-		RetentionDays: req.RetentionDays,
-		RateLimit:     req.RateLimit,
+		UserID:         req.UserID,
+		DeviceLimit:    req.DeviceLimit,
+		RetentionDays:  req.RetentionDays,
+		RateLimit:      req.RateLimit,
+		StorageLimitMb: req.StorageLimitMb,
+		MaxClipSizeKb:  req.MaxClipSizeKb,
 	}
 	if req.GraceExpiresAt != nil && *req.GraceExpiresAt != "" {
 		t, err := time.Parse(time.RFC3339, *req.GraceExpiresAt)

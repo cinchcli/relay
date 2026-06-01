@@ -105,6 +105,34 @@ func TestGetMe_NoCapsRow_IsFree(t *testing.T) {
 	}
 }
 
+// TestGetMe_NonPreviewCapsAreCustom verifies that explicit caps beyond the
+// public hosted preview shape do not leak a self-serve paid plan name.
+func TestGetMe_NonPreviewCapsAreCustom(t *testing.T) {
+	server, store := newConnectMeServerForTest(t)
+
+	const userID = "user-getme-custom"
+	if err := store.CreateUser(userID); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := store.UpsertUserCapabilities(UserCapabilities{
+		UserID:         userID,
+		DeviceLimit:    10,
+		RetentionDays:  90,
+		StorageLimitMb: 1024,
+		MaxClipSizeKb:  20480,
+	}); err != nil {
+		t.Fatalf("UpsertUserCapabilities: %v", err)
+	}
+
+	resp, err := callGetMe(t, server, userID)
+	if err != nil {
+		t.Fatalf("GetMe: %v", err)
+	}
+	if resp.PlanName != "custom" {
+		t.Errorf("plan_name = %q, want %q", resp.PlanName, "custom")
+	}
+}
+
 // TestGetMe_Unauthenticated verifies the defensive empty-X-User-ID branch:
 // even if the auth interceptor is bypassed (or misconfigured), the handler
 // itself must fail closed with CodeUnauthenticated.
