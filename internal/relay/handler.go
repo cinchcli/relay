@@ -1,5 +1,5 @@
 // Package relay implements the cinch relay server: HTTP handlers, WebSocket
-// hub, and SQLite-backed clip storage.
+// hub, and Postgres-backed clip storage.
 package relay
 
 import (
