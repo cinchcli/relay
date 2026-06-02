@@ -117,6 +117,9 @@ func runServer() {
 	hub := relay.NewHub()
 	go hub.Run()
 
+	// Evict expired WebSocket auth tickets so unconsumed tickets don't leak.
+	relay.StartWSTicketReaper(context.Background())
+
 	handler := relay.NewHandler(store, hub)
 	handler.SetMediaStore(mediaStore)
 

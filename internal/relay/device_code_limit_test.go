@@ -38,25 +38,25 @@ func TestDeviceCodeComplete_DeviceLimitExceeded_ReturnsResourceExhausted(t *test
 	}
 
 	// Approve flow: a remote device asks to log in (device code), then an
-	// already-signed-in device provisions a fresh device row and calls
-	// CompleteDeviceCode to attach it. The cap should reject the second one.
+	// already-signed-in device calls CompleteDeviceCode to provision and attach
+	// a fresh device row. The cap should reject the second device.
+	//
+	// Identity now comes from the authenticated caller (X-User-ID header, set
+	// in production by the auth interceptor), not from the request body — the
+	// server mints the new device's id and token itself. The request's
+	// UserId/DeviceId/Token are deliberately left unset to prove they are
+	// ignored.
 	startResp, _, err := store.CreateDeviceCode("host-2", "machine-2", "", "")
 	if err != nil {
 		t.Fatalf("CreateDeviceCode: %v", err)
 	}
-	newDeviceID, newToken, err := store.CreateDeviceForUser(userID, "host-2", "machine-2")
-	if err != nil {
-		t.Fatalf("CreateDeviceForUser #2: %v", err)
-	}
 
 	server := &connectAuthServer{h: NewHandler(store, hub)}
-	_, err = server.DeviceCodeComplete(context.Background(),
-		connect.NewRequest(&cinchv1.DeviceCodeCompleteRequest{
-			UserCode: startResp.UserCode,
-			UserId:   userID,
-			DeviceId: newDeviceID,
-			Token:    newToken,
-		}))
+	req := connect.NewRequest(&cinchv1.DeviceCodeCompleteRequest{
+		UserCode: startResp.UserCode,
+	})
+	req.Header().Set("X-User-ID", userID)
+	_, err = server.DeviceCodeComplete(context.Background(), req)
 	if err == nil {
 		t.Fatalf("DeviceCodeComplete: expected device_limit_exceeded error, got nil")
 	}

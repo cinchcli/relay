@@ -14,7 +14,6 @@ import (
 
 	cinchv1 "github.com/cinchcli/relay/internal/cinchv1"
 	"github.com/cinchcli/relay/internal/cinchv1/cinchv1connect"
-	"github.com/cinchcli/relay/internal/protocol"
 )
 
 // extractRequesterIP returns the client IP from request headers, preferring
@@ -43,6 +42,10 @@ var _ cinchv1connect.AuthServiceHandler = (*connectAuthServer)(nil)
 // on the provided http.Header. Works for both unary (req.Header()) and streaming
 // (conn.RequestHeader()) contexts.
 func (h *Handler) requireConnectAuthHeaders(headers http.Header) error {
+	// Defense in depth: never trust inbound identity headers; they are set
+	// below only after the bearer token is verified.
+	stripClientIdentityHeaders(headers)
+
 	token := strings.TrimPrefix(headers.Get("Authorization"), "Bearer ")
 	if token == "" {
 		return connect.NewError(connect.CodeUnauthenticated, errMsg("no auth token provided"))
@@ -50,13 +53,13 @@ func (h *Handler) requireConnectAuthHeaders(headers http.Header) error {
 
 	ctx, err := h.store.GetAuthContext(token)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return connect.NewError(connect.CodeUnauthenticated, errMsg("invalid or expired token"))
 		}
-		if err.Error() == "device_revoked" {
+		if errors.Is(err, ErrDeviceRevoked) {
 			return connect.NewError(connect.CodePermissionDenied, errMsg("device revoked"))
 		}
-		if err.Error() == "demo_expired" {
+		if errors.Is(err, ErrDemoExpired) {
 			return connect.NewError(connect.CodeUnauthenticated, errMsg("demo session expired"))
 		}
 		slog.Error("GetAuthContext error", "err", err)
@@ -195,28 +198,12 @@ func (s *connectAuthServer) DeviceCodeStart(ctx context.Context, req *connect.Re
 	if req.Msg.UserHint != nil {
 		userHint = *req.Msg.UserHint
 	}
-	requesterIP := extractRequesterIP(req.Header())
-	if requesterIP != "" && !s.h.deviceCodeIPLimit.Allow(requesterIP) {
-		return nil, connect.NewError(connect.CodeResourceExhausted, errMsg("rate limit exceeded"))
-	}
-
-	resp, pendingUserID, err := s.h.store.CreateDeviceCode(hostname, machineID, userHint, requesterIP)
+	resp, err := s.h.startDeviceCode(hostname, machineID, userHint, extractRequesterIP(req.Header()))
 	if err != nil {
+		if errors.Is(err, ErrRateLimited) {
+			return nil, connect.NewError(connect.CodeResourceExhausted, errMsg("rate limit exceeded"))
+		}
 		return nil, connect.NewError(connect.CodeInternal, err)
-	}
-
-	// Per-user broadcast suppression: when the pending user has already
-	// received 5 device_code_pending frames in the last minute, drop this
-	// broadcast. The RPC still succeeds so the response does not leak
-	// whether the hint matched a real user.
-	if pendingUserID != "" && s.h.pendingLimit.Allow(pendingUserID) {
-		s.h.hub.BroadcastWSToUser(pendingUserID, &protocol.WSMessage{
-			Action:      protocol.ActionDeviceCodePending,
-			UserCode:    resp.UserCode,
-			Hostname:    hostname,
-			RequestedAt: time.Now().Unix(),
-			// SourceRegion left blank; GeoIP lookup is a future enhancement.
-		})
 	}
 
 	baseURL := s.h.BaseURL
@@ -260,15 +247,29 @@ func (s *connectAuthServer) DeviceCodePoll(ctx context.Context, req *connect.Req
 // ─── DeviceCodeComplete ──────────────────────────────────────
 
 func (s *connectAuthServer) DeviceCodeComplete(ctx context.Context, req *connect.Request[cinchv1.DeviceCodeCompleteRequest]) (*connect.Response[cinchv1.DeviceCodeCompleteResponse], error) {
+	// Identity comes from the verified bearer token (set by the auth
+	// interceptor), NOT from req.Msg.UserId/DeviceId/Token — those client-
+	// supplied fields are ignored. The new device's credentials are minted
+	// server-side, matching the HTTP twin. This closes the divergence where the
+	// Connect path trusted the caller to name the account and device it was
+	// completing for.
+	approverUserID := req.Header().Get("X-User-ID")
+	if approverUserID == "" {
+		return nil, connect.NewError(connect.CodeUnauthenticated, errMsg("auth required"))
+	}
 	if req.Msg.UserCode == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errMsg("user_code is required"))
 	}
 
-	if err := s.h.store.CompleteDeviceCode(req.Msg.UserCode, req.Msg.UserId, req.Msg.DeviceId, req.Msg.Token); err != nil {
-		if strings.Contains(err.Error(), "device_limit_exceeded") {
+	if err := s.h.completeDeviceCodeForCaller(approverUserID, req.Msg.UserCode); err != nil {
+		switch {
+		case errors.Is(err, errDeviceProvisionFailed):
+			return nil, connect.NewError(connect.CodeInternal, err)
+		case errors.Is(err, ErrDeviceLimitExceeded):
 			return nil, connect.NewError(connect.CodeResourceExhausted, err)
+		default:
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
 	return connect.NewResponse(&cinchv1.DeviceCodeCompleteResponse{
@@ -306,7 +307,14 @@ func (s *connectAuthServer) RevokeDevice(ctx context.Context, req *connect.Reque
 	}
 
 	ownerID, err := s.h.store.DeviceOwner(req.Msg.DeviceId)
-	if err != nil || ownerID != callerUserID {
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		// Fail closed on a DB fault, matching the HTTP twin: never fold a
+		// transient error into "not found", which could mask a real failure
+		// or let a cross-user revoke slip through under a different ordering.
+		return nil, connect.NewError(connect.CodeInternal, errMsg("revoke failed"))
+	}
+	if errors.Is(err, sql.ErrNoRows) || ownerID != callerUserID {
+		// Treat unknown and cross-user devices alike — no existence oracle.
 		return nil, connect.NewError(connect.CodeNotFound, errMsg("device not found"))
 	}
 
