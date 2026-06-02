@@ -1,0 +1,5 @@
+{
+  "status": 200,
+  "content_type": "application/json",
+  "body": "{\n  \"expires_at\": \"\u003cTS\u003e\",\n  \"max_bytes\": 1024,\n  \"max_clips\": 5,\n  \"region\": \"us-east\",\n  \"relay_url\": \"http://\u003cHOST\u003e\",\n  \"token\": \"\u003cHEX\u003e\",\n  \"ws_url\": \"ws://\u003cHOST\u003e/ws\"\n}"
+}

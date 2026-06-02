@@ -1,0 +1,5 @@
+{
+  "status": 400,
+  "content_type": "application/json",
+  "body": "{\n  \"error\": \"missing_code\",\n  \"message\": \"code query parameter is required\"\n}"
+}

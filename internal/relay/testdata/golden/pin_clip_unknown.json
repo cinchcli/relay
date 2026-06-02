@@ -1,0 +1,5 @@
+{
+  "status": 404,
+  "content_type": "application/json",
+  "body": "{\n  \"error\": \"clip_not_found\",\n  \"message\": \"Clip not found\"\n}"
+}

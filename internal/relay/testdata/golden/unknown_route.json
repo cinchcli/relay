@@ -1,0 +1,5 @@
+{
+  "status": 404,
+  "content_type": "application/json",
+  "body": "{\n  \"error\": \"not_found\",\n  \"message\": \"Endpoint not found\"\n}"
+}

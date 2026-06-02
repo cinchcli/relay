@@ -1,0 +1,5 @@
+{
+  "status": 200,
+  "content_type": "application/json",
+  "body": "{\n  \"device_code\": \"\u003cHEX\u003e\",\n  \"expires_in\": \u003cNUM\u003e,\n  \"interval\": \u003cNUM\u003e,\n  \"interval_ms\": \u003cNUM\u003e,\n  \"user_code\": \"\u003cCODE\u003e\",\n  \"verification_uri\": \"http://\u003cHOST\u003e/auth/browser?device_code=\u003cCODE\u003e\"\n}"
+}

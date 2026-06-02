@@ -1,0 +1,5 @@
+{
+  "status": 401,
+  "content_type": "application/json",
+  "body": "{\n  \"error\": \"not authenticated\",\n  \"fix\": \"Run: cinch auth login\",\n  \"message\": \"No auth token provided\"\n}"
+}

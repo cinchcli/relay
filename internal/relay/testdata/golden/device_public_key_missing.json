@@ -1,0 +1,5 @@
+{
+  "status": 400,
+  "content_type": "application/json",
+  "body": "{\n  \"error\": \"missing fields\",\n  \"message\": \"public_key and fingerprint are required\"\n}"
+}

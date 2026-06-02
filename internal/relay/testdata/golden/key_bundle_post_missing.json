@@ -1,0 +1,5 @@
+{
+  "status": 400,
+  "content_type": "application/json",
+  "body": "{\n  \"error\": \"missing fields\",\n  \"message\": \"device_id, ephemeral_public_key, encrypted_bundle are required\"\n}"
+}
