@@ -69,36 +69,32 @@ func runServer() {
 	fs.StringVar(&portFlag, "p", "", "short alias for --port")
 	_ = fs.Parse(os.Args[1:])
 
-	port := portFlag
-	if port == "" {
-		port = os.Getenv("PORT")
+	// All environment is parsed once, here, into a typed Config.
+	cfg := relay.LoadConfig()
+	if portFlag != "" {
+		cfg.Port = portFlag // --port/-p overrides PORT env
 	}
-	if port == "" {
-		port = "8080"
-	}
-
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
+	if cfg.DatabaseURL == "" {
 		slog.Error("DATABASE_URL is required")
 		os.Exit(1)
 	}
 
-	store, err := relay.NewStore(dsn)
+	store, err := relay.NewStore(cfg.DatabaseURL)
 	if err != nil {
 		slog.Error("failed to open database", "err", err)
 		os.Exit(1)
 	}
 	defer store.Close()
 
-	if code := os.Getenv("RELAY_BOOTSTRAP_INVITE_CODE"); code != "" {
-		if err := relay.ApplyBootstrapInvite(store, code, os.Stderr); err != nil {
+	if cfg.BootstrapInviteCode != "" {
+		if err := relay.ApplyBootstrapInvite(store, cfg.BootstrapInviteCode, os.Stderr); err != nil {
 			slog.Error("bootstrap invite failed", "err", err)
 			os.Exit(1)
 		}
 	}
 
-	// Build media backend from env (MEDIA_BACKEND=local|s3; see README.md).
-	mediaStore, err := media.NewStore()
+	// Build media backend from the parsed config (MEDIA_BACKEND=local|s3).
+	mediaStore, err := media.NewStoreFromConfig(cfg.Media)
 	if err != nil {
 		slog.Error("failed to init media backend", "err", err)
 		os.Exit(1)
@@ -122,40 +118,28 @@ func runServer() {
 
 	handler := relay.NewHandler(store, hub)
 	handler.SetMediaStore(mediaStore)
-
-	// BASE_URL is the public HTTPS root (e.g. https://api.cinchcli.com).
-	handler.BaseURL = os.Getenv("BASE_URL")
-
-	// CORS_ORIGINS: comma-separated extra allowed origins for self-hosters.
-	if corsEnv := os.Getenv("CORS_ORIGINS"); corsEnv != "" {
-		for _, o := range strings.Split(corsEnv, ",") {
-			if trimmed := strings.TrimSpace(o); trimmed != "" {
-				handler.CORSOrigins = append(handler.CORSOrigins, trimmed)
-			}
-		}
-	}
+	handler.BaseURL = cfg.BaseURL
+	handler.CORSOrigins = cfg.CORSOrigins
 
 	// OAuth providers — relay works without these (self-host username form fallback).
 	handler.OAuth = relay.NewOAuthProviders(
-		handler.BaseURL,
-		os.Getenv("GITHUB_CLIENT_ID"),
-		os.Getenv("GITHUB_CLIENT_SECRET"),
-		os.Getenv("GOOGLE_CLIENT_ID"),
-		os.Getenv("GOOGLE_CLIENT_SECRET"),
+		cfg.BaseURL,
+		cfg.GitHubClientID,
+		cfg.GitHubClientSecret,
+		cfg.GoogleClientID,
+		cfg.GoogleClientSecret,
 	)
 
-	// Telemetry proxy — silently disabled when env vars are absent.
-	handler.TelemetryURL = strings.TrimRight(os.Getenv("TELEMETRY_URL"), "/")
-	handler.TelemetryAPIKey = os.Getenv("TELEMETRY_API_KEY")
-	handler.SetInternalServiceSecret(os.Getenv("INTERNAL_SERVICE_SECRET"))
+	// Telemetry proxy — silently disabled when config is absent.
+	handler.TelemetryURL = cfg.TelemetryURL
+	handler.TelemetryAPIKey = cfg.TelemetryAPIKey
+	handler.SetInternalServiceSecret(cfg.InternalServiceSecret)
 
-	// Self-host carve-out: when CINCH_PLAN_ENFORCEMENT_DISABLED is "1"
-	// or "true" (case-insensitive), skip hosted-plan enforcement checks
-	// (device limit on CompleteDeviceCode, plan-derived retention clamp
-	// on UpdateDeviceRetention). Operators of self-hosted relays pay
-	// for their own Postgres + storage, so we don't gate them. Hosted
-	// cinchcli.com leaves this unset.
-	if v := os.Getenv("CINCH_PLAN_ENFORCEMENT_DISABLED"); v == "1" || strings.EqualFold(v, "true") {
+	// Self-host carve-out: skip hosted-plan enforcement checks (device limit on
+	// CompleteDeviceCode, plan-derived retention clamp on UpdateDeviceRetention)
+	// when CINCH_PLAN_ENFORCEMENT_DISABLED is set. Hosted cinchcli.com leaves it
+	// unset; self-hosters pay for their own Postgres + storage.
+	if cfg.PlanEnforcementDisabled {
 		store.EnforcementDisabled = true
 		slog.Warn("plan enforcement disabled via CINCH_PLAN_ENFORCEMENT_DISABLED — self-host mode")
 	}
@@ -163,11 +147,11 @@ func runServer() {
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux)
 
-	logStartupStatus(mediaStore, handler.OAuth)
+	logStartupStatus(mediaStore, handler.OAuth, cfg.Media.BackendName())
 
-	slog.Info("relay listening", "version", version, "port", port)
+	slog.Info("relay listening", "version", version, "port", cfg.Port)
 	srv := &http.Server{
-		Addr:    ":" + port,
+		Addr:    ":" + cfg.Port,
 		Handler: mux,
 		// Cap header-read time to defend against slowloris-style attacks
 		// without affecting hijacked WebSocket connections (/ws) or
@@ -188,15 +172,15 @@ func runServer() {
 // at a glance that the relay came up with the expected integrations wired.
 // DB connectivity is implicit: NewStore() above already Pings and exits on
 // failure, so reaching this point means the database is reachable.
-func logStartupStatus(mediaStore media.Store, oauth *relay.OAuthProviders) {
+func logStartupStatus(mediaStore media.Store, oauth *relay.OAuthProviders, backend string) {
 	slog.Info("startup database ok")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := mediaStore.HealthCheck(ctx); err != nil {
-		slog.Error("startup media healthcheck failed", "backend", mediaBackendName(), "err", err)
+		slog.Error("startup media healthcheck failed", "backend", backend, "err", err)
 	} else {
-		slog.Info("startup media ok", "backend", mediaBackendName())
+		slog.Info("startup media ok", "backend", backend)
 	}
 
 	if oauth != nil && oauth.GitHub != nil {
@@ -209,14 +193,6 @@ func logStartupStatus(mediaStore media.Store, oauth *relay.OAuthProviders) {
 	} else {
 		slog.Info("startup oauth google not configured")
 	}
-}
-
-func mediaBackendName() string {
-	b := os.Getenv("MEDIA_BACKEND")
-	if b == "" {
-		return "local"
-	}
-	return b
 }
 
 func runRetentionSweep(store *relay.Store, ms media.Store) {
