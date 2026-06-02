@@ -3,10 +3,9 @@
 package relay
 
 import (
-	"crypto/rand"
+	"context"
 	"crypto/subtle"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -106,11 +105,7 @@ var (
 // issueWsTicket mints a 30-second single-use ticket for WebSocket auth.
 // The ticket is a 16-byte random value encoded as a 32-char hex string.
 func issueWsTicket(userID, deviceID string) string {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		panic(err)
-	}
-	ticket := hex.EncodeToString(b)
+	ticket := randomHex(16)
 	wsTicketsMu.Lock()
 	wsTickets[ticket] = wsTicket{
 		userID:    userID,
@@ -134,6 +129,39 @@ func consumeWsTicket(ticket string) (userID, deviceID string, ok bool) {
 	}
 	delete(wsTickets, ticket) // single-use: remove immediately
 	return t.userID, t.deviceID, true
+}
+
+// reapExpiredWsTickets deletes all tickets whose deadline has passed.
+// Tickets are normally removed on consumption, but a ticket that is issued
+// and never consumed (network failure, abuse) would otherwise leak forever —
+// this sweep bounds wsTickets to roughly one reap interval of unconsumed
+// tickets.
+func reapExpiredWsTickets(now time.Time) {
+	wsTicketsMu.Lock()
+	defer wsTicketsMu.Unlock()
+	for ticket, t := range wsTickets {
+		if now.After(t.expiresAt) {
+			delete(wsTickets, ticket)
+		}
+	}
+}
+
+// StartWSTicketReaper runs a background sweep that evicts expired WebSocket
+// auth tickets every minute until ctx is cancelled. Mirrors hub.Run()'s
+// ticker pattern. Call once at server init.
+func StartWSTicketReaper(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(1 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-ticker.C:
+				reapExpiredWsTickets(now)
+			}
+		}
+	}()
 }
 
 type Handler struct {
@@ -196,11 +224,31 @@ func (h *Handler) RequireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	})
 }
 
+// identityHeaders are the trusted identity headers the server derives from a
+// verified bearer token. They must never be honored from inbound requests — a
+// client that sets X-User-ID/X-Is-Admin itself must not be able to impersonate
+// another user or escalate to admin — so stripClientIdentityHeaders clears them
+// before auth populates the authentic values.
+var identityHeaders = []string{"X-User-ID", "X-Device-ID", "X-Is-Admin", "X-Is-Demo"}
+
+// stripClientIdentityHeaders removes any client-supplied identity headers so
+// only the server-set values (post token verification) are ever observed by
+// downstream handlers.
+func stripClientIdentityHeaders(h http.Header) {
+	for _, k := range identityHeaders {
+		h.Del(k)
+	}
+}
+
 // RequireAuth wraps a handler with token authentication.
 // After the OAuth-only migration every active token lives on devices.token;
 // the legacy master-token (users.token) lookup has been removed.
 func (h *Handler) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Defense in depth: never trust inbound identity headers; the server
+		// sets them below only after verifying the bearer token.
+		stripClientIdentityHeaders(r.Header)
+
 		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if token == "" {
 			writeError(w, http.StatusUnauthorized, "not authenticated", "No auth token provided", "Run: cinch auth login")
@@ -209,15 +257,15 @@ func (h *Handler) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 
 		ctx, err := h.store.GetAuthContext(token)
 		if err != nil {
-			if err == sql.ErrNoRows {
+			if errors.Is(err, sql.ErrNoRows) {
 				writeError(w, http.StatusUnauthorized, "invalid token", "Token is invalid or expired", "Run: cinch auth login")
 				return
 			}
-			if err.Error() == "device_revoked" {
+			if errors.Is(err, ErrDeviceRevoked) {
 				writeError(w, http.StatusUnauthorized, "device_revoked", "This device was revoked", "Run: cinch auth login")
 				return
 			}
-			if err.Error() == "demo_expired" {
+			if errors.Is(err, ErrDemoExpired) {
 				writeError(w, http.StatusUnauthorized, "demo expired", "Demo session expired", "Refresh the page for a new session")
 				return
 			}
@@ -670,7 +718,7 @@ func (h *Handler) DeleteClip(w http.ResponseWriter, r *http.Request) {
 
 	mediaPath, err := h.store.DeleteClipReturningMedia(userID, clipID)
 	if err != nil {
-		if err.Error() == "clip not found" {
+		if errors.Is(err, ErrClipNotFound) {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
@@ -790,7 +838,7 @@ func (h *Handler) SetClipPin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.store.SetClipPin(userID, clipID, req.IsPinned, req.PinNote); err != nil {
-		if err.Error() == "clip not found" {
+		if errors.Is(err, ErrClipNotFound) {
 			writeError(w, http.StatusNotFound, "clip_not_found", "Clip not found", "")
 			return
 		}
@@ -844,57 +892,8 @@ func (h *Handler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 			slog.Info("ws upgrade failed", "err", err)
 			return
 		}
-		h.hub.Register(userID, deviceID, conn)
-
-		// Notify desktop of any pending key exchanges for this user.
-		go func() {
-			pending, err := h.store.ListPendingKeyExchanges(userID)
-			if err != nil {
-				slog.Error("ListPendingKeyExchanges failed", "err", err)
-				return
-			}
-			for _, d := range pending {
-				conn.WriteJSON(protocol.WSMessage{ //nolint:errcheck
-					Action:   protocol.ActionKeyExchangeRequested,
-					DeviceID: d.Id,
-					Hostname: d.Hostname,
-				})
-			}
-		}()
-
-		// Replay pending device-code approval requests for this user.
-		// Closes the UX gap where a desktop was offline at DeviceCodeStart
-		// fan-out time and would otherwise miss the prompt entirely.
-		go func() {
-			pendingCodes, err := h.store.ListPendingDeviceCodes(userID)
-			if err != nil {
-				slog.Error("ListPendingDeviceCodes failed", "err", err)
-				return
-			}
-			for _, p := range pendingCodes {
-				conn.WriteJSON(protocol.WSMessage{ //nolint:errcheck
-					Action:      protocol.ActionDeviceCodePending,
-					UserCode:    p.UserCode,
-					Hostname:    p.Hostname,
-					RequestedAt: p.RequestedAt.Unix(),
-				})
-			}
-		}()
-
-		// Read loop for agent messages.
-		go func() {
-			defer h.hub.Remove(userID, deviceID)
-			for {
-				var msg protocol.WSMessage
-				if err := conn.ReadJSON(&msg); err != nil {
-					if shouldLogWSClose(err) {
-						slog.Info("ws read error", "user", userID[:8], "err", err)
-					}
-					return
-				}
-				h.hub.HandleAgentMessage(&msg)
-			}
-		}()
+		ac := h.hub.Register(userID, deviceID, conn)
+		h.replayPendingAndStartReadLoop(ac)
 		return
 	}
 
@@ -933,10 +932,20 @@ func (h *Handler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.hub.Register(userID, deviceID, conn)
+	ac := h.hub.Register(userID, deviceID, conn)
+	h.replayPendingAndStartReadLoop(ac)
+}
 
-	// Phase 4.5: notify desktop of any pending key exchanges for this user.
-	// Handles the offline-desktop case: desktop learns about devices that paired while offline.
+// replayPendingAndStartReadLoop replays state a freshly-connected agent may
+// have missed while offline — pending key exchanges and pending device-code
+// approval prompts — then starts the read loop that feeds agent messages into
+// the hub. Shared by both the ticket and legacy-token WS upgrade paths.
+func (h *Handler) replayPendingAndStartReadLoop(ac *AgentConn) {
+	userID, conn := ac.UserID, ac.Conn
+
+	// Notify desktop of any pending key exchanges for this user. Handles the
+	// offline-desktop case: desktop learns about devices that paired while
+	// it was offline.
 	go func() {
 		pending, err := h.store.ListPendingKeyExchanges(userID)
 		if err != nil {
@@ -971,14 +980,16 @@ func (h *Handler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// Read loop for agent messages.
+	// Read loop for agent messages. Tears down exactly this connection on exit
+	// via RemoveConn, so a stale loop whose conn was already replaced by a
+	// reconnect cannot evict the live replacement.
 	go func() {
-		defer h.hub.Remove(userID, deviceID)
+		defer h.hub.RemoveConn(ac)
 		for {
 			var msg protocol.WSMessage
 			if err := conn.ReadJSON(&msg); err != nil {
 				if shouldLogWSClose(err) {
-					slog.Info("ws read error", "user", userID[:8], "err", err)
+					slog.Info("ws read error", "user", short(userID), "err", err)
 				}
 				return
 			}
@@ -1122,7 +1133,12 @@ func (h *Handler) GetClipMedia(w http.ResponseWriter, r *http.Request) {
 		ct = "application/octet-stream"
 	}
 	w.Header().Set("Content-Type", ct)
-	io.Copy(w, body)
+	// Headers are already committed, so we can't change the status on failure —
+	// log so operators can detect truncated deliveries (client disconnects,
+	// backend read errors).
+	if _, err := io.Copy(w, body); err != nil {
+		slog.Error("media stream to client failed", "media_path", mediaPath, "err", err)
+	}
 }
 
 // Helpers
@@ -1169,9 +1185,7 @@ func (h *Handler) checkLoginRateLimit(ip string) bool {
 }
 
 func generateToken() string {
-	b := make([]byte, 32)
-	rand.Read(b)
-	return hex.EncodeToString(b)
+	return randomHex(32)
 }
 
 // DemoSession mints a short-lived demo token for the landing page.
@@ -1313,13 +1327,17 @@ func (h *Handler) RevokeDevice(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ownerID, err := h.store.DeviceOwner(req.DeviceId)
-	if err == sql.ErrNoRows || ownerID != callerUserID {
-		// Treat cross-user as "not found" — no existence oracle.
-		writeError(w, http.StatusNotFound, "device_not_found", "Device not found", "")
+	if err != nil && err != sql.ErrNoRows {
+		// A transient DB error must never be folded into the not-found branch —
+		// otherwise it could mask a real failure (or, in a different ordering,
+		// let a cross-user revoke slip through). Fail closed with a 500.
+		writeInternalError(w, "revoke_failed", "revoke device", err)
 		return
 	}
-	if err != nil {
-		writeInternalError(w, "revoke_failed", "revoke device", err)
+	if err == sql.ErrNoRows || ownerID != callerUserID {
+		// Treat both unknown and cross-user devices as "not found" — no
+		// existence oracle.
+		writeError(w, http.StatusNotFound, "device_not_found", "Device not found", "")
 		return
 	}
 
@@ -1641,24 +1659,39 @@ func (h *Handler) CompleteDeviceCodeHTTP(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Fetch the requesting machine's hostname and machine_id so the new
-	// device row is labelled correctly (best-effort; falls back to "unknown").
-	hostname, machineID, _ := h.store.DeviceCodeContext(req.UserCode)
-
-	// Provision a fresh device for the incoming machine under the approving
-	// user's account.
-	newDeviceID, newToken, err := h.store.CreateDeviceForUser(approverUserID, hostname, machineID)
-	if err != nil {
-		writeInternalError(w, "device_create_failed", "create device for code", err)
-		return
-	}
-
-	// Mark the device code complete with the new machine's own credentials.
-	if err := h.store.CompleteDeviceCode(req.UserCode, approverUserID, newDeviceID, newToken); err != nil {
+	if err := h.completeDeviceCodeForCaller(approverUserID, req.UserCode); err != nil {
+		if errors.Is(err, errDeviceProvisionFailed) {
+			writeInternalError(w, "device_create_failed", "create device for code", err)
+			return
+		}
 		writeError(w, http.StatusBadRequest, "complete_failed", err.Error(), "")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "complete"})
+}
+
+// completeDeviceCodeForCaller provisions a fresh device for the machine that
+// initiated the device-code flow, under the authenticated approver's account,
+// then marks the device code complete with that new device's own credentials.
+//
+// The approver's identity (approverUserID) must come from the verified bearer
+// token — never from the request body — and the new device's id and token are
+// minted server-side, so the approving device's credentials are never shared
+// with or dictated by the requesting machine. Shared by the REST and Connect
+// completion paths.
+//
+// Returns errDeviceProvisionFailed (wrapped) if device creation fails, or the
+// CompleteDeviceCode error otherwise (which may wrap ErrDeviceLimitExceeded).
+func (h *Handler) completeDeviceCodeForCaller(approverUserID, userCode string) error {
+	// Fetch the requesting machine's hostname and machine_id so the new
+	// device row is labelled correctly (best-effort; falls back to "unknown").
+	hostname, machineID, _ := h.store.DeviceCodeContext(userCode)
+
+	newDeviceID, newToken, err := h.store.CreateDeviceForUser(approverUserID, hostname, machineID)
+	if err != nil {
+		return fmt.Errorf("%w: %v", errDeviceProvisionFailed, err)
+	}
+	return h.store.CompleteDeviceCode(userCode, approverUserID, newDeviceID, newToken)
 }
 
 // SetDisplayNameHTTP handles POST /auth/display-name.
@@ -1707,6 +1740,36 @@ func (h *Handler) IssueWsTicket(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// startDeviceCode runs the device-code-start logic shared by the REST and
+// Connect-RPC entry points: per-IP rate limiting, code creation with requester
+// attribution, and the per-pending-user rate-limited WebSocket notification.
+// Returns ErrRateLimited when the requester IP is over the limit, or the store
+// error otherwise; the caller maps these to its transport's status codes and
+// builds the verification URI.
+func (h *Handler) startDeviceCode(hostname, machineID, userHint, requesterIP string) (*cinchv1.DeviceCodeStartResponse, error) {
+	if requesterIP != "" && !h.deviceCodeIPLimit.Allow(requesterIP) {
+		return nil, ErrRateLimited
+	}
+
+	resp, pendingUserID, err := h.store.CreateDeviceCode(hostname, machineID, userHint, requesterIP)
+	if err != nil {
+		return nil, err
+	}
+
+	// Per-user broadcast suppression: drop the notification (but still succeed)
+	// when the pending user has already received the cap of pending frames this
+	// minute, so the response can't leak whether the hint matched a real user.
+	if pendingUserID != "" && h.pendingLimit.Allow(pendingUserID) {
+		h.hub.BroadcastWSToUser(pendingUserID, &protocol.WSMessage{
+			Action:      protocol.ActionDeviceCodePending,
+			UserCode:    resp.UserCode,
+			Hostname:    hostname,
+			RequestedAt: time.Now().Unix(),
+		})
+	}
+	return resp, nil
+}
+
 // IssueDeviceCode creates a new device code for CLI auth.
 // POST /auth/device-code — no auth required (this IS the auth entry point).
 func (h *Handler) IssueDeviceCode(w http.ResponseWriter, r *http.Request) {
@@ -1725,15 +1788,23 @@ func (h *Handler) IssueDeviceCode(w http.ResponseWriter, r *http.Request) {
 	if req.MachineId != nil {
 		machineID = *req.MachineId
 	}
+	userHint := ""
+	if req.UserHint != nil {
+		userHint = *req.UserHint
+	}
 
-	resp, pendingUserID, err := h.store.CreateDeviceCode(hostname, machineID, "", "")
+	resp, err := h.startDeviceCode(hostname, machineID, userHint, extractRequesterIP(r.Header))
 	if err != nil {
+		if errors.Is(err, ErrRateLimited) {
+			writeError(w, http.StatusTooManyRequests, "rate_limited",
+				"Too many device-code requests. Try again shortly.", "")
+			return
+		}
 		writeInternalError(w, "device_code_failed", "device code", err)
 		return
 	}
-	_ = pendingUserID // legacy HTTP path stays unchanged; broadcast wiring lives on the Connect-RPC route
 
-	// Build verification URI from BaseURL or derive from request
+	// Build verification URI from BaseURL or derive from request.
 	baseURL := h.BaseURL
 	if baseURL == "" {
 		baseURL = deriveRelayURL(r)
@@ -1788,7 +1859,7 @@ func (h *Handler) UpdateDeviceRetention(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if err := h.store.UpdateDeviceRetention(deviceID, req.RemoteRetentionDays); err != nil {
-		if strings.Contains(err.Error(), "between 1 and 365") {
+		if errors.Is(err, ErrRetentionOutOfRange) {
 			writeError(w, http.StatusBadRequest, "invalid_range",
 				err.Error(), "Value must be between 1 and 365")
 			return
@@ -1867,6 +1938,104 @@ func (h *Handler) UpdateUserQuota(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// middleware decorates an http.HandlerFunc. Routes list their middleware in
+// outermost-first order; applyMiddleware wraps so the first listed runs first.
+type middleware func(http.HandlerFunc) http.HandlerFunc
+
+// httpRoute is one row of the route table: a method+pattern, the handler, and
+// the middleware stack guarding it. Keeping the stack as data makes auth
+// coverage auditable at a glance — grep the table for `auth`/`admin`.
+type httpRoute struct {
+	pattern string
+	handler http.HandlerFunc
+	mw      []middleware
+}
+
+func applyMiddleware(handler http.HandlerFunc, mw []middleware) http.HandlerFunc {
+	for i := len(mw) - 1; i >= 0; i-- {
+		handler = mw[i](handler)
+	}
+	return handler
+}
+
+// httpRoutes returns the full REST route table. Middleware stacks:
+//   - {auth}        → RequireAuth (verified bearer; sets identity headers)
+//   - {admin}       → RequireAdmin (RequireAuth + is_admin check)
+//   - {cors}        → DemoCORS (landing-page CORS)
+//   - {cors, auth}  → DemoCORS(RequireAuth(...))
+//   - nil           → public (handler self-guards if needed, e.g. /internal/quota)
+func (h *Handler) httpRoutes() []httpRoute {
+	auth := []middleware{h.RequireAuth}
+	admin := []middleware{h.RequireAdmin}
+	cors := []middleware{h.DemoCORS}
+	corsAuth := []middleware{h.DemoCORS, h.RequireAuth}
+	noop := func(w http.ResponseWriter, r *http.Request) {}
+
+	return []httpRoute{
+		// Auth + device-code entry points (public).
+		{"GET /auth/browser", h.AuthBrowser, nil},
+		{"POST /auth/device-code", h.IssueDeviceCode, nil},
+		{"GET /auth/device-code/poll", h.PollDeviceCode, nil},
+		{"POST /auth/device-code/complete", h.CompleteDeviceCodeHTTP, auth},
+		{"POST /auth/device/revoke", h.RevokeDevice, auth},
+
+		// Clips.
+		{"POST /clips", h.PushClip, corsAuth},
+		{"OPTIONS /clips", noop, cors},
+		{"GET /clips", h.ListClips, auth},
+		{"DELETE /clips/{id}", h.DeleteClip, auth},
+		{"POST /clips/{id}/pin", h.SetClipPin, auth},
+		{"GET /tombstones", h.ListTombstones, auth},
+		{"GET /clips/latest", h.GetLatestClip, auth},
+		{"POST /clips/binary", h.PushBinaryClip, auth},
+		{"GET /clips/{id}/media", h.GetClipMedia, auth},
+
+		// Devices.
+		{"GET /devices", h.ListDevices, auth},
+		{"PUT /devices/{id}/nickname", h.SetDeviceNickname, auth},
+		{"PUT /devices/self/retention", h.UpdateDeviceRetention, auth},
+
+		// Account + keys.
+		{"POST /auth/display-name", h.SetDisplayNameHTTP, auth},
+		{"POST /auth/key-bundle", h.PostKeyBundle, auth},
+		{"GET /auth/key-bundle", h.GetKeyBundle, auth},
+		{"POST /auth/key-bundle/retry", h.KeyBundleRetry, auth},
+		{"POST /auth/device/public-key", h.RegisterDevicePublicKey, auth},
+
+		// WebSocket.
+		{"GET /ws", h.HandleWebSocket, nil},
+		{"POST /ws/ticket", h.IssueWsTicket, auth},
+
+		// Ops + internal (self-guarded by INTERNAL_SERVICE_SECRET).
+		{"GET /health", h.Health, nil},
+		{"POST /internal/quota", h.UpdateUserQuota, nil},
+		{"GET /internal/users", h.ListInternalUsers, nil},
+
+		// Admin (RequireAdmin wraps RequireAuth).
+		{"POST /admin/invites", h.AdminCreateInvite, admin},
+		{"GET /admin/invites", h.AdminListInvites, admin},
+		{"DELETE /admin/invites/{hash}", h.AdminRevokeInvite, admin},
+		{"GET /admin/users", h.AdminListUsers, admin},
+		{"DELETE /admin/users/{id}", h.AdminDeleteUser, admin},
+
+		// Demo (CORS-enabled for the landing page).
+		{"POST /demo/session", h.DemoSession, cors},
+		{"OPTIONS /demo/session", noop, cors},
+		{"GET /demo/stats", h.DemoStats, cors},
+		{"OPTIONS /demo/stats", noop, cors},
+
+		// OAuth (no-op when OAuth not configured).
+		{"GET /auth/providers", h.GetProviders, nil},
+		{"GET /auth/oauth/github/start", h.OAuthStart("github"), nil},
+		{"GET /auth/oauth/github/callback", h.OAuthCallback("github"), nil},
+		{"GET /auth/oauth/google/start", h.OAuthStart("google"), nil},
+		{"GET /auth/oauth/google/callback", h.OAuthCallback("google"), nil},
+
+		// Anonymous opt-in telemetry (always 200; dropped if backend unset).
+		{"POST /telemetry", h.HandleTelemetry, nil},
+	}
+}
+
 // RegisterRoutes registers all relay HTTP routes on the given mux.
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// Only register the legacy auth/login endpoint when no OAuth providers are
@@ -1875,56 +2044,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	if h.OAuth == nil || (h.OAuth.GitHub == nil && h.OAuth.Google == nil) {
 		mux.HandleFunc("POST /auth/login", h.AuthLogin)
 	}
-	mux.HandleFunc("GET /auth/browser", h.AuthBrowser)
-	mux.HandleFunc("POST /auth/device-code", h.IssueDeviceCode)
-	mux.HandleFunc("GET /auth/device-code/poll", h.PollDeviceCode)
-	mux.HandleFunc("POST /auth/device-code/complete", h.RequireAuth(h.CompleteDeviceCodeHTTP))
-	mux.HandleFunc("POST /auth/device/revoke", h.RequireAuth(h.RevokeDevice))
-	mux.HandleFunc("POST /clips", h.DemoCORS(h.RequireAuth(h.PushClip)))
-	mux.HandleFunc("OPTIONS /clips", h.DemoCORS(func(w http.ResponseWriter, r *http.Request) {}))
-	mux.HandleFunc("GET /clips", h.RequireAuth(h.ListClips))
-	mux.HandleFunc("DELETE /clips/{id}", h.RequireAuth(h.DeleteClip))
-	mux.HandleFunc("POST /clips/{id}/pin", h.RequireAuth(h.SetClipPin))
-	mux.HandleFunc("GET /tombstones", h.RequireAuth(h.ListTombstones))
-	mux.HandleFunc("GET /clips/latest", h.RequireAuth(h.GetLatestClip))
-	mux.HandleFunc("GET /devices", h.RequireAuth(h.ListDevices))
-	mux.HandleFunc("PUT /devices/{id}/nickname", h.RequireAuth(h.SetDeviceNickname))
-	mux.HandleFunc("PUT /devices/self/retention", h.RequireAuth(h.UpdateDeviceRetention))
-	mux.HandleFunc("POST /auth/display-name", h.RequireAuth(h.SetDisplayNameHTTP))
-	mux.HandleFunc("POST /auth/key-bundle", h.RequireAuth(h.PostKeyBundle))
-	mux.HandleFunc("GET /auth/key-bundle", h.RequireAuth(h.GetKeyBundle))
-	mux.HandleFunc("POST /auth/key-bundle/retry", h.RequireAuth(h.KeyBundleRetry))
-	mux.HandleFunc("POST /auth/device/public-key", h.RequireAuth(h.RegisterDevicePublicKey))
-	mux.HandleFunc("POST /clips/binary", h.RequireAuth(h.PushBinaryClip))
-	mux.HandleFunc("GET /clips/{id}/media", h.RequireAuth(h.GetClipMedia))
-	mux.HandleFunc("GET /ws", h.HandleWebSocket)
-	mux.HandleFunc("POST /ws/ticket", h.RequireAuth(h.IssueWsTicket))
-	mux.HandleFunc("GET /health", h.Health)
-	mux.HandleFunc("POST /internal/quota", h.UpdateUserQuota)
-	mux.HandleFunc("GET /internal/users", h.ListInternalUsers)
 
-	// Admin endpoints — require admin token (RequireAdmin wraps RequireAuth).
-	mux.HandleFunc("POST /admin/invites", h.RequireAdmin(h.AdminCreateInvite))
-	mux.HandleFunc("GET /admin/invites", h.RequireAdmin(h.AdminListInvites))
-	mux.HandleFunc("DELETE /admin/invites/{hash}", h.RequireAdmin(h.AdminRevokeInvite))
-	mux.HandleFunc("GET /admin/users", h.RequireAdmin(h.AdminListUsers))
-	mux.HandleFunc("DELETE /admin/users/{id}", h.RequireAdmin(h.AdminDeleteUser))
-
-	// Demo session endpoints (CORS-enabled for landing page)
-	mux.HandleFunc("POST /demo/session", h.DemoCORS(h.DemoSession))
-	mux.HandleFunc("OPTIONS /demo/session", h.DemoCORS(func(w http.ResponseWriter, r *http.Request) {}))
-	mux.HandleFunc("GET /demo/stats", h.DemoCORS(h.DemoStats))
-	mux.HandleFunc("OPTIONS /demo/stats", h.DemoCORS(func(w http.ResponseWriter, r *http.Request) {}))
-
-	// OAuth sign-in routes (no-op when OAuth not configured; self-host falls back to username form)
-	mux.HandleFunc("GET /auth/providers", h.GetProviders)
-	mux.HandleFunc("GET /auth/oauth/github/start", h.OAuthStart("github"))
-	mux.HandleFunc("GET /auth/oauth/github/callback", h.OAuthCallback("github"))
-	mux.HandleFunc("GET /auth/oauth/google/start", h.OAuthStart("google"))
-	mux.HandleFunc("GET /auth/oauth/google/callback", h.OAuthCallback("google"))
-
-	// Anonymous opt-in telemetry (no auth; always 200 to client; silently dropped if backend not configured)
-	mux.HandleFunc("POST /telemetry", h.HandleTelemetry)
+	for _, rt := range h.httpRoutes() {
+		mux.HandleFunc(rt.pattern, applyMiddleware(rt.handler, rt.mw))
+	}
 
 	// Catch-all: return JSON 404 instead of Go's default plain-text response.
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

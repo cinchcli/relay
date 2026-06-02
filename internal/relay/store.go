@@ -3,7 +3,6 @@ package relay
 import (
 	"crypto/rand"
 	"database/sql"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -91,6 +90,47 @@ func NewStore(dsn string) (*Store, error) {
 	}
 
 	return &Store{db: db}, nil
+}
+
+// dbtx is the subset of *sql.DB / *sql.Tx used by the store's query helpers.
+// Methods can take a dbtx so the same code runs inside or outside a
+// transaction; withTx supplies a *sql.Tx, while the plain methods pass s.db.
+type dbtx interface {
+	Exec(query string, args ...any) (sql.Result, error)
+	Query(query string, args ...any) (*sql.Rows, error)
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+var (
+	_ dbtx = (*sql.DB)(nil)
+	_ dbtx = (*sql.Tx)(nil)
+)
+
+// withTx runs fn inside a single transaction, committing on success and rolling
+// back on error or panic. It is the store's one place for multi-statement
+// atomicity; callers that need a SELECT … FOR UPDATE guard followed by a
+// dependent write (e.g. the device-limit check in CompleteDeviceCode) use it.
+func (s *Store) withTx(fn func(tx *sql.Tx) error) (err error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() {
+		if p := recover(); p != nil {
+			_ = tx.Rollback()
+			panic(p)
+		}
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	if err = fn(tx); err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("commit tx: %w", err)
+	}
+	return nil
 }
 
 func migrate(db *sql.DB) error {
@@ -579,7 +619,7 @@ func (s *Store) UpsertOAuthUser(provider, subject, email string, emailVerified b
 			}
 			if count >= cap.DeviceLimit {
 				if cap.GraceExpiresAt.IsZero() || time.Now().After(cap.GraceExpiresAt) {
-					return "", "", "", fmt.Errorf("device_limit_exceeded: user has %d/%d active devices", count, cap.DeviceLimit)
+					return "", "", "", fmt.Errorf("%w: user has %d/%d active devices", ErrDeviceLimitExceeded, count, cap.DeviceLimit)
 				}
 			}
 		}
@@ -666,12 +706,12 @@ func (s *Store) GetAuthContext(token string) (*AuthContext, error) {
 	}
 
 	if revokedAt.Valid {
-		return nil, fmt.Errorf("device_revoked")
+		return nil, ErrDeviceRevoked
 	}
 
 	// Demo TTL check
 	if ctx.IsDemo && time.Since(userCreatedAt) > 10*time.Minute {
-		return nil, fmt.Errorf("demo_expired")
+		return nil, ErrDemoExpired
 	}
 
 	return &ctx, nil
@@ -821,26 +861,21 @@ func (s *Store) SaveClip(userID string, req *cinchv1.PushClipRequest) (*cinchv1.
 	return clip, false, nil
 }
 
-// findClipByIdempotencyKey returns the clip row (if any) matching
-// (user_id, idempotency_key). Returns (nil, nil) when no row exists.
-// Column order matches scanClips for consistency.
-func (s *Store) findClipByIdempotencyKey(userID, key string) (*cinchv1.Clip, error) {
-	row := s.db.QueryRow(
-		`SELECT id, user_id, content, content_type, source, label, byte_size,
-		        media_path, created_at, encrypted, is_pinned, pin_note
-		 FROM clips
-		 WHERE user_id = $1 AND idempotency_key = $2
-		 LIMIT 1`,
-		userID, key,
-	)
+// decodeClip scans one clip row from the columns
+//
+//	id, user_id, content, content_type, source, label, byte_size,
+//	media_path, created_at, encrypted, is_pinned, pin_note
+//
+// (in that order) using the supplied scan func — pass (*sql.Row).Scan for a
+// single row or (*sql.Rows).Scan inside a rows.Next() loop. Centralizes the
+// nullable media_path/pin_note handling and the created_at formatting so the
+// row/rows callers can't drift apart.
+func decodeClip(scan func(dest ...any) error) (*cinchv1.Clip, error) {
 	c := &cinchv1.Clip{}
 	var mediaPath sql.NullString
 	var pinNote sql.NullString
 	var createdAt time.Time
-	if err := row.Scan(&c.ClipId, &c.UserId, &c.Content, &c.ContentType, &c.Source, &c.Label, &c.ByteSize, &mediaPath, &createdAt, &c.Encrypted, &c.IsPinned, &pinNote); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
-		}
+	if err := scan(&c.ClipId, &c.UserId, &c.Content, &c.ContentType, &c.Source, &c.Label, &c.ByteSize, &mediaPath, &createdAt, &c.Encrypted, &c.IsPinned, &pinNote); err != nil {
 		return nil, err
 	}
 	if mediaPath.Valid && mediaPath.String != "" {
@@ -855,6 +890,28 @@ func (s *Store) findClipByIdempotencyKey(userID, key string) (*cinchv1.Clip, err
 	return c, nil
 }
 
+// findClipByIdempotencyKey returns the clip row (if any) matching
+// (user_id, idempotency_key). Returns (nil, nil) when no row exists.
+// Column order matches scanClips for consistency.
+func (s *Store) findClipByIdempotencyKey(userID, key string) (*cinchv1.Clip, error) {
+	row := s.db.QueryRow(
+		`SELECT id, user_id, content, content_type, source, label, byte_size,
+		        media_path, created_at, encrypted, is_pinned, pin_note
+		 FROM clips
+		 WHERE user_id = $1 AND idempotency_key = $2
+		 LIMIT 1`,
+		userID, key,
+	)
+	c, err := decodeClip(row.Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
 // scanClips reads clip rows produced by a query that selects:
 //
 //	id, user_id, content, content_type, source, label, byte_size,
@@ -864,22 +921,10 @@ func (s *Store) findClipByIdempotencyKey(userID, key string) (*cinchv1.Clip, err
 func scanClips(rows *sql.Rows) ([]*cinchv1.Clip, error) {
 	clips := make([]*cinchv1.Clip, 0)
 	for rows.Next() {
-		c := &cinchv1.Clip{}
-		var mediaPath sql.NullString
-		var pinNote sql.NullString
-		var createdAt time.Time
-		if err := rows.Scan(&c.ClipId, &c.UserId, &c.Content, &c.ContentType, &c.Source, &c.Label, &c.ByteSize, &mediaPath, &createdAt, &c.Encrypted, &c.IsPinned, &pinNote); err != nil {
+		c, err := decodeClip(rows.Scan)
+		if err != nil {
 			return nil, err
 		}
-		if mediaPath.Valid && mediaPath.String != "" {
-			s := mediaPath.String
-			c.MediaPath = &s
-		}
-		if pinNote.Valid && pinNote.String != "" {
-			s := pinNote.String
-			c.PinNote = &s
-		}
-		c.CreatedAt = protocol.FormatRFC3339(createdAt)
 		clips = append(clips, c)
 	}
 	return clips, rows.Err()
@@ -1000,7 +1045,7 @@ func (s *Store) DeleteClip(userID, clipID string) error {
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		return fmt.Errorf("clip not found")
+		return ErrClipNotFound
 	}
 	return nil
 }
@@ -1019,7 +1064,7 @@ func (s *Store) DeleteClipReturningMedia(userID, clipID string) (mediaPath strin
 		return "", err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return "", fmt.Errorf("clip not found")
+		return "", ErrClipNotFound
 	}
 	return mediaPath, nil
 }
@@ -1027,23 +1072,7 @@ func (s *Store) DeleteClipReturningMedia(userID, clipID string) (mediaPath strin
 // scanClipRow decodes a single clip row produced by a query that selects
 // the same columns as scanClips. Returns sql.ErrNoRows if the row is empty.
 func scanClipRow(row *sql.Row) (*cinchv1.Clip, error) {
-	c := &cinchv1.Clip{}
-	var mediaPath sql.NullString
-	var pinNote sql.NullString
-	var createdAt time.Time
-	if err := row.Scan(&c.ClipId, &c.UserId, &c.Content, &c.ContentType, &c.Source, &c.Label, &c.ByteSize, &mediaPath, &createdAt, &c.Encrypted, &c.IsPinned, &pinNote); err != nil {
-		return nil, err
-	}
-	if mediaPath.Valid && mediaPath.String != "" {
-		s := mediaPath.String
-		c.MediaPath = &s
-	}
-	if pinNote.Valid && pinNote.String != "" {
-		s := pinNote.String
-		c.PinNote = &s
-	}
-	c.CreatedAt = protocol.FormatRFC3339(createdAt)
-	return c, nil
+	return decodeClip(row.Scan)
 }
 
 // GetLatestClipBySource returns the most recent clip from a specific source.
@@ -1102,7 +1131,7 @@ func (s *Store) SetClipPin(userID, clipID string, isPinned bool, pinNote *string
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		return fmt.Errorf("clip not found")
+		return ErrClipNotFound
 	}
 	return nil
 }
@@ -1208,11 +1237,19 @@ func (s *Store) CreateDemoUser(id, token string) error {
 	return s.RegisterDeviceWithToken(id, deviceID, "demo", token)
 }
 
-// CleanupDemoSessions deletes expired demo users and their clips.
+// CleanupDemoSessions deletes expired demo users and their clips. Best-effort:
+// failures are logged but not returned, since this runs opportunistically
+// before each demo-user creation and the next attempt retries.
 func (s *Store) CleanupDemoSessions() {
-	s.db.Exec("DELETE FROM clips WHERE user_id IN (SELECT id FROM users WHERE is_demo = TRUE AND created_at <= NOW() - INTERVAL '10 minutes')")
-	s.db.Exec("DELETE FROM devices WHERE user_id IN (SELECT id FROM users WHERE is_demo = TRUE AND created_at <= NOW() - INTERVAL '10 minutes')")
-	s.db.Exec("DELETE FROM users WHERE is_demo = TRUE AND created_at <= NOW() - INTERVAL '10 minutes'")
+	if _, err := s.db.Exec("DELETE FROM clips WHERE user_id IN (SELECT id FROM users WHERE is_demo = TRUE AND created_at <= NOW() - INTERVAL '10 minutes')"); err != nil {
+		slog.Warn("demo cleanup: delete expired demo clips failed", "err", err)
+	}
+	if _, err := s.db.Exec("DELETE FROM devices WHERE user_id IN (SELECT id FROM users WHERE is_demo = TRUE AND created_at <= NOW() - INTERVAL '10 minutes')"); err != nil {
+		slog.Warn("demo cleanup: delete expired demo devices failed", "err", err)
+	}
+	if _, err := s.db.Exec("DELETE FROM users WHERE is_demo = TRUE AND created_at <= NOW() - INTERVAL '10 minutes'"); err != nil {
+		slog.Warn("demo cleanup: delete expired demo users failed", "err", err)
+	}
 }
 
 // DemoClipCount returns the number of clips for a demo user.
@@ -1224,15 +1261,17 @@ func (s *Store) DemoClipCount(userID string) (int, error) {
 
 // ── Device-code flow methods ────────────────────────────────────────────────
 
-// generateStoreToken creates a 32-byte hex token.
+// generateStoreToken creates a 32-byte hex token. A crypto/rand failure is
+// unrecoverable (it means the OS CSPRNG is unavailable), so we panic rather
+// than mint a predictable token — matching issueWsTicket in handler.go.
 func generateStoreToken() string {
-	b := make([]byte, 32)
-	rand.Read(b)
-	return hex.EncodeToString(b)
+	return randomHex(32)
 }
 
-// generateUserCode creates an 8-char uppercase alphanumeric code formatted as XXXX-XXXX.
-func generateUserCode() string {
+// generateUserCode creates an 8-char uppercase alphanumeric code formatted as
+// XXXX-XXXX. Returns an error if the OS CSPRNG is unavailable; the rejection
+// sampling that keeps the code uniform is preserved.
+func generateUserCode() (string, error) {
 	const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	const n = len(chars)
 	const max = 256 - (256 % n) // reject values >= this to eliminate modular bias
@@ -1240,13 +1279,15 @@ func generateUserCode() string {
 	i := 0
 	for i < 8 {
 		var b [1]byte
-		rand.Read(b[:])
+		if _, err := rand.Read(b[:]); err != nil {
+			return "", fmt.Errorf("crypto/rand failed generating user code: %w", err)
+		}
 		if int(b[0]) < max {
 			result[i] = chars[int(b[0])%n]
 			i++
 		}
 	}
-	return string(result[:4]) + "-" + string(result[4:])
+	return string(result[:4]) + "-" + string(result[4:]), nil
 }
 
 // CreateDeviceCode generates a device code and user code, inserts into device_codes.
@@ -1255,7 +1296,10 @@ func generateUserCode() string {
 // ignored (no enumeration leak).
 func (s *Store) CreateDeviceCode(hostname, machineID, userHint, requesterIP string) (*cinchv1.DeviceCodeStartResponse, string, error) {
 	deviceCode := generateStoreToken()
-	userCode := generateUserCode()
+	userCode, err := generateUserCode()
+	if err != nil {
+		return nil, "", fmt.Errorf("generating user code: %w", err)
+	}
 	expiresAt := time.Now().UTC().Add(5 * time.Minute)
 
 	var mi interface{}
@@ -1292,7 +1336,7 @@ func (s *Store) CreateDeviceCode(hostname, machineID, userHint, requesterIP stri
 		ipNullable = sql.NullString{String: requesterIP, Valid: true}
 	}
 
-	_, err := s.db.Exec(
+	_, err = s.db.Exec(
 		`INSERT INTO device_codes (device_code, user_code, hostname, machine_id, expires_at, pending_user_id, requester_ip)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 		deviceCode, userCode, hostname, mi, expiresAt, pendingNullable, ipNullable,
@@ -1341,6 +1385,13 @@ func (s *Store) CreateDeviceForUser(userID, hostname, machineID string) (deviceI
 // cannot bypass the cap. If the limit is exceeded the freshly-provisioned device
 // is revoked and the device-code row is left pending (the approver sees the
 // error; the polling client keeps polling and eventually expires).
+// CompleteDeviceCode marks a pending device-code row complete for the given
+// device credentials. When hosted-plan enforcement is on and the user has a
+// device limit, the active-device count and the completion are performed in a
+// single transaction with the user's active device rows locked FOR UPDATE, so
+// two concurrent completions can't both slip past the limit. On an over-limit
+// completion the just-provisioned device is revoked (committed) and an error
+// containing "device_limit_exceeded" is returned, matching the prior behavior.
 func (s *Store) CompleteDeviceCode(userCode, userID, deviceID, token string) error {
 	if !s.EnforcementDisabled {
 		cap, err := s.GetUserCapabilities(userID)
@@ -1348,31 +1399,63 @@ func (s *Store) CompleteDeviceCode(userCode, userID, deviceID, token string) err
 			return fmt.Errorf("checking device capabilities: %w", err)
 		}
 		if cap.DeviceLimit > 0 {
-			count, err := s.CountActiveDevices(userID)
-			if err != nil {
-				return fmt.Errorf("counting active devices: %w", err)
-			}
-			// The to-be-approved device was already inserted by
-			// CreateDeviceForUser, so it counts toward `count`.
-			// Allow count == DeviceLimit; reject when count > DeviceLimit.
-			if count > cap.DeviceLimit {
-				if cap.GraceExpiresAt.IsZero() || time.Now().After(cap.GraceExpiresAt) {
-					// Roll back the device row we just provisioned so the
-					// user isn't stuck with a phantom over-limit device.
-					if _, rbErr := s.db.Exec(
-						`UPDATE devices SET revoked_at = NOW() WHERE id = $1`,
-						deviceID,
-					); rbErr != nil {
-						slog.Error("device_limit rollback failed",
-							"user", userID, "device", deviceID, "err", rbErr)
-					}
-					return fmt.Errorf("device_limit_exceeded: user has %d/%d active devices", count, cap.DeviceLimit)
-				}
-			}
+			return s.completeDeviceCodeEnforced(userCode, userID, deviceID, token, cap)
 		}
 	}
+	return completeDeviceCodeRow(s.db, userCode, userID, deviceID, token)
+}
 
-	res, err := s.db.Exec(
+// completeDeviceCodeEnforced runs the device-limit check and the completion in
+// one transaction. The user's active device rows are locked FOR UPDATE so the
+// count reflects a serialized view; if over limit (and no active grace), the
+// new device is revoked and the transaction commits that revoke before the
+// caller sees the error.
+func (s *Store) completeDeviceCodeEnforced(userCode, userID, deviceID, token string, cap UserCapabilities) error {
+	var (
+		overLimit bool
+		count     int
+	)
+	err := s.withTx(func(tx *sql.Tx) error {
+		// Lock the user's active device rows, then count them. count(*) cannot
+		// carry FOR UPDATE directly, so lock in a CTE and count the locked set.
+		if err := tx.QueryRow(
+			`WITH locked AS (
+			    SELECT id FROM devices
+			    WHERE user_id = $1 AND revoked_at IS NULL
+			    FOR UPDATE
+			 )
+			 SELECT count(*) FROM locked`,
+			userID,
+		).Scan(&count); err != nil {
+			return fmt.Errorf("counting active devices: %w", err)
+		}
+		// The to-be-approved device was already inserted by CreateDeviceForUser,
+		// so it counts toward `count`. Allow count == DeviceLimit; reject when
+		// count > DeviceLimit.
+		if count > cap.DeviceLimit && (cap.GraceExpiresAt.IsZero() || time.Now().After(cap.GraceExpiresAt)) {
+			// Revoke the phantom over-limit device. Returning nil commits this
+			// revoke; the caller then reports device_limit_exceeded.
+			if _, err := tx.Exec(`UPDATE devices SET revoked_at = NOW() WHERE id = $1`, deviceID); err != nil {
+				return fmt.Errorf("revoking over-limit device: %w", err)
+			}
+			overLimit = true
+			return nil
+		}
+		return completeDeviceCodeRow(tx, userCode, userID, deviceID, token)
+	})
+	if err != nil {
+		return err
+	}
+	if overLimit {
+		return fmt.Errorf("%w: user has %d/%d active devices", ErrDeviceLimitExceeded, count, cap.DeviceLimit)
+	}
+	return nil
+}
+
+// completeDeviceCodeRow flips a pending device_codes row to complete with the
+// supplied credentials. Runs against *sql.DB or a *sql.Tx.
+func completeDeviceCodeRow(q dbtx, userCode, userID, deviceID, token string) error {
+	res, err := q.Exec(
 		`UPDATE device_codes SET status = 'complete', user_id = $1, device_id = $2, token = $3
 		 WHERE user_code = $4 AND status = 'pending' AND expires_at > NOW()`,
 		userID, deviceID, token, userCode,
@@ -1511,38 +1594,16 @@ func (s *Store) SweepExpiredClips(userID string, retentionDays int) (int, error)
 	return int(n), nil
 }
 
-// SweepAllUsersRetention iterates all users with remote_retention_days set and sweeps their expired clips.
+// SweepAllUsersRetention sweeps every user's expired clips exactly once, using
+// the most conservative (smallest) retention among that user's devices.
+//
+// Thin wrapper over SweepAllUsersRetentionReturningMedia: the production
+// retention job uses the media-returning variant, and routing this method
+// through it removes a second copy of the per-user dedup logic. Media keys are
+// discarded here because callers of this method don't purge media themselves.
 func (s *Store) SweepAllUsersRetention() error {
-	rows, err := s.db.Query(
-		`SELECT DISTINCT d.user_id, d.remote_retention_days
-		 FROM devices d
-		 WHERE d.remote_retention_days IS NOT NULL
-		 AND d.revoked_at IS NULL`,
-	)
-	if err != nil {
-		return err
-	}
-
-	type userRetention struct {
-		userID string
-		days   int
-	}
-	var users []userRetention
-	for rows.Next() {
-		var ur userRetention
-		if err := rows.Scan(&ur.userID, &ur.days); err != nil {
-			continue
-		}
-		users = append(users, ur)
-	}
-	rows.Close()
-
-	for _, ur := range users {
-		if count, err := s.SweepExpiredClips(ur.userID, ur.days); err == nil && count > 0 {
-			slog.Info("retention sweep deleted clips", "count", count, "user", ur.userID, "retention_days", ur.days)
-		}
-	}
-	return nil
+	_, err := s.SweepAllUsersRetentionReturningMedia()
+	return err
 }
 
 // sweepBatchSize bounds how many clip IDs go into a single DELETE / tombstone
@@ -1661,13 +1722,19 @@ func (s *Store) insertTombstonesBatch(userID string, clipIDs []string) error {
 // user_capabilities.retention_days overrides the device-level value, which is
 // itself the per-device knob users set via the desktop's settings.
 func (s *Store) SweepAllUsersRetentionReturningMedia() (mediaPaths []string, err error) {
+	// One row per user: GROUP BY collapses devices with differing
+	// remote_retention_days into a single sweep using the strictest
+	// (smallest) value, so a user is never swept multiple times with
+	// conflicting cutoffs. user_capabilities holds at most one row per user,
+	// so MAX(uc.retention_days) just lifts the cap value into the aggregate.
 	rows, err := s.db.Query(
-		`SELECT DISTINCT d.user_id,
-		                 d.remote_retention_days,
-		                 COALESCE(uc.retention_days, 0) AS cap_retention
+		`SELECT d.user_id,
+		        MIN(d.remote_retention_days) AS device_days,
+		        COALESCE(MAX(uc.retention_days), 0) AS cap_retention
 		  FROM devices d
 		  LEFT JOIN user_capabilities uc ON uc.user_id = d.user_id
-		  WHERE d.remote_retention_days IS NOT NULL AND d.revoked_at IS NULL`,
+		  WHERE d.remote_retention_days IS NOT NULL AND d.revoked_at IS NULL
+		  GROUP BY d.user_id`,
 	)
 	if err != nil {
 		return nil, err
@@ -1694,8 +1761,10 @@ func (s *Store) SweepAllUsersRetentionReturningMedia() (mediaPaths []string, err
 	}
 
 	for _, u := range users {
+		// Most conservative retention wins: the device minimum, further
+		// clamped by the plan cap when one is set.
 		retentionDays := u.deviceDays
-		if u.capRetention > 0 {
+		if u.capRetention > 0 && u.capRetention < retentionDays {
 			retentionDays = u.capRetention
 		}
 		count, paths, sweepErr := s.SweepExpiredClipsReturningMedia(u.userID, retentionDays)
@@ -1714,7 +1783,7 @@ func (s *Store) SweepAllUsersRetentionReturningMedia() (mediaPaths []string, err
 // owner user via the device row to keep the public signature unchanged.
 func (s *Store) UpdateDeviceRetention(deviceID string, days int) error {
 	if days < 1 || days > 365 {
-		return fmt.Errorf("retention days must be between 1 and 365, got %d", days)
+		return fmt.Errorf("%w, got %d", ErrRetentionOutOfRange, days)
 	}
 
 	if !s.EnforcementDisabled {

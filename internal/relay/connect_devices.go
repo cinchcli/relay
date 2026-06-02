@@ -2,8 +2,8 @@ package relay
 
 import (
 	"context"
+	"errors"
 	"net/http"
-	"strings"
 
 	"connectrpc.com/connect"
 
@@ -74,7 +74,7 @@ func (s *connectDevicesServer) SetRetention(ctx context.Context, req *connect.Re
 }
 
 func isRangeError(err error) bool {
-	return strings.Contains(err.Error(), "between 1 and 365")
+	return errors.Is(err, ErrRetentionOutOfRange)
 }
 
 // newDevicesConnectHandler wraps DevicesService with auth interceptor.
