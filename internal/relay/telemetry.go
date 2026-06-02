@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
-	"sync"
 	"time"
 )
 
@@ -57,7 +56,7 @@ func (h *Handler) HandleTelemetry(w http.ResponseWriter, r *http.Request) {
 
 	// Rate-limit: 5 events per IP per hour.
 	ip := realIP(r)
-	if !h.telemetryLimiter.allow(ip) {
+	if !h.telemetryLimiter.Allow(ip) {
 		return
 	}
 
@@ -97,41 +96,5 @@ func realIP(r *http.Request) string {
 	return r.RemoteAddr
 }
 
-// rateLimiter counts requests per key within a sliding window.
-type rateLimiter struct {
-	mu     sync.Mutex
-	counts map[string][]time.Time
-	limit  int
-	window time.Duration
-}
-
-func newRateLimiter(limit int, window time.Duration) *rateLimiter {
-	return &rateLimiter{
-		counts: make(map[string][]time.Time),
-		limit:  limit,
-		window: window,
-	}
-}
-
-func (rl *rateLimiter) allow(key string) bool {
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
-
-	now := time.Now()
-	cutoff := now.Add(-rl.window)
-
-	ts := rl.counts[key]
-	valid := ts[:0]
-	for _, t := range ts {
-		if t.After(cutoff) {
-			valid = append(valid, t)
-		}
-	}
-	rl.counts[key] = valid
-
-	if len(valid) >= rl.limit {
-		return false
-	}
-	rl.counts[key] = append(rl.counts[key], now)
-	return true
-}
+// Rate limiting is provided by the single slidingWindowLimiter type in
+// ratelimit.go; telemetry uses h.telemetryLimiter (5 events/IP/hour).

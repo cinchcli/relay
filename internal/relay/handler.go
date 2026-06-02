@@ -175,10 +175,11 @@ type Handler struct {
 	TelemetryURL    string // e.g. https://telemetry.jinmu.me
 	TelemetryAPIKey string // X-API-Key sent to telemetry backend
 
-	telemetryLimiter *rateLimiter
-
-	loginRateMu  sync.Mutex
-	loginRateMap map[string]time.Time
+	// All rate limiting uses the one slidingWindowLimiter type (ratelimit.go).
+	// telemetryLimiter: 5 events/IP/hour. loginLimiter: 1 anonymous account
+	// creation per IP per loginRateWindow.
+	telemetryLimiter *slidingWindowLimiter
+	loginLimiter     *slidingWindowLimiter
 
 	internalServiceSecret string // protects POST /internal/quota; empty = endpoint disabled
 
@@ -196,8 +197,8 @@ func NewHandler(store *Store, hub *Hub) *Handler {
 	return &Handler{
 		store:             store,
 		hub:               hub,
-		telemetryLimiter:  newRateLimiter(5, time.Hour),
-		loginRateMap:      make(map[string]time.Time),
+		telemetryLimiter:  newSlidingWindowLimiter(5, time.Hour),
+		loginLimiter:      newSlidingWindowLimiter(1, loginRateWindow),
 		pendingLimit:      newSlidingWindowLimiter(5, time.Minute),
 		deviceCodeIPLimit: newSlidingWindowLimiter(30, time.Minute),
 	}
@@ -1169,19 +1170,13 @@ func writeInternalError(w http.ResponseWriter, errType, opName string, err error
 }
 
 // checkLoginRateLimit returns true if the given IP should be denied for
-// hitting the per-IP login rate window. Loopback always allowed.
-// Updates the bucket on a non-limited hit.
+// hitting the per-IP login rate window. Loopback is always allowed.
+// Records the attempt on a non-limited hit.
 func (h *Handler) checkLoginRateLimit(ip string) bool {
 	if ip == "127.0.0.1" || ip == "::1" {
 		return false
 	}
-	h.loginRateMu.Lock()
-	defer h.loginRateMu.Unlock()
-	if last, ok := h.loginRateMap[ip]; ok && time.Since(last) < loginRateWindow {
-		return true
-	}
-	h.loginRateMap[ip] = time.Now()
-	return false
+	return !h.loginLimiter.Allow(ip)
 }
 
 func generateToken() string {
