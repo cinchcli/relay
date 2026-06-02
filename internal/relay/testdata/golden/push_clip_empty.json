@@ -1,0 +1,5 @@
+{
+  "status": 400,
+  "content_type": "application/json",
+  "body": "{\n  \"error\": \"empty content\",\n  \"fix\": \"Pipe content: echo 'text' | cinch push\",\n  \"message\": \"No content to push\"\n}"
+}

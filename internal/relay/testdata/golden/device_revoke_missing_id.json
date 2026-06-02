@@ -1,0 +1,5 @@
+{
+  "status": 400,
+  "content_type": "application/json",
+  "body": "{\n  \"error\": \"missing_device_id\",\n  \"message\": \"device_id is required\"\n}"
+}

@@ -1,0 +1,5 @@
+{
+  "status": 403,
+  "content_type": "application/json",
+  "body": "{\n  \"error\": \"invite_required\",\n  \"fix\": \"Ask the operator for an invite code.\",\n  \"message\": \"An invite code is required to create an account on this relay.\"\n}"
+}

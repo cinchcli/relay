@@ -1,0 +1,5 @@
+{
+  "status": 401,
+  "content_type": "application/json",
+  "body": "{\n  \"error\": \"invalid token\",\n  \"fix\": \"Run: cinch auth login\",\n  \"message\": \"Token is invalid or expired\"\n}"
+}

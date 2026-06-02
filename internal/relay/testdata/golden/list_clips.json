@@ -1,0 +1,5 @@
+{
+  "status": 200,
+  "content_type": "application/json",
+  "body": "[\n  {\n    \"byte_size\": 11,\n    \"clip_id\": \"\u003cULID\u003e\",\n    \"content\": \"golden clip\",\n    \"content_type\": \"text\",\n    \"created_at\": \"\u003cTS\u003e\",\n    \"encrypted\": true,\n    \"source\": \"remote:test\",\n    \"user_id\": \"\u003cULID\u003e\"\n  }\n]"
+}

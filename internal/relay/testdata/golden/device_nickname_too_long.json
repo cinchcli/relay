@@ -1,0 +1,5 @@
+{
+  "status": 422,
+  "content_type": "application/json",
+  "body": "{\n  \"error\": \"nickname_too_long\",\n  \"message\": \"Nickname must be 32 characters or fewer\"\n}"
+}

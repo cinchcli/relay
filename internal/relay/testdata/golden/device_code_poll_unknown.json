@@ -1,0 +1,5 @@
+{
+  "status": 404,
+  "content_type": "application/json",
+  "body": "{\n  \"error\": \"not_found\",\n  \"fix\": \"Run cinch auth login again\",\n  \"message\": \"device code not found\"\n}"
+}

@@ -1,0 +1,5 @@
+{
+  "status": 503,
+  "content_type": "application/json",
+  "body": "{\n  \"error\": \"not_configured\",\n  \"message\": \"Internal quota endpoint is not configured on this relay\"\n}"
+}

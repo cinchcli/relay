@@ -1,0 +1,5 @@
+{
+  "status": 400,
+  "content_type": "application/json",
+  "body": "{\n  \"error\": \"invalid_arguments\",\n  \"message\": \"source and exclude_source are mutually exclusive\"\n}"
+}

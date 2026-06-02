@@ -1,0 +1,5 @@
+{
+  "status": 200,
+  "content_type": "application/json",
+  "body": "[\n  {\n    \"hostname\": \"unknown\",\n    \"id\": \"\u003cULID\u003e\",\n    \"paired_at\": \"\u003cTS\u003e\",\n    \"source_key\": \"approve:\u003cULID\u003e\"\n  },\n  {\n    \"hostname\": \"unknown\",\n    \"id\": \"\u003cULID\u003e\",\n    \"paired_at\": \"\u003cTS\u003e\",\n    \"source_key\": \"remote:unknown\"\n  }\n]"
+}

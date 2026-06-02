@@ -1,0 +1,5 @@
+{
+  "status": 200,
+  "content_type": "application/json",
+  "body": "{\n  \"invites\": [\n    {\n      \"code_hash\": \"\u003cHEX\u003e\",\n      \"created_at\": \"\u003cTS\u003e\",\n      \"expires_at\": \"\u003cTS\u003e\",\n      \"label\": \"test-bootstrap\",\n      \"max_uses\": 1000,\n      \"used_count\": 1\n    }\n  ]\n}"
+}

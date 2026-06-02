@@ -1,0 +1,5 @@
+{
+  "status": 404,
+  "content_type": "application/json",
+  "body": "{\n  \"error\": \"device_not_found\",\n  \"message\": \"Device not found\"\n}"
+}

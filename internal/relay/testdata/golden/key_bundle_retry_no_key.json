@@ -1,0 +1,5 @@
+{
+  "status": 400,
+  "content_type": "application/json",
+  "body": "{\n  \"error\": \"no public key registered\",\n  \"fix\": \"Sign in via cinch auth login first\",\n  \"message\": \"device has not registered a public key yet\"\n}"
+}
