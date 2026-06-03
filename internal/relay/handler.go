@@ -4,7 +4,6 @@ package relay
 
 import (
 	"context"
-	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -23,6 +22,7 @@ import (
 	"time"
 
 	cinchv1 "github.com/cinchcli/relay/internal/cinchv1"
+	"github.com/cinchcli/relay/internal/internalauth"
 	"github.com/cinchcli/relay/internal/media"
 	"github.com/cinchcli/relay/internal/protocol"
 	"github.com/gorilla/websocket"
@@ -182,6 +182,11 @@ type Handler struct {
 	loginLimiter     *slidingWindowLimiter
 
 	internalServiceSecret string // protects POST /internal/quota; empty = endpoint disabled
+	// internalQuotaWriteSecret authorizes POST /internal/quota; internalReadSecret
+	// authorizes GET /internal/users. Either falls back to internalServiceSecret.
+	// Each may be comma-separated for zero-downtime rotation.
+	internalQuotaWriteSecret string
+	internalReadSecret       string
 
 	// DeviceCodeStart rate limits.
 	// pendingLimit caps notification spam per pending user (5/min) — when
@@ -210,6 +215,12 @@ func (h *Handler) SetMediaStore(s media.Store) { h.media = s }
 // SetInternalServiceSecret configures the bearer secret for POST /internal/quota.
 // When empty, the endpoint returns 503 (not silently open).
 func (h *Handler) SetInternalServiceSecret(s string) { h.internalServiceSecret = s }
+
+// SetInternalQuotaWriteSecret sets the write-scoped secret for POST /internal/quota.
+func (h *Handler) SetInternalQuotaWriteSecret(s string) { h.internalQuotaWriteSecret = s }
+
+// SetInternalReadSecret sets the read-scoped secret for GET /internal/users.
+func (h *Handler) SetInternalReadSecret(s string) { h.internalReadSecret = s }
 
 // RequireAdmin wraps RequireAuth and additionally checks that the
 // authenticated user has is_admin = TRUE.
@@ -1872,16 +1883,17 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 }
 
 // UpdateUserQuota handles POST /internal/quota.
-// Called by Cloud API to write numeric plan limits for a user.
-// Protected by INTERNAL_SERVICE_SECRET bearer token.
+// Called by the biz control plane to write numeric plan limits for a user.
+// Protected by INTERNAL_QUOTA_WRITE_SECRET (or legacy INTERNAL_SERVICE_SECRET) bearer.
 func (h *Handler) UpdateUserQuota(w http.ResponseWriter, r *http.Request) {
-	if h.internalServiceSecret == "" {
+	// Write-scoped: accept the quota-write secret, falling back to the legacy
+	// shared secret for backward compatibility.
+	switch internalauth.Check(r.Header.Get("Authorization"), h.internalQuotaWriteSecret, h.internalServiceSecret) {
+	case internalauth.Disabled:
 		writeError(w, http.StatusServiceUnavailable, "not_configured",
 			"Internal quota endpoint is not configured on this relay", "")
 		return
-	}
-	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if subtle.ConstantTimeCompare([]byte(token), []byte(h.internalServiceSecret)) != 1 {
+	case internalauth.Denied:
 		writeError(w, http.StatusForbidden, "forbidden", "Invalid service secret", "")
 		return
 	}

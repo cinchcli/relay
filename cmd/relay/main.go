@@ -134,6 +134,8 @@ func runServer() {
 	handler.TelemetryURL = cfg.TelemetryURL
 	handler.TelemetryAPIKey = cfg.TelemetryAPIKey
 	handler.SetInternalServiceSecret(cfg.InternalServiceSecret)
+	handler.SetInternalQuotaWriteSecret(cfg.InternalQuotaWriteSecret)
+	handler.SetInternalReadSecret(cfg.InternalReadSecret)
 
 	// Self-host carve-out: skip hosted-plan enforcement checks (device limit on
 	// CompleteDeviceCode, plan-derived retention clamp on UpdateDeviceRetention)
