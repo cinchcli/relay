@@ -1,6 +1,6 @@
 module github.com/cinchcli/relay
 
-go 1.26.2
+go 1.26.4
 
 require (
 	connectrpc.com/connect v1.19.2
