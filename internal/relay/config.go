@@ -25,6 +25,12 @@ type Config struct {
 	TelemetryURL          string
 	TelemetryAPIKey       string
 	InternalServiceSecret string
+	// InternalQuotaWriteSecret authorizes POST /internal/quota (write); falls
+	// back to InternalServiceSecret when empty. Comma-separated for rotation.
+	InternalQuotaWriteSecret string
+	// InternalReadSecret authorizes GET /internal/users (read); falls back to
+	// InternalServiceSecret when empty. Comma-separated for rotation.
+	InternalReadSecret string
 
 	// PlanEnforcementDisabled mirrors CINCH_PLAN_ENFORCEMENT_DISABLED: self-host
 	// relays skip hosted-plan checks (device limit, retention clamp).
@@ -45,19 +51,21 @@ func envTruthy(v string) bool {
 // previous per-call os.Getenv usage so behavior is unchanged.
 func LoadConfig() Config {
 	cfg := Config{
-		Port:                    os.Getenv("PORT"),
-		DatabaseURL:             os.Getenv("DATABASE_URL"),
-		BaseURL:                 os.Getenv("BASE_URL"),
-		GitHubClientID:          os.Getenv("GITHUB_CLIENT_ID"),
-		GitHubClientSecret:      os.Getenv("GITHUB_CLIENT_SECRET"),
-		GoogleClientID:          os.Getenv("GOOGLE_CLIENT_ID"),
-		GoogleClientSecret:      os.Getenv("GOOGLE_CLIENT_SECRET"),
-		TelemetryURL:            strings.TrimRight(os.Getenv("TELEMETRY_URL"), "/"),
-		TelemetryAPIKey:         os.Getenv("TELEMETRY_API_KEY"),
-		InternalServiceSecret:   os.Getenv("INTERNAL_SERVICE_SECRET"),
-		PlanEnforcementDisabled: envTruthy(os.Getenv("CINCH_PLAN_ENFORCEMENT_DISABLED")),
-		BootstrapInviteCode:     os.Getenv("RELAY_BOOTSTRAP_INVITE_CODE"),
-		Media:                   media.LoadConfigFromEnv(),
+		Port:                     os.Getenv("PORT"),
+		DatabaseURL:              os.Getenv("DATABASE_URL"),
+		BaseURL:                  os.Getenv("BASE_URL"),
+		GitHubClientID:           os.Getenv("GITHUB_CLIENT_ID"),
+		GitHubClientSecret:       os.Getenv("GITHUB_CLIENT_SECRET"),
+		GoogleClientID:           os.Getenv("GOOGLE_CLIENT_ID"),
+		GoogleClientSecret:       os.Getenv("GOOGLE_CLIENT_SECRET"),
+		TelemetryURL:             strings.TrimRight(os.Getenv("TELEMETRY_URL"), "/"),
+		TelemetryAPIKey:          os.Getenv("TELEMETRY_API_KEY"),
+		InternalServiceSecret:    os.Getenv("INTERNAL_SERVICE_SECRET"),
+		InternalQuotaWriteSecret: os.Getenv("INTERNAL_QUOTA_WRITE_SECRET"),
+		InternalReadSecret:       os.Getenv("INTERNAL_READ_SECRET"),
+		PlanEnforcementDisabled:  envTruthy(os.Getenv("CINCH_PLAN_ENFORCEMENT_DISABLED")),
+		BootstrapInviteCode:      os.Getenv("RELAY_BOOTSTRAP_INVITE_CODE"),
+		Media:                    media.LoadConfigFromEnv(),
 	}
 	if cfg.Port == "" {
 		cfg.Port = "8080"

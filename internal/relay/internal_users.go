@@ -1,14 +1,14 @@
 package relay
 
 import (
-	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
+
+	"github.com/cinchcli/relay/internal/internalauth"
 )
 
 // InternalCursorPayload is the decoded form of the opaque cursor used by
@@ -72,17 +72,18 @@ type internalUsersListResponse struct {
 // ListInternalUsers handles GET /internal/users.
 // Returns paginated user rows with device aggregates and capability echoes
 // so the biz Cloudflare Worker can render the SaaS admin dashboard.
-// Protected by INTERNAL_SERVICE_SECRET bearer (same secret as POST /internal/quota).
-// Returns 503 when the secret is unset so self-hosters get the endpoint disabled
+// Protected by INTERNAL_READ_SECRET (or legacy INTERNAL_SERVICE_SECRET) bearer.
+// Returns 503 when no secret is set so self-hosters get the endpoint disabled
 // by default.
 func (h *Handler) ListInternalUsers(w http.ResponseWriter, r *http.Request) {
-	if h.internalServiceSecret == "" {
+	// Read-scoped: accept the read secret, falling back to the legacy shared
+	// secret for backward compatibility.
+	switch internalauth.Check(r.Header.Get("Authorization"), h.internalReadSecret, h.internalServiceSecret) {
+	case internalauth.Disabled:
 		writeError(w, http.StatusServiceUnavailable, "not_configured",
 			"Internal users endpoint is not configured on this relay", "")
 		return
-	}
-	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if subtle.ConstantTimeCompare([]byte(token), []byte(h.internalServiceSecret)) != 1 {
+	case internalauth.Denied:
 		writeError(w, http.StatusForbidden, "forbidden", "Invalid service secret", "")
 		return
 	}
