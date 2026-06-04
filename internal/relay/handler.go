@@ -159,6 +159,7 @@ func StartWSTicketReaper(ctx context.Context) {
 				return
 			case now := <-ticker.C:
 				reapExpiredWsTickets(now)
+				reapExpiredOAuthConfirms(now)
 			}
 		}
 	}()
@@ -2112,6 +2113,7 @@ func (h *Handler) httpRoutes() []httpRoute {
 		{"GET /auth/oauth/github/callback", h.OAuthCallback("github"), nil},
 		{"GET /auth/oauth/google/start", h.OAuthStart("google"), nil},
 		{"GET /auth/oauth/google/callback", h.OAuthCallback("google"), nil},
+		{"POST /auth/oauth/confirm", h.OAuthConfirm, nil},
 
 		// Anonymous opt-in telemetry (always 200; dropped if backend unset).
 		{"POST /telemetry", h.HandleTelemetry, nil},
