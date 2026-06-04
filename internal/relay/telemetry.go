@@ -88,12 +88,10 @@ func (h *Handler) forwardTelemetry(payload telemetryPayload) {
 	resp.Body.Close()
 }
 
-// realIP extracts the client IP, respecting CF-Connecting-IP when behind Cloudflare.
+// realIP extracts the client IP for rate limiting, trusting forwarded headers
+// (CF-Connecting-IP / X-Forwarded-For) only from a trusted proxy peer.
 func realIP(r *http.Request) string {
-	if cf := r.Header.Get("CF-Connecting-IP"); cf != "" {
-		return cf
-	}
-	return r.RemoteAddr
+	return clientIP(r.RemoteAddr, r.Header)
 }
 
 // Rate limiting is provided by the single slidingWindowLimiter type in

@@ -41,3 +41,29 @@ func TestSlidingWindow_EntriesExpire(t *testing.T) {
 		t.Errorf("after window should allow again")
 	}
 }
+
+// reap must delete keys whose entire window has elapsed, so attacker-chosen
+// keys (e.g. spoofed IPs on public routes) cannot grow the map without bound.
+func TestSlidingWindow_ReapRemovesStaleKeys(t *testing.T) {
+	rl := newSlidingWindowLimiter(5, time.Minute)
+	rl.Allow("a")
+	rl.Allow("b")
+	if len(rl.hits) != 2 {
+		t.Fatalf("expected 2 tracked keys, got %d", len(rl.hits))
+	}
+	// Advance past the window: every recorded hit is now stale.
+	rl.reap(time.Now().Add(2 * time.Minute))
+	if len(rl.hits) != 0 {
+		t.Errorf("expected all stale keys reaped, got %d", len(rl.hits))
+	}
+}
+
+// reap must keep keys with hits still inside the window.
+func TestSlidingWindow_ReapKeepsActiveKeys(t *testing.T) {
+	rl := newSlidingWindowLimiter(5, time.Minute)
+	rl.Allow("fresh")
+	rl.reap(time.Now()) // window not elapsed
+	if len(rl.hits) != 1 {
+		t.Errorf("active key should be kept, got %d", len(rl.hits))
+	}
+}

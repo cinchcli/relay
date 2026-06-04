@@ -82,5 +82,6 @@ func (h *Handler) newDevicesConnectHandler() (string, http.Handler) {
 	return cinchv1connect.NewDevicesServiceHandler(
 		&connectDevicesServer{h: h},
 		connect.WithInterceptors(h.clipsConnectInterceptor()),
+		connect.WithReadMaxBytes(h.connectReadMax()),
 	)
 }

@@ -159,6 +159,35 @@ func StartWSTicketReaper(ctx context.Context) {
 				return
 			case now := <-ticker.C:
 				reapExpiredWsTickets(now)
+				reapExpiredOAuthConfirms(now)
+			}
+		}
+	}()
+}
+
+// StartRateLimitReaper periodically evicts fully-expired keys from the
+// in-process rate limiters. The limiters otherwise only prune a key's slice
+// when that exact key is seen again, so attacker-chosen keys on the
+// unauthenticated routes (telemetry by CF-Connecting-IP, device-code by
+// X-Forwarded-For) would accumulate permanent map entries. Mirrors
+// StartWSTicketReaper.
+func (h *Handler) StartRateLimitReaper(ctx context.Context) {
+	limiters := []*slidingWindowLimiter{
+		h.telemetryLimiter, h.loginLimiter, h.pendingLimit, h.deviceCodeIPLimit,
+	}
+	go func() {
+		ticker := time.NewTicker(1 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-ticker.C:
+				for _, l := range limiters {
+					if l != nil {
+						l.reap(now)
+					}
+				}
 			}
 		}
 	}()
@@ -171,6 +200,19 @@ type Handler struct {
 	BaseURL     string          // public base URL of the relay (for verification URIs)
 	OAuth       *OAuthProviders // nil = OAuth not configured; self-host falls back to username form
 	CORSOrigins []string        // extra allowed origins beyond the hardcoded landing page defaults
+
+	// ConnectReadMaxBytes caps the decoded size of any single Connect-RPC
+	// request message. 0 (the zero value) means "use defaultConnectReadMaxBytes"
+	// — never unlimited. connect-go's own default is 0 = unlimited, so this must
+	// be wired explicitly on every service handler (see connectReadMax).
+	ConnectReadMaxBytes int
+
+	// WSReadLimitBytes caps a single inbound WebSocket frame; WSReadDeadline
+	// bounds how long a connection may stay silent before it is reaped. 0 means
+	// "use the default" (see wsReadLimit / wsReadDeadlineDur). Agents only ever
+	// send tiny pong frames, so the read limit is small.
+	WSReadLimitBytes int64
+	WSReadDeadline   time.Duration
 
 	TelemetryURL    string // e.g. https://telemetry.jinmu.me
 	TelemetryAPIKey string // X-API-Key sent to telemetry backend
@@ -315,12 +357,7 @@ func (h *Handler) AuthLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ip := r.Header.Get("X-Forwarded-For")
-	if ip == "" {
-		ip, _, _ = strings.Cut(r.RemoteAddr, ":")
-	} else {
-		ip = strings.TrimSpace(strings.SplitN(ip, ",", 2)[0])
-	}
+	ip := clientIP(r.RemoteAddr, r.Header)
 	if h.checkLoginRateLimit(ip) {
 		writeError(w, http.StatusTooManyRequests, "rate_limited",
 			"Too many login attempts. Try again in a minute.", "")
@@ -568,6 +605,12 @@ func (h *Handler) PushClip(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "empty content", "No content to push", "Pipe content: echo 'text' | cinch push")
 		return
 	}
+
+	// media_path is server-owned: only PushBinaryClip / uploadImageMedia may set
+	// it, always to a freshly generated server key. Strip any client-supplied
+	// value so a clip can never be made to point at another tenant's media key
+	// (GetClipMedia/DeleteClip trust the stored key against the shared store).
+	req.MediaPath = nil
 
 	// E2EE is mandatory for non-demo users. Demo identities are server-side
 	// ephemeral with no client-side key exchange; demo data is intentionally
@@ -890,6 +933,31 @@ func (h *Handler) ListDevices(w http.ResponseWriter, r *http.Request) {
 // obtained from POST /ws/ticket. The bearer token never appears in the URL.
 // Legacy path: ?token=<token> — kept for legacy clients during the
 // migration window.
+const (
+	// defaultWSReadLimitBytes bounds a single inbound WebSocket frame. Agents
+	// only ever send small pong frames (HandleAgentMessage handles nothing
+	// else), so this is deliberately tight.
+	defaultWSReadLimitBytes int64 = 32 << 10 // 32 KiB
+	// defaultWSReadDeadline is how long a connection may stay silent before the
+	// read loop reaps it. It must exceed the hub's heartbeat interval (5m) so a
+	// live-but-quiet client, which replies to each ping, is never killed.
+	defaultWSReadDeadline = 11 * time.Minute
+)
+
+func (h *Handler) wsReadLimit() int64 {
+	if h.WSReadLimitBytes > 0 {
+		return h.WSReadLimitBytes
+	}
+	return defaultWSReadLimitBytes
+}
+
+func (h *Handler) wsReadDeadlineDur() time.Duration {
+	if h.WSReadDeadline > 0 {
+		return h.WSReadDeadline
+	}
+	return defaultWSReadDeadline
+}
+
 func (h *Handler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Ticket path: short-lived, single-use — bearer token not exposed in URL.
 	if ticket := r.URL.Query().Get("ticket"); ticket != "" {
@@ -997,7 +1065,15 @@ func (h *Handler) replayPendingAndStartReadLoop(ac *AgentConn) {
 	// reconnect cannot evict the live replacement.
 	go func() {
 		defer h.hub.RemoveConn(ac)
+		// Bound a single inbound frame (agents only send tiny pong frames) so a
+		// malicious client cannot make the server buffer a huge message.
+		conn.SetReadLimit(h.wsReadLimit())
+		readDeadline := h.wsReadDeadlineDur()
 		for {
+			// Refresh before each read. The hub's app-level heartbeat keeps a
+			// live client sending pongs well inside this window; a silent socket
+			// trips the deadline and is reaped instead of pinned forever.
+			_ = conn.SetReadDeadline(time.Now().Add(readDeadline))
 			var msg protocol.WSMessage
 			if err := conn.ReadJSON(&msg); err != nil {
 				if shouldLogWSClose(err) {
@@ -1799,7 +1875,7 @@ func (h *Handler) IssueDeviceCode(w http.ResponseWriter, r *http.Request) {
 		userHint = *req.UserHint
 	}
 
-	resp, err := h.startDeviceCode(hostname, machineID, userHint, extractRequesterIP(r.Header))
+	resp, err := h.startDeviceCode(hostname, machineID, userHint, clientIP(r.RemoteAddr, r.Header))
 	if err != nil {
 		if errors.Is(err, ErrRateLimited) {
 			writeError(w, http.StatusTooManyRequests, "rate_limited",
@@ -2037,6 +2113,7 @@ func (h *Handler) httpRoutes() []httpRoute {
 		{"GET /auth/oauth/github/callback", h.OAuthCallback("github"), nil},
 		{"GET /auth/oauth/google/start", h.OAuthStart("google"), nil},
 		{"GET /auth/oauth/google/callback", h.OAuthCallback("google"), nil},
+		{"POST /auth/oauth/confirm", h.OAuthConfirm, nil},
 
 		// Anonymous opt-in telemetry (always 200; dropped if backend unset).
 		{"POST /telemetry", h.HandleTelemetry, nil},

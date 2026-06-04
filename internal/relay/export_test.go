@@ -22,9 +22,12 @@ func (s *Store) ExecForTest(query string, args ...interface{}) (sql.Result, erro
 }
 
 // EncodeStateForTest exposes encodeState for oauth_test.go.
-func EncodeStateForTest(userCode, clientSecret string) string {
-	return encodeState(userCode, clientSecret)
+func EncodeStateForTest(userCode, nonce, clientSecret string) string {
+	return encodeState(userCode, nonce, clientSecret)
 }
+
+// OAuthStateCookieName exposes the per-flow nonce cookie name for oauth_test.go.
+func OAuthStateCookieName() string { return oauthStateCookie }
 
 // IssueWsTicketForTest exposes issueWsTicket for white-box unit tests.
 func IssueWsTicketForTest(userID, deviceID string) string {

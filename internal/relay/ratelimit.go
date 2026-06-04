@@ -42,3 +42,27 @@ func (l *slidingWindowLimiter) Allow(key string) bool {
 	l.hits[key] = keep
 	return true
 }
+
+// reap deletes every key whose entire window has elapsed as of now, and prunes
+// stale timestamps from the rest. Without it the hits map only ever shrinks a
+// key's slice when that exact key is seen again, so attacker-chosen keys (e.g.
+// spoofable IPs on public routes) leave permanent entries that grow the map
+// without bound. Safe to call concurrently with Allow.
+func (l *slidingWindowLimiter) reap(now time.Time) {
+	cutoff := now.Add(-l.window)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for key, arr := range l.hits {
+		keep := arr[:0]
+		for _, t := range arr {
+			if t.After(cutoff) {
+				keep = append(keep, t)
+			}
+		}
+		if len(keep) == 0 {
+			delete(l.hits, key)
+		} else {
+			l.hits[key] = keep
+		}
+	}
+}

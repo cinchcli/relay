@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -15,6 +16,10 @@ import (
 )
 
 const testClientSecret = "test-secret-abc123"
+
+// testNonce is a fixed 128-bit hex nonce used to mint signed states and the
+// matching nonce cookie in CLI-flow tests.
+const testNonce = "0123456789abcdef0123456789abcdef"
 
 // setupOAuthTestServer builds a relay handler with fake OAuth provider(s) wired up.
 // fakeSubject is what the injected subjectFetcher returns.
@@ -74,14 +79,86 @@ func setupOAuthTestServer(t *testing.T, fakeSubject string, bothProviders bool) 
 	return ts, tokenServer
 }
 
-// buildCallbackURL constructs /auth/oauth/google/callback?code=X&state=Y.
+// buildCallbackURL constructs /auth/oauth/google/callback?code=X&state=Y. The
+// state carries testNonce; for the CLI flow (non-empty user_code) the request
+// still needs the matching nonce cookie — use cliCallback for that.
 func buildCallbackURL(base, userCode, clientSecret string) string {
-	state := relay.EncodeStateForTest(userCode, clientSecret)
+	state := relay.EncodeStateForTest(userCode, testNonce, clientSecret)
 	v := url.Values{
 		"code":  {"fake-oauth-code"},
 		"state": {state},
 	}
 	return base + "/auth/oauth/google/callback?" + v.Encode()
+}
+
+// testDeviceCode is the subset of the device-code response the tests need.
+type testDeviceCode struct {
+	DeviceCode string `json:"device_code"`
+	UserCode   string `json:"user_code"`
+}
+
+// issueDeviceCode starts a real device-code flow so CompleteDeviceCode has a
+// row to update, returning both the device_code and user_code.
+func issueDeviceCode(t *testing.T, base, hostname string) testDeviceCode {
+	t.Helper()
+	resp, err := http.Post(base+"/auth/device-code", "application/json",
+		strings.NewReader(`{"hostname":"`+hostname+`"}`))
+	if err != nil {
+		t.Fatalf("device code request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	var dc testDeviceCode
+	if err := json.NewDecoder(resp.Body).Decode(&dc); err != nil {
+		t.Fatalf("decode device code: %v", err)
+	}
+	if dc.UserCode == "" {
+		t.Fatal("user_code is empty")
+	}
+	return dc
+}
+
+// cliCallback performs the CLI OAuth callback with the per-flow nonce cookie
+// set, exactly as the browser that ran OAuthStart would send it. The returned
+// response body is still open.
+func cliCallback(t *testing.T, base, userCode, clientSecret string) *http.Response {
+	t.Helper()
+	state := relay.EncodeStateForTest(userCode, testNonce, clientSecret)
+	u := base + "/auth/oauth/google/callback?" + url.Values{
+		"code":  {"fake-oauth-code"},
+		"state": {state},
+	}.Encode()
+	req, err := http.NewRequest(http.MethodGet, u, nil)
+	if err != nil {
+		t.Fatalf("build callback request: %v", err)
+	}
+	req.AddCookie(&http.Cookie{Name: relay.OAuthStateCookieName(), Value: testNonce})
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("callback request failed: %v", err)
+	}
+	return resp
+}
+
+// ticketField extracts the hidden ticket value from the confirm page HTML.
+var ticketField = regexp.MustCompile(`name="ticket" value="([^"]+)"`)
+
+func extractTicket(t *testing.T, html string) string {
+	t.Helper()
+	m := ticketField.FindStringSubmatch(html)
+	if len(m) != 2 {
+		t.Fatalf("confirm page missing ticket field; body: %.300s", html)
+	}
+	return m[1]
+}
+
+// confirmTicket POSTs the ticket to /auth/oauth/confirm, completing the flow.
+func confirmTicket(t *testing.T, base, ticket string) *http.Response {
+	t.Helper()
+	resp, err := http.PostForm(base+"/auth/oauth/confirm", url.Values{"ticket": {ticket}})
+	if err != nil {
+		t.Fatalf("confirm POST failed: %v", err)
+	}
+	return resp
 }
 
 // ── Desktop flow ────────────────────────────────────────────────────────────
@@ -171,30 +248,17 @@ func TestOAuthCallback_Desktop_SecondLogin_ReusesSameUser(t *testing.T) {
 
 // ── CLI flow ────────────────────────────────────────────────────────────────
 
-// TestOAuthCallback_CLI_ShowsSuccessHTML verifies that when a device_code is
-// present (CLI flow), the response is the HTML success page (not a redirect).
-func TestOAuthCallback_CLI_ShowsSuccessHTML(t *testing.T) {
+// TestOAuthCallback_CLI_ShowsConfirmPage verifies that when a device_code is
+// present (CLI flow), the callback renders a confirmation page that displays the
+// user_code and posts to /auth/oauth/confirm — it must NOT auto-complete the
+// device-code flow (RFC 8628 user_code confirmation, device-code phishing
+// defense).
+func TestOAuthCallback_CLI_ShowsConfirmPage(t *testing.T) {
 	ts, _ := setupOAuthTestServer(t, "cli-subject-456", false)
 
-	// Issue a real device code so CompleteDeviceCode has a row to update.
-	dcResp, err := http.Post(ts.URL+"/auth/device-code", "application/json",
-		strings.NewReader(`{"hostname":"test-cli"}`))
-	if err != nil {
-		t.Fatalf("device code request failed: %v", err)
-	}
-	defer dcResp.Body.Close()
-	var dc struct {
-		UserCode string `json:"user_code"`
-	}
-	json.NewDecoder(dcResp.Body).Decode(&dc)
-	if dc.UserCode == "" {
-		t.Fatal("user_code is empty")
-	}
+	dc := issueDeviceCode(t, ts.URL, "test-cli")
 
-	resp, err := http.Get(buildCallbackURL(ts.URL, dc.UserCode, testClientSecret))
-	if err != nil {
-		t.Fatalf("callback request failed: %v", err)
-	}
+	resp := cliCallback(t, ts.URL, dc.UserCode, testClientSecret)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
@@ -208,61 +272,108 @@ func TestOAuthCallback_CLI_ShowsSuccessHTML(t *testing.T) {
 	}
 
 	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), "Signed in") {
-		t.Errorf("expected success HTML with 'Signed in', got: %.200s", body)
+	// The confirm page must surface the user_code so the human can check it
+	// matches the code their terminal printed before confirming.
+	if !strings.Contains(string(body), dc.UserCode) {
+		t.Errorf("confirm page should display user_code %q; body: %.300s", dc.UserCode, body)
+	}
+	// It must post to the confirm endpoint rather than show "Signed in".
+	if !strings.Contains(string(body), "/auth/oauth/confirm") {
+		t.Errorf("confirm page should post to /auth/oauth/confirm; body: %.300s", body)
+	}
+	if strings.Contains(string(body), "Signed in") {
+		t.Errorf("callback must not auto-complete (no success page yet); body: %.300s", body)
 	}
 }
 
-// TestOAuthCallback_CLI_CompletesDeviceCode verifies that the CLI flow marks the
-// device code as complete so that poll returns the credentials.
+// TestOAuthCallback_CLI_CompletesDeviceCode verifies the full CLI flow: the
+// callback alone leaves the device-code pending; only the confirm POST marks it
+// complete so poll returns the credentials.
 func TestOAuthCallback_CLI_CompletesDeviceCode(t *testing.T) {
 	ts, _ := setupOAuthTestServer(t, "cli-subject-poll", false)
 
-	// Issue device code.
-	dcResp, _ := http.Post(ts.URL+"/auth/device-code", "application/json",
-		strings.NewReader(`{"hostname":"poll-test"}`))
-	var dc struct {
-		DeviceCode string `json:"device_code"`
-		UserCode   string `json:"user_code"`
-	}
-	json.NewDecoder(dcResp.Body).Decode(&dc)
-	dcResp.Body.Close()
+	dc := issueDeviceCode(t, ts.URL, "poll-test")
 
-	// Poll before callback — should be pending.
-	pollResp, _ := http.Get(ts.URL + "/auth/device-code/poll?code=" + dc.DeviceCode)
-	var pending struct{ Status string }
-	json.NewDecoder(pollResp.Body).Decode(&pending)
-	pollResp.Body.Close()
-	if pending.Status != "pending" {
-		t.Fatalf("expected pending before callback, got %q", pending.Status)
+	pollStatus := func() (status, token, userID string) {
+		resp, _ := http.Get(ts.URL + "/auth/device-code/poll?code=" + dc.DeviceCode)
+		var p struct {
+			Status string `json:"status"`
+			Token  string `json:"token"`
+			UserID string `json:"user_id"`
+		}
+		json.NewDecoder(resp.Body).Decode(&p)
+		resp.Body.Close()
+		return p.Status, p.Token, p.UserID
 	}
 
-	// Trigger CLI OAuth callback.
-	cbResp, err := http.Get(buildCallbackURL(ts.URL, dc.UserCode, testClientSecret))
-	if err != nil {
-		t.Fatalf("callback failed: %v", err)
+	// Poll before callback — pending.
+	if status, _, _ := pollStatus(); status != "pending" {
+		t.Fatalf("expected pending before callback, got %q", status)
 	}
+
+	// CLI OAuth callback renders the confirm page; it does not complete yet.
+	cbResp := cliCallback(t, ts.URL, dc.UserCode, testClientSecret)
+	body, _ := io.ReadAll(cbResp.Body)
 	cbResp.Body.Close()
 
-	// Poll after callback — should be complete with credentials.
-	pollResp2, _ := http.Get(ts.URL + "/auth/device-code/poll?code=" + dc.DeviceCode)
-	var complete struct {
-		Status   string `json:"status"`
-		Token    string `json:"token"`
-		UserID   string `json:"user_id"`
-		DeviceID string `json:"device_id"`
+	// Still pending until the user confirms.
+	if status, _, _ := pollStatus(); status != "pending" {
+		t.Fatalf("expected still pending before confirm, got %q", status)
 	}
-	json.NewDecoder(pollResp2.Body).Decode(&complete)
-	pollResp2.Body.Close()
 
-	if complete.Status != "complete" {
-		t.Errorf("expected status=complete after callback, got %q", complete.Status)
+	// Confirm with the ticket embedded in the page.
+	ticket := extractTicket(t, string(body))
+	confResp := confirmTicket(t, ts.URL, ticket)
+	confBody, _ := io.ReadAll(confResp.Body)
+	confResp.Body.Close()
+	if confResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from confirm, got %d: %s", confResp.StatusCode, confBody)
 	}
-	if complete.Token == "" {
+	if !strings.Contains(string(confBody), "Signed in") {
+		t.Errorf("expected success HTML after confirm, got: %.200s", confBody)
+	}
+
+	// Poll after confirm — complete with credentials.
+	status, token, userID := pollStatus()
+	if status != "complete" {
+		t.Errorf("expected status=complete after confirm, got %q", status)
+	}
+	if token == "" {
 		t.Error("token should not be empty after completion")
 	}
-	if complete.UserID == "" {
+	if userID == "" {
 		t.Error("user_id should not be empty after completion")
+	}
+}
+
+// TestOAuthCallback_CLI_MissingNonceCookie_Returns400 verifies that a CLI-flow
+// callback without the per-flow nonce cookie set by OAuthStart is rejected. This
+// blocks cross-browser state replay / login-CSRF.
+func TestOAuthCallback_CLI_MissingNonceCookie_Returns400(t *testing.T) {
+	ts, _ := setupOAuthTestServer(t, "cli-subject-nocookie", false)
+	dc := issueDeviceCode(t, ts.URL, "nocookie-host")
+
+	// buildCallbackURL does not attach the nonce cookie; with a non-empty
+	// user_code this is the CLI flow, so the cookie is required.
+	resp, err := http.Get(buildCallbackURL(ts.URL, dc.UserCode, testClientSecret))
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400 when nonce cookie missing, got %d", resp.StatusCode)
+	}
+}
+
+// TestOAuthConfirm_InvalidTicket_Returns400 verifies an unknown/forged confirm
+// ticket is rejected without completing any flow.
+func TestOAuthConfirm_InvalidTicket_Returns400(t *testing.T) {
+	ts, _ := setupOAuthTestServer(t, "any", false)
+
+	resp := confirmTicket(t, ts.URL, "not-a-real-ticket")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid ticket, got %d", resp.StatusCode)
 	}
 }
 
@@ -293,7 +404,7 @@ func TestOAuthCallback_InvalidState_Returns400(t *testing.T) {
 func TestOAuthCallback_MissingCode_Returns400(t *testing.T) {
 	ts, _ := setupOAuthTestServer(t, "any-subject", false)
 
-	state := relay.EncodeStateForTest("", testClientSecret)
+	state := relay.EncodeStateForTest("", testNonce, testClientSecret)
 	v := url.Values{"state": {state}} // no code param
 	resp, err := http.Get(ts.URL + "/auth/oauth/google/callback?" + v.Encode())
 	if err != nil {
@@ -375,25 +486,17 @@ func TestOAuthStart_OAuthNotConfigured_Returns501(t *testing.T) {
 func TestOAuthCallback_ReauthAfterRevoke_ClearsRevocation(t *testing.T) {
 	ts, _ := setupOAuthTestServer(t, "reauth-subject-789", false)
 
-	// Helper: run the full device-code OAuth flow and return the device token.
+	// Helper: run the full device-code OAuth flow (callback + confirm) and
+	// return the device token.
 	doOAuthFlow := func() (token, deviceID string) {
-		dcResp, err := http.Post(ts.URL+"/auth/device-code", "application/json",
-			strings.NewReader(`{"hostname":"reauth-host"}`))
-		if err != nil {
-			t.Fatalf("device code request failed: %v", err)
-		}
-		var dc struct {
-			DeviceCode string `json:"device_code"`
-			UserCode   string `json:"user_code"`
-		}
-		json.NewDecoder(dcResp.Body).Decode(&dc)
-		dcResp.Body.Close()
+		dc := issueDeviceCode(t, ts.URL, "reauth-host")
 
-		cbResp, err := http.Get(buildCallbackURL(ts.URL, dc.UserCode, testClientSecret))
-		if err != nil {
-			t.Fatalf("oauth callback failed: %v", err)
-		}
+		cbResp := cliCallback(t, ts.URL, dc.UserCode, testClientSecret)
+		cbBody, _ := io.ReadAll(cbResp.Body)
 		cbResp.Body.Close()
+
+		confResp := confirmTicket(t, ts.URL, extractTicket(t, string(cbBody)))
+		confResp.Body.Close()
 
 		pollResp, err := http.Get(ts.URL + "/auth/device-code/poll?code=" + dc.DeviceCode)
 		if err != nil {

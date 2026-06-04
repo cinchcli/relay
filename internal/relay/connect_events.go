@@ -101,5 +101,6 @@ func (h *Handler) newEventsConnectHandler() (string, http.Handler) {
 	return cinchv1connect.NewEventStreamServiceHandler(
 		&connectEventsServer{h: h},
 		connect.WithInterceptors(&eventsAuthInterceptor{h: h}),
+		connect.WithReadMaxBytes(h.connectReadMax()),
 	)
 }

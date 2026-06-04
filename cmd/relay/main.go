@@ -117,6 +117,11 @@ func runServer() {
 	relay.StartWSTicketReaper(context.Background())
 
 	handler := relay.NewHandler(store, hub)
+
+	// Evict fully-expired keys from the in-process rate limiters so spoofable
+	// per-IP keys on the public routes cannot grow the maps unbounded.
+	handler.StartRateLimitReaper(context.Background())
+
 	handler.SetMediaStore(mediaStore)
 	handler.BaseURL = cfg.BaseURL
 	handler.CORSOrigins = cfg.CORSOrigins
@@ -153,8 +158,10 @@ func runServer() {
 
 	slog.Info("relay listening", "version", version, "port", cfg.Port)
 	srv := &http.Server{
-		Addr:    ":" + cfg.Port,
-		Handler: mux,
+		Addr: ":" + cfg.Port,
+		// Wrap the mux so every response carries baseline security headers
+		// (nosniff, X-Frame-Options, Referrer-Policy, HSTS over TLS).
+		Handler: relay.SecurityHeaders(mux),
 		// Cap header-read time to defend against slowloris-style attacks
 		// without affecting hijacked WebSocket connections (/ws) or
 		// Connect-RPC streaming endpoints (/v1/events), which need to stay
