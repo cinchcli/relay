@@ -117,6 +117,11 @@ func runServer() {
 	relay.StartWSTicketReaper(context.Background())
 
 	handler := relay.NewHandler(store, hub)
+
+	// Evict fully-expired keys from the in-process rate limiters so spoofable
+	// per-IP keys on the public routes cannot grow the maps unbounded.
+	handler.StartRateLimitReaper(context.Background())
+
 	handler.SetMediaStore(mediaStore)
 	handler.BaseURL = cfg.BaseURL
 	handler.CORSOrigins = cfg.CORSOrigins

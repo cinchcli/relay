@@ -164,6 +164,34 @@ func StartWSTicketReaper(ctx context.Context) {
 	}()
 }
 
+// StartRateLimitReaper periodically evicts fully-expired keys from the
+// in-process rate limiters. The limiters otherwise only prune a key's slice
+// when that exact key is seen again, so attacker-chosen keys on the
+// unauthenticated routes (telemetry by CF-Connecting-IP, device-code by
+// X-Forwarded-For) would accumulate permanent map entries. Mirrors
+// StartWSTicketReaper.
+func (h *Handler) StartRateLimitReaper(ctx context.Context) {
+	limiters := []*slidingWindowLimiter{
+		h.telemetryLimiter, h.loginLimiter, h.pendingLimit, h.deviceCodeIPLimit,
+	}
+	go func() {
+		ticker := time.NewTicker(1 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-ticker.C:
+				for _, l := range limiters {
+					if l != nil {
+						l.reap(now)
+					}
+				}
+			}
+		}
+	}()
+}
+
 type Handler struct {
 	store       *Store
 	hub         *Hub
@@ -177,6 +205,13 @@ type Handler struct {
 	// — never unlimited. connect-go's own default is 0 = unlimited, so this must
 	// be wired explicitly on every service handler (see connectReadMax).
 	ConnectReadMaxBytes int
+
+	// WSReadLimitBytes caps a single inbound WebSocket frame; WSReadDeadline
+	// bounds how long a connection may stay silent before it is reaped. 0 means
+	// "use the default" (see wsReadLimit / wsReadDeadlineDur). Agents only ever
+	// send tiny pong frames, so the read limit is small.
+	WSReadLimitBytes int64
+	WSReadDeadline   time.Duration
 
 	TelemetryURL    string // e.g. https://telemetry.jinmu.me
 	TelemetryAPIKey string // X-API-Key sent to telemetry backend
@@ -902,6 +937,31 @@ func (h *Handler) ListDevices(w http.ResponseWriter, r *http.Request) {
 // obtained from POST /ws/ticket. The bearer token never appears in the URL.
 // Legacy path: ?token=<token> — kept for legacy clients during the
 // migration window.
+const (
+	// defaultWSReadLimitBytes bounds a single inbound WebSocket frame. Agents
+	// only ever send small pong frames (HandleAgentMessage handles nothing
+	// else), so this is deliberately tight.
+	defaultWSReadLimitBytes int64 = 32 << 10 // 32 KiB
+	// defaultWSReadDeadline is how long a connection may stay silent before the
+	// read loop reaps it. It must exceed the hub's heartbeat interval (5m) so a
+	// live-but-quiet client, which replies to each ping, is never killed.
+	defaultWSReadDeadline = 11 * time.Minute
+)
+
+func (h *Handler) wsReadLimit() int64 {
+	if h.WSReadLimitBytes > 0 {
+		return h.WSReadLimitBytes
+	}
+	return defaultWSReadLimitBytes
+}
+
+func (h *Handler) wsReadDeadlineDur() time.Duration {
+	if h.WSReadDeadline > 0 {
+		return h.WSReadDeadline
+	}
+	return defaultWSReadDeadline
+}
+
 func (h *Handler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Ticket path: short-lived, single-use — bearer token not exposed in URL.
 	if ticket := r.URL.Query().Get("ticket"); ticket != "" {
@@ -1009,7 +1069,15 @@ func (h *Handler) replayPendingAndStartReadLoop(ac *AgentConn) {
 	// reconnect cannot evict the live replacement.
 	go func() {
 		defer h.hub.RemoveConn(ac)
+		// Bound a single inbound frame (agents only send tiny pong frames) so a
+		// malicious client cannot make the server buffer a huge message.
+		conn.SetReadLimit(h.wsReadLimit())
+		readDeadline := h.wsReadDeadlineDur()
 		for {
+			// Refresh before each read. The hub's app-level heartbeat keeps a
+			// live client sending pongs well inside this window; a silent socket
+			// trips the deadline and is reaped instead of pinned forever.
+			_ = conn.SetReadDeadline(time.Now().Add(readDeadline))
 			var msg protocol.WSMessage
 			if err := conn.ReadJSON(&msg); err != nil {
 				if shouldLogWSClose(err) {
