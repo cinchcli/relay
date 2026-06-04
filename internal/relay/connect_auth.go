@@ -502,5 +502,6 @@ func (h *Handler) newAuthConnectHandler() (string, http.Handler) {
 	return cinchv1connect.NewAuthServiceHandler(
 		&connectAuthServer{h: h},
 		connect.WithInterceptors(h.authConnectInterceptor()),
+		connect.WithReadMaxBytes(h.connectReadMax()),
 	)
 }

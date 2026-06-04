@@ -172,6 +172,12 @@ type Handler struct {
 	OAuth       *OAuthProviders // nil = OAuth not configured; self-host falls back to username form
 	CORSOrigins []string        // extra allowed origins beyond the hardcoded landing page defaults
 
+	// ConnectReadMaxBytes caps the decoded size of any single Connect-RPC
+	// request message. 0 (the zero value) means "use defaultConnectReadMaxBytes"
+	// — never unlimited. connect-go's own default is 0 = unlimited, so this must
+	// be wired explicitly on every service handler (see connectReadMax).
+	ConnectReadMaxBytes int
+
 	TelemetryURL    string // e.g. https://telemetry.jinmu.me
 	TelemetryAPIKey string // X-API-Key sent to telemetry backend
 
@@ -568,6 +574,12 @@ func (h *Handler) PushClip(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "empty content", "No content to push", "Pipe content: echo 'text' | cinch push")
 		return
 	}
+
+	// media_path is server-owned: only PushBinaryClip / uploadImageMedia may set
+	// it, always to a freshly generated server key. Strip any client-supplied
+	// value so a clip can never be made to point at another tenant's media key
+	// (GetClipMedia/DeleteClip trust the stored key against the shared store).
+	req.MediaPath = nil
 
 	// E2EE is mandatory for non-demo users. Demo identities are server-side
 	// ephemeral with no client-side key exchange; demo data is intentionally

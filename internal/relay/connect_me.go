@@ -83,5 +83,6 @@ func (h *Handler) newMeConnectHandler() (string, http.Handler) {
 	return cinchv1connect.NewMeServiceHandler(
 		&connectMeServer{h: h},
 		connect.WithInterceptors(h.clipsConnectInterceptor()),
+		connect.WithReadMaxBytes(h.connectReadMax()),
 	)
 }

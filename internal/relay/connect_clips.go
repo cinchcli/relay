@@ -94,6 +94,11 @@ func (s *connectClipsServer) PushClip(ctx context.Context, req *connect.Request[
 		return nil, connect.NewError(connect.CodeInvalidArgument, errMsg("content is required"))
 	}
 
+	// media_path is server-owned: strip any client-supplied value before
+	// uploadImageMedia (the only path allowed to set it) so a clip can never be
+	// made to reference another tenant's media key in the shared store.
+	req.Msg.MediaPath = nil
+
 	// E2EE is mandatory for non-demo users.
 	isDemoUser := req.Header().Get("X-Is-Demo") == "true"
 	if !isDemoUser && !req.Msg.Encrypted {
@@ -113,15 +118,19 @@ func (s *connectClipsServer) PushClip(ctx context.Context, req *connect.Request[
 						fmt.Errorf("rate_limit_exceeded: daily push limit of %d reached", cap.RateLimit))
 				}
 			}
+			// Enforce quotas against the ACTUAL decoded content length, not the
+			// client-supplied ByteSize (which a client can under-report to slip
+			// past the per-user cap). Mirrors the REST PushClip handler.
+			contentLen := int64(len(req.Msg.Content))
 			if cap.MaxClipSizeKb > 0 {
-				if req.Msg.ByteSize > int64(cap.MaxClipSizeKb)*1024 {
+				if contentLen > int64(cap.MaxClipSizeKb)*1024 {
 					return nil, connect.NewError(connect.CodeInvalidArgument,
 						fmt.Errorf("clip_too_large: maximum allowed size is %d KB", cap.MaxClipSizeKb))
 				}
 			}
 			if cap.StorageLimitMb > 0 {
 				used, usedErr := s.h.store.GetUserStorageUsage(userID)
-				if usedErr == nil && used+req.Msg.ByteSize > int64(cap.StorageLimitMb)*1024*1024 {
+				if usedErr == nil && used+contentLen > int64(cap.StorageLimitMb)*1024*1024 {
 					return nil, connect.NewError(connect.CodeResourceExhausted,
 						fmt.Errorf("storage_quota_exceeded: total storage limit of %d MB reached", cap.StorageLimitMb))
 				}
@@ -259,10 +268,28 @@ func (s *connectClipsServer) DeleteClip(ctx context.Context, req *connect.Reques
 	return connect.NewResponse(&cinchv1.DeleteClipResponse{Ok: true}), nil
 }
 
+// defaultConnectReadMaxBytes bounds the decoded size of a single Connect-RPC
+// request message. It is generous enough for an inline-encrypted clipboard
+// image (the REST binary path caps uploads at 20 MiB) plus framing/encryption
+// overhead, while stopping a client from streaming a multi-gigabyte message to
+// OOM the relay. connect-go's own default is 0 = unlimited.
+const defaultConnectReadMaxBytes = 64 << 20 // 64 MiB
+
+// connectReadMax returns the configured per-message read cap, falling back to
+// defaultConnectReadMaxBytes. It never returns 0 (which connect-go treats as
+// unlimited), so forgetting to set the field still yields a bounded handler.
+func (h *Handler) connectReadMax() int {
+	if h.ConnectReadMaxBytes > 0 {
+		return h.ConnectReadMaxBytes
+	}
+	return defaultConnectReadMaxBytes
+}
+
 // newClipsConnectHandler wraps the Connect ClipsService handler with auth interceptor.
 func (h *Handler) newClipsConnectHandler() (string, http.Handler) {
 	return cinchv1connect.NewClipsServiceHandler(
 		&connectClipsServer{h: h},
 		connect.WithInterceptors(h.clipsConnectInterceptor()),
+		connect.WithReadMaxBytes(h.connectReadMax()),
 	)
 }
