@@ -16,20 +16,6 @@ import (
 	"github.com/cinchcli/relay/internal/cinchv1/cinchv1connect"
 )
 
-// extractRequesterIP returns the client IP from request headers, preferring
-// X-Forwarded-For (first hop), falling back to X-Real-IP, then empty. Used
-// for audit logging on device_codes rows; the reverse proxy is responsible
-// for setting these headers.
-func extractRequesterIP(h http.Header) string {
-	if xff := h.Get("X-Forwarded-For"); xff != "" {
-		if i := strings.IndexByte(xff, ','); i >= 0 {
-			return strings.TrimSpace(xff[:i])
-		}
-		return strings.TrimSpace(xff)
-	}
-	return h.Get("X-Real-IP")
-}
-
 // connectAuthServer implements cinchv1connect.AuthServiceHandler.
 // Mirrors AuthLogin handler logic — same store calls, same token generation.
 type connectAuthServer struct {
@@ -127,14 +113,7 @@ func (s *connectAuthServer) Login(ctx context.Context, req *connect.Request[cinc
 	}
 
 	// IP rate limiter: mirror the per-IP window applied by REST AuthLogin.
-	ip := req.Header().Get("X-Forwarded-For")
-	if ip == "" {
-		if addr := req.Peer().Addr; addr != "" {
-			ip, _, _ = strings.Cut(addr, ":")
-		}
-	} else {
-		ip = strings.TrimSpace(strings.SplitN(ip, ",", 2)[0])
-	}
+	ip := clientIP(req.Peer().Addr, req.Header())
 	if s.h.checkLoginRateLimit(ip) {
 		return nil, connect.NewError(connect.CodeResourceExhausted, errors.New("rate_limited"))
 	}
@@ -198,7 +177,7 @@ func (s *connectAuthServer) DeviceCodeStart(ctx context.Context, req *connect.Re
 	if req.Msg.UserHint != nil {
 		userHint = *req.Msg.UserHint
 	}
-	resp, err := s.h.startDeviceCode(hostname, machineID, userHint, extractRequesterIP(req.Header()))
+	resp, err := s.h.startDeviceCode(hostname, machineID, userHint, clientIP(req.Peer().Addr, req.Header()))
 	if err != nil {
 		if errors.Is(err, ErrRateLimited) {
 			return nil, connect.NewError(connect.CodeResourceExhausted, errMsg("rate limit exceeded"))

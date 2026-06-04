@@ -356,12 +356,7 @@ func (h *Handler) AuthLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ip := r.Header.Get("X-Forwarded-For")
-	if ip == "" {
-		ip, _, _ = strings.Cut(r.RemoteAddr, ":")
-	} else {
-		ip = strings.TrimSpace(strings.SplitN(ip, ",", 2)[0])
-	}
+	ip := clientIP(r.RemoteAddr, r.Header)
 	if h.checkLoginRateLimit(ip) {
 		writeError(w, http.StatusTooManyRequests, "rate_limited",
 			"Too many login attempts. Try again in a minute.", "")
@@ -1879,7 +1874,7 @@ func (h *Handler) IssueDeviceCode(w http.ResponseWriter, r *http.Request) {
 		userHint = *req.UserHint
 	}
 
-	resp, err := h.startDeviceCode(hostname, machineID, userHint, extractRequesterIP(r.Header))
+	resp, err := h.startDeviceCode(hostname, machineID, userHint, clientIP(r.RemoteAddr, r.Header))
 	if err != nil {
 		if errors.Is(err, ErrRateLimited) {
 			writeError(w, http.StatusTooManyRequests, "rate_limited",

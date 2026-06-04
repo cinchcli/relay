@@ -509,36 +509,5 @@ func TestListPendingDeviceCodes_FiltersByUserAndStatus(t *testing.T) {
 	}
 }
 
-// TestExtractRequesterIP_PrefersXFFFirstHop verifies the helper picks
-// the leftmost IP from X-Forwarded-For chains, falls back to X-Real-IP,
-// and trims whitespace.
-func TestExtractRequesterIP_PrefersXFFFirstHop(t *testing.T) {
-	cases := []struct {
-		name string
-		xff  string
-		real string
-		want string
-	}{
-		{"xff single", "203.0.113.10", "", "203.0.113.10"},
-		{"xff chain", "203.0.113.10, 10.0.0.1, 172.16.0.1", "", "203.0.113.10"},
-		{"xff whitespace", "  203.0.113.10  ", "", "203.0.113.10"},
-		{"real ip fallback", "", "198.51.100.7", "198.51.100.7"},
-		{"xff wins over real", "203.0.113.10", "198.51.100.7", "203.0.113.10"},
-		{"empty", "", "", ""},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			h := make(map[string][]string)
-			if tc.xff != "" {
-				h["X-Forwarded-For"] = []string{tc.xff}
-			}
-			if tc.real != "" {
-				h["X-Real-Ip"] = []string{tc.real}
-			}
-			got := extractRequesterIP(h)
-			if got != tc.want {
-				t.Errorf("got %q, want %q", got, tc.want)
-			}
-		})
-	}
-}
+// extractRequesterIP was removed in favor of clientIP (peer-aware trusted-proxy
+// IP extraction); its header-parsing behavior is covered by TestClientIP.
