@@ -174,9 +174,13 @@ func (s *connectClipsServer) PushClip(ctx context.Context, req *connect.Request[
 	}
 
 	if !isDup {
-		if err := s.h.hub.SendClip(userID, clip); err != nil {
-			slog.Error("connectClipsServer.PushClip ws broadcast failed", "user", userID, "err", err)
+		delivered, sendErr := s.h.hub.SendClip(userID, clip)
+		if sendErr != nil {
+			slog.Error("connectClipsServer.PushClip ws broadcast failed", "user", userID, "err", sendErr)
 		}
+		// Loop completion: clip_send (denominator) + clip_read for every device the
+		// hub delivered to over WS at push time (the push side of the loop).
+		s.h.emitClipSendAndDeliveries(userID, req.Header().Get("X-Device-ID"), clip.ClipId, isDemoUser, delivered)
 	}
 
 	return connect.NewResponse(&cinchv1.PushClipResponse{
@@ -202,6 +206,7 @@ func (s *connectClipsServer) ListClips(ctx context.Context, req *connect.Request
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
+		s.h.emitClipReads(userID, req.Header().Get("X-Device-ID"), req.Header().Get("X-Is-Demo") == "true", clips)
 		return connect.NewResponse(&cinchv1.ListClipsResponse{Clips: clips}), nil
 	}
 
@@ -216,6 +221,7 @@ func (s *connectClipsServer) ListClips(ctx context.Context, req *connect.Request
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	s.h.emitClipReads(userID, req.Header().Get("X-Device-ID"), req.Header().Get("X-Is-Demo") == "true", clips)
 	return connect.NewResponse(&cinchv1.ListClipsResponse{Clips: clips}), nil
 }
 
@@ -247,6 +253,9 @@ func (s *connectClipsServer) GetLatestClip(ctx context.Context, req *connect.Req
 	if err != nil {
 		return nil, connect.NewError(connect.CodeNotFound, err)
 	}
+	// Loop-completion numerator: a device read a clip (cross-device counted in the
+	// dashboard via device_ref).
+	s.h.emitClipRead(userID, req.Header().Get("X-Device-ID"), clip.ClipId, req.Header().Get("X-Is-Demo") == "true")
 	return connect.NewResponse(&cinchv1.GetLatestClipResponse{Clip: clip}), nil
 }
 

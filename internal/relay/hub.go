@@ -315,8 +315,13 @@ func (h *Hub) Remove(userID, deviceID string) {
 }
 
 // SendClip broadcasts a new clip to all connected devices of the user (fan-out).
-// Delivers to both WS conns and Connect event stream subscribers.
-func (h *Hub) SendClip(userID string, clip *cinchv1.Clip) error {
+// Delivers to both WS conns and Connect event stream subscribers. It returns the
+// device ids that accepted the WebSocket broadcast (buffer not full) so the caller
+// can record clip_read telemetry for the push side of loop completion; Connect
+// event-stream subscribers are accounted for at their own delivery point. The
+// device id field on an AgentConn is immutable after registration, so reading it
+// from the lock-free snapshot is race-safe.
+func (h *Hub) SendClip(userID string, clip *cinchv1.Clip) (delivered []string, err error) {
 	h.mu.RLock()
 	devs := h.conns[userID]
 	conns := make([]*AgentConn, 0, len(devs))
@@ -335,11 +340,13 @@ func (h *Hub) SendClip(userID string, clip *cinchv1.Clip) error {
 	for _, ac := range conns {
 		if !ac.trySend(wsMsg) {
 			slog.Warn("ws broadcast dropped, buffer full", "user", short(userID), "device", short(ac.DeviceID))
+			continue
 		}
+		delivered = append(delivered, ac.DeviceID)
 	}
 
 	h.sendToEventSubs(userID, event)
-	return nil
+	return delivered, nil
 }
 
 // SendClipDeleted broadcasts a clip_deleted event to all connected devices of the user.
