@@ -226,6 +226,10 @@ type Handler struct {
 	MetricsDisabled    bool
 	activeUsers        *activeUserTracker
 
+	// Version is the relay build version (main.version), used in the telemetry
+	// User-Agent so the ingest edge can identify the client.
+	Version string
+
 	// All rate limiting uses the one slidingWindowLimiter type (ratelimit.go).
 	// telemetryLimiter: 5 events/IP/hour. loginLimiter: 1 anonymous account
 	// creation per IP per loginRateWindow.

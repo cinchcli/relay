@@ -143,6 +143,7 @@ func runServer() {
 	handler.MetricsIngestToken = cfg.MetricsIngestToken
 	handler.MetricsAnonSalt = cfg.MetricsAnonSalt
 	handler.MetricsDisabled = cfg.MetricsDisabled
+	handler.Version = version // used in the telemetry User-Agent
 	handler.SetInternalServiceSecret(cfg.InternalServiceSecret)
 	handler.SetInternalQuotaWriteSecret(cfg.InternalQuotaWriteSecret)
 	handler.SetInternalReadSecret(cfg.InternalReadSecret)
