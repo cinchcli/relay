@@ -28,6 +28,7 @@ func (s *connectEventsServer) Subscribe(
 	if deviceID == "" {
 		return connect.NewError(connect.CodeUnauthenticated, errMsg("per-device token required for event stream"))
 	}
+	isDemo := req.Header().Get("X-Is-Demo") == "true"
 
 	ch := s.h.hub.RegisterEventSub(userID, deviceID)
 	defer s.h.hub.UnregisterEventSub(userID, deviceID)
@@ -65,6 +66,14 @@ func (s *connectEventsServer) Subscribe(
 			}
 			if err := stream.Send(event); err != nil {
 				return err
+			}
+			// Loop-completion numerator (real-time push path): this subscriber device
+			// received a clip via the event stream. Cross-device completion is decided
+			// in the dashboard by comparing device_ref against the sender's.
+			if nc := event.GetNewClip(); nc != nil {
+				if c := nc.GetClip(); c != nil {
+					s.h.emitClipRead(userID, deviceID, c.GetClipId(), isDemo)
+				}
 			}
 		}
 	}

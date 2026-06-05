@@ -104,7 +104,7 @@ func TestHubRemoveBroadcastRace(t *testing.T) {
 				case <-stop:
 					return
 				default:
-					_ = hub.SendClip(raceUser, &cinchv1.Clip{ClipId: "x"})
+					_, _ = hub.SendClip(raceUser, &cinchv1.Clip{ClipId: "x"})
 				}
 			}
 		})
@@ -224,6 +224,6 @@ func TestHubShortIDNoPanic(t *testing.T) {
 	}()
 
 	hub.Register("u1", "d1", dialWS(t, srv)) // ids shorter than 8 chars
-	_ = hub.SendClip("u1", &cinchv1.Clip{ClipId: "x"})
+	_, _ = hub.SendClip("u1", &cinchv1.Clip{ClipId: "x"})
 	hub.Remove("u1", "d1")
 }

@@ -218,13 +218,16 @@ type Handler struct {
 	TelemetryAPIKey string // X-API-Key sent to telemetry backend
 
 	// Observability product-event emission (see metrics.go). URL + token + salt
-	// must all be set or emitUserActive is a no-op; MetricsDisabled is a kill
-	// switch. activeUsers dedups to one event per anon_id per UTC day (DAU).
+	// must all be set or every emit is a no-op; MetricsDisabled is a kill switch.
+	// activeUsers dedups DAU to one event per anon_id per UTC day; clipEvents dedups
+	// clip_send/clip_read to one per clip (send) or per (clip, reader device) (read)
+	// per UTC day, backing the loop-completion metric.
 	MetricsIngestURL   string
 	MetricsIngestToken string
 	MetricsAnonSalt    string
 	MetricsDisabled    bool
-	activeUsers        *activeUserTracker
+	activeUsers        *dailySeenSet
+	clipEvents         *dailySeenSet
 
 	// Version is the relay build version (main.version), used in the telemetry
 	// User-Agent so the ingest edge can identify the client.
@@ -261,7 +264,8 @@ func NewHandler(store *Store, hub *Hub) *Handler {
 		loginLimiter:      newSlidingWindowLimiter(1, loginRateWindow),
 		pendingLimit:      newSlidingWindowLimiter(5, time.Minute),
 		deviceCodeIPLimit: newSlidingWindowLimiter(30, time.Minute),
-		activeUsers:       newActiveUserTracker(),
+		activeUsers:       newDailySeenSet(),
+		clipEvents:        newDailySeenSet(),
 	}
 }
 
@@ -710,9 +714,13 @@ func (h *Handler) PushClip(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !isDup {
-		if err := h.hub.SendClip(userID, clip); err != nil {
-			slog.Error("ws broadcast failed", "user", userID, "err", err)
+		delivered, sendErr := h.hub.SendClip(userID, clip)
+		if sendErr != nil {
+			slog.Error("ws broadcast failed", "user", userID, "err", sendErr)
 		}
+		// Loop completion: clip_send (denominator) + clip_read for every device the
+		// hub delivered to over WS at push time (the push side of the loop).
+		h.emitClipSendAndDeliveries(userID, r.Header.Get("X-Device-ID"), clip.ClipId, isDemoUser, delivered)
 	}
 
 	writeJSON(w, http.StatusOK, cinchv1.PushClipResponse{
@@ -763,6 +771,7 @@ func (h *Handler) ListClips(w http.ResponseWriter, r *http.Request) {
 			writeInternalError(w, "list failed", "list", err)
 			return
 		}
+		h.emitClipReads(userID, r.Header.Get("X-Device-ID"), r.Header.Get("X-Is-Demo") == "true", clips)
 		writeJSON(w, http.StatusOK, clips)
 		return
 	}
@@ -779,6 +788,7 @@ func (h *Handler) ListClips(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, "list failed", "list", err)
 		return
 	}
+	h.emitClipReads(userID, r.Header.Get("X-Device-ID"), r.Header.Get("X-Is-Demo") == "true", clips)
 	writeJSON(w, http.StatusOK, clips)
 }
 
@@ -887,6 +897,9 @@ func (h *Handler) GetLatestClip(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not found", err.Error(), "No clips from this source yet")
 		return
 	}
+	// Loop-completion numerator: a device read a clip. The dashboard counts it as a
+	// completed loop only when the reader's device_ref differs from the sender's.
+	h.emitClipRead(userID, r.Header.Get("X-Device-ID"), clip.ClipId, r.Header.Get("X-Is-Demo") == "true")
 	writeJSON(w, http.StatusOK, clip)
 }
 
@@ -1196,9 +1209,12 @@ func (h *Handler) PushBinaryClip(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !isDup {
-		if err := h.hub.SendClip(userID, clip); err != nil {
-			slog.Error("ws broadcast failed", "err", err)
+		delivered, sendErr := h.hub.SendClip(userID, clip)
+		if sendErr != nil {
+			slog.Error("ws broadcast failed", "err", sendErr)
 		}
+		// Loop completion: image clips count as sends/reads too.
+		h.emitClipSendAndDeliveries(userID, r.Header.Get("X-Device-ID"), clip.ClipId, r.Header.Get("X-Is-Demo") == "true", delivered)
 	}
 
 	writeJSON(w, http.StatusOK, cinchv1.PushClipResponse{
