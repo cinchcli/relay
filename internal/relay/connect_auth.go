@@ -60,6 +60,10 @@ func (h *Handler) requireConnectAuthHeaders(headers http.Header) error {
 	if ctx.IsDemo {
 		headers.Set("X-Is-Demo", "true")
 	}
+	// Product event for DAU (fire-and-forget, daily-deduped, demo-excluded). This
+	// is the single chokepoint every authed Connect RPC passes through (clips,
+	// devices, events, me, auth) via the shared interceptors.
+	h.emitUserActive(ctx.UserID, ctx.IsDemo)
 	return nil
 }
 

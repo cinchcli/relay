@@ -138,6 +138,11 @@ func runServer() {
 	// Telemetry proxy — silently disabled when config is absent.
 	handler.TelemetryURL = cfg.TelemetryURL
 	handler.TelemetryAPIKey = cfg.TelemetryAPIKey
+	// Observability product-event emission — no-op unless URL + token + salt set.
+	handler.MetricsIngestURL = cfg.MetricsIngestURL
+	handler.MetricsIngestToken = cfg.MetricsIngestToken
+	handler.MetricsAnonSalt = cfg.MetricsAnonSalt
+	handler.MetricsDisabled = cfg.MetricsDisabled
 	handler.SetInternalServiceSecret(cfg.InternalServiceSecret)
 	handler.SetInternalQuotaWriteSecret(cfg.InternalQuotaWriteSecret)
 	handler.SetInternalReadSecret(cfg.InternalReadSecret)
