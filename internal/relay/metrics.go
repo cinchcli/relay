@@ -165,10 +165,22 @@ func (h *Handler) postUserActiveEvent(anon string) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+h.MetricsIngestToken)
+	// Identify as a named API client. Go's default User-Agent (Go-http-client/1.1)
+	// trips Cloudflare's bot-mitigation challenge on the ingest edge (HTTP 403,
+	// cf-mitigated: challenge); a non-browser client UA passes it.
+	req.Header.Set("User-Agent", h.metricsUserAgent())
 
 	resp, err := metricsHTTPClient.Do(req)
 	if err != nil {
 		return
 	}
 	resp.Body.Close()
+}
+
+// metricsUserAgent identifies the relay to the ingest front door.
+func (h *Handler) metricsUserAgent() string {
+	if h.Version == "" {
+		return "cinch-relay"
+	}
+	return "cinch-relay/" + h.Version
 }

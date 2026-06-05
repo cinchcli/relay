@@ -90,3 +90,14 @@ func TestEmitUserActiveNoOpWithoutConfig(t *testing.T) {
 		t.Fatal("emit must be a no-op when MetricsDisabled is set")
 	}
 }
+
+func TestMetricsUserAgent(t *testing.T) {
+	// A named, non-browser User-Agent is required: Go's default
+	// (Go-http-client/1.1) trips Cloudflare's bot challenge at the ingest edge.
+	if got := (&Handler{}).metricsUserAgent(); got != "cinch-relay" {
+		t.Fatalf("empty version: got %q, want cinch-relay", got)
+	}
+	if got := (&Handler{Version: "v0.4.1"}).metricsUserAgent(); got != "cinch-relay/v0.4.1" {
+		t.Fatalf("with version: got %q, want cinch-relay/v0.4.1", got)
+	}
+}
