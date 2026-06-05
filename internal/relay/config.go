@@ -22,8 +22,18 @@ type Config struct {
 	GoogleClientID     string
 	GoogleClientSecret string
 
-	TelemetryURL          string
-	TelemetryAPIKey       string
+	TelemetryURL    string
+	TelemetryAPIKey string
+
+	// Observability: emit anonymous product events (relay.user_active) to the
+	// OTLP ingest front door for daily-active-user counts. URL + token + salt
+	// must ALL be set or emission is a no-op; the salt makes anon_id
+	// non-reversible and per-deployment. MetricsDisabled is a kill switch.
+	MetricsIngestURL   string // RELAY_METRICS_INGEST_URL, e.g. https://ingest.jinmu.me
+	MetricsIngestToken string // RELAY_METRICS_INGEST_TOKEN (Bearer)
+	MetricsAnonSalt    string // RELAY_ANON_SALT — required; unset disables emission
+	MetricsDisabled    bool   // RELAY_METRICS_DISABLED kill switch
+
 	InternalServiceSecret string
 	// InternalQuotaWriteSecret authorizes POST /internal/quota (write); falls
 	// back to InternalServiceSecret when empty. Comma-separated for rotation.
@@ -60,6 +70,10 @@ func LoadConfig() Config {
 		GoogleClientSecret:       os.Getenv("GOOGLE_CLIENT_SECRET"),
 		TelemetryURL:             strings.TrimRight(os.Getenv("TELEMETRY_URL"), "/"),
 		TelemetryAPIKey:          os.Getenv("TELEMETRY_API_KEY"),
+		MetricsIngestURL:         strings.TrimRight(os.Getenv("RELAY_METRICS_INGEST_URL"), "/"),
+		MetricsIngestToken:       os.Getenv("RELAY_METRICS_INGEST_TOKEN"),
+		MetricsAnonSalt:          os.Getenv("RELAY_ANON_SALT"),
+		MetricsDisabled:          envTruthy(os.Getenv("RELAY_METRICS_DISABLED")),
 		InternalServiceSecret:    os.Getenv("INTERNAL_SERVICE_SECRET"),
 		InternalQuotaWriteSecret: os.Getenv("INTERNAL_QUOTA_WRITE_SECRET"),
 		InternalReadSecret:       os.Getenv("INTERNAL_READ_SECRET"),

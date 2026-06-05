@@ -217,6 +217,15 @@ type Handler struct {
 	TelemetryURL    string // e.g. https://telemetry.jinmu.me
 	TelemetryAPIKey string // X-API-Key sent to telemetry backend
 
+	// Observability product-event emission (see metrics.go). URL + token + salt
+	// must all be set or emitUserActive is a no-op; MetricsDisabled is a kill
+	// switch. activeUsers dedups to one event per anon_id per UTC day (DAU).
+	MetricsIngestURL   string
+	MetricsIngestToken string
+	MetricsAnonSalt    string
+	MetricsDisabled    bool
+	activeUsers        *activeUserTracker
+
 	// All rate limiting uses the one slidingWindowLimiter type (ratelimit.go).
 	// telemetryLimiter: 5 events/IP/hour. loginLimiter: 1 anonymous account
 	// creation per IP per loginRateWindow.
@@ -248,6 +257,7 @@ func NewHandler(store *Store, hub *Hub) *Handler {
 		loginLimiter:      newSlidingWindowLimiter(1, loginRateWindow),
 		pendingLimit:      newSlidingWindowLimiter(5, time.Minute),
 		deviceCodeIPLimit: newSlidingWindowLimiter(30, time.Minute),
+		activeUsers:       newActiveUserTracker(),
 	}
 }
 
@@ -336,6 +346,8 @@ func (h *Handler) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 		if ctx.IsDemo {
 			r.Header.Set("X-Is-Demo", "true")
 		}
+		// Product event for DAU (fire-and-forget, daily-deduped, demo-excluded).
+		h.emitUserActive(ctx.UserID, ctx.IsDemo)
 		next(w, r)
 	}
 }
