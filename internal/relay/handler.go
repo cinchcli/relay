@@ -235,9 +235,12 @@ type Handler struct {
 
 	// All rate limiting uses the one slidingWindowLimiter type (ratelimit.go).
 	// telemetryLimiter: 5 events/IP/hour. loginLimiter: 1 anonymous account
-	// creation per IP per loginRateWindow.
-	telemetryLimiter *slidingWindowLimiter
-	loginLimiter     *slidingWindowLimiter
+	// creation per IP per loginRateWindow. cliTelemetryLimiter: 600 CLI product-
+	// event batches/IP/hour (generous; a heavy dev runs many cinch invocations per
+	// hour, abuse bounded by size caps + the event allowlist).
+	telemetryLimiter    *slidingWindowLimiter
+	cliTelemetryLimiter *slidingWindowLimiter
+	loginLimiter        *slidingWindowLimiter
 
 	internalServiceSecret string // protects POST /internal/quota; empty = endpoint disabled
 	// internalQuotaWriteSecret authorizes POST /internal/quota; internalReadSecret
@@ -258,14 +261,15 @@ type Handler struct {
 
 func NewHandler(store *Store, hub *Hub) *Handler {
 	return &Handler{
-		store:             store,
-		hub:               hub,
-		telemetryLimiter:  newSlidingWindowLimiter(5, time.Hour),
-		loginLimiter:      newSlidingWindowLimiter(1, loginRateWindow),
-		pendingLimit:      newSlidingWindowLimiter(5, time.Minute),
-		deviceCodeIPLimit: newSlidingWindowLimiter(30, time.Minute),
-		activeUsers:       newDailySeenSet(),
-		clipEvents:        newDailySeenSet(),
+		store:               store,
+		hub:                 hub,
+		telemetryLimiter:    newSlidingWindowLimiter(5, time.Hour),
+		cliTelemetryLimiter: newSlidingWindowLimiter(600, time.Hour),
+		loginLimiter:        newSlidingWindowLimiter(1, loginRateWindow),
+		pendingLimit:        newSlidingWindowLimiter(5, time.Minute),
+		deviceCodeIPLimit:   newSlidingWindowLimiter(30, time.Minute),
+		activeUsers:         newDailySeenSet(),
+		clipEvents:          newDailySeenSet(),
 	}
 }
 
@@ -2149,6 +2153,10 @@ func (h *Handler) httpRoutes() []httpRoute {
 
 		// Anonymous opt-in telemetry (always 200; dropped if backend unset).
 		{"POST /telemetry", h.HandleTelemetry, nil},
+		// Anonymous opt-in CLI product events forwarded as OTLP logs
+		// (service.name=cinch-cli) to the same metrics ingest; always 200,
+		// dropped if the ingest is unset. Auth-less, like /telemetry.
+		{"POST /telemetry/otlp", h.HandleTelemetryOTLP, nil},
 	}
 }
 
