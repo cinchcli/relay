@@ -278,6 +278,45 @@ func TestTelemetryOTLPAlwaysOK(t *testing.T) {
 	recvBody(t, bodies)
 }
 
+// TestTelemetryOTLPSaltUnsetDrops asserts that when the ingest URL and token are
+// set but the anon salt is empty, the handler returns 200 and forwards nothing: an
+// unset salt must always disable emission, never fall back to a raw identifier.
+func TestTelemetryOTLPSaltUnsetDrops(t *testing.T) {
+	srv, bodies := fakeIngest(t)
+	h := cliTelemetryHandler(srv.URL)
+	h.MetricsAnonSalt = "" // URL + token set, salt cleared -> metricsConfigured() == false
+
+	body := `{"anon_id":"u1","events":[{"name":"cli.command.completed","attrs":[]}]}`
+	if rec := postOTLPBatch(h, body); rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 even when salt unset, got %d", rec.Code)
+	}
+	expectNoBody(t, bodies)
+}
+
+// TestTelemetryOTLPChunkedOversizeIsBounded asserts that a request which omits
+// Content-Length (chunked: ContentLength == -1) cannot stream a body past the size
+// cap. The Content-Length guard cannot see -1, but io.LimitReader truncates the
+// read, so an oversized chunked body fails to decode and forwards nothing — it
+// never buffers unbounded memory.
+func TestTelemetryOTLPChunkedOversizeIsBounded(t *testing.T) {
+	srv, bodies := fakeIngest(t)
+	h := cliTelemetryHandler(srv.URL)
+
+	big := strings.Repeat("x", cliTelemetryMaxBytes*2)
+	body := `{"anon_id":"u1","events":[{"name":"cli.command.completed","attrs":[{"k":"big","v":"` + big + `"}]}]}`
+	req := httptest.NewRequest(http.MethodPost, "/telemetry/otlp", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.ContentLength = -1 // simulate chunked: the Content-Length guard cannot see the size
+	rec := httptest.NewRecorder()
+	h.HandleTelemetryOTLP(rec, req)
+
+	// The truncated read yields invalid JSON -> 400, and nothing is forwarded.
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for truncated oversized chunked body, got %d", rec.Code)
+	}
+	expectNoBody(t, bodies)
+}
+
 // itoa is a tiny dependency-free int-to-string helper for building test attr keys.
 func itoa(i int) string {
 	if i == 0 {

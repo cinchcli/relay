@@ -173,7 +173,7 @@ func StartWSTicketReaper(ctx context.Context) {
 // StartWSTicketReaper.
 func (h *Handler) StartRateLimitReaper(ctx context.Context) {
 	limiters := []*slidingWindowLimiter{
-		h.telemetryLimiter, h.loginLimiter, h.pendingLimit, h.deviceCodeIPLimit,
+		h.telemetryLimiter, h.cliTelemetryLimiter, h.loginLimiter, h.pendingLimit, h.deviceCodeIPLimit,
 	}
 	go func() {
 		ticker := time.NewTicker(1 * time.Minute)

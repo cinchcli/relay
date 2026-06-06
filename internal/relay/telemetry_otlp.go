@@ -2,6 +2,7 @@ package relay
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"strconv"
 	"time"
@@ -47,8 +48,9 @@ const (
 	cliTelemetryMaxBytes = 16384
 	// cliTelemetryMaxEvents caps how many events one batch may contribute.
 	cliTelemetryMaxEvents = 50
-	// cliTelemetryMaxAttrs caps client-supplied attributes per event (the two
-	// reserved attrs event/anon_id are added on top by the relay).
+	// cliTelemetryMaxAttrs caps non-reserved attributes per event — client
+	// properties plus the CLI-injected app/app_version/os/arch dimensions all
+	// count against it. The two reserved attrs (event, anon_id) are added on top.
 	cliTelemetryMaxAttrs = 16
 	// cliTelemetryMaxKeyLen / cliTelemetryMaxValLen bound a single attribute's
 	// key/value length to keep cardinality and payload size in check.
@@ -70,8 +72,12 @@ func (h *Handler) HandleTelemetryOTLP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Cap the bytes actually read, not just the advertised Content-Length: a chunked
+	// request sets ContentLength to -1, sailing past the guard above, and an
+	// unbounded json.NewDecoder(r.Body) would then buffer the whole body into memory.
+	// io.LimitReader makes the size cap real regardless of how the client framed it.
 	var batch cliTelemetryBatch
-	if err := json.NewDecoder(r.Body).Decode(&batch); err != nil {
+	if err := json.NewDecoder(io.LimitReader(r.Body, cliTelemetryMaxBytes)).Decode(&batch); err != nil {
 		http.Error(w, "invalid payload", http.StatusBadRequest)
 		return
 	}
