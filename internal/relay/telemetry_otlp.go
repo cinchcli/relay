@@ -51,10 +51,10 @@ func cliTelemetryServiceName(app string) string {
 	return "cinch-cli"
 }
 
-// cliTelemetryAllowedEvents is the set of CLI event names the relay forwards.
-// Any other event name is dropped (defense against accidental or malicious
-// high-cardinality / PII-bearing event names). Adding a value here is the only
-// way to admit a new CLI event to the observability stack.
+// cliTelemetryAllowedEvents is the set of client (CLI + desktop) event names the
+// relay forwards. Any other event name is dropped (defense against accidental or
+// malicious high-cardinality / PII-bearing event names). Adding a value here is the
+// only way to admit a new client event to the observability stack.
 var cliTelemetryAllowedEvents = map[string]bool{
 	"cli.command.invoked":      true,
 	"cli.command.completed":    true,
@@ -62,6 +62,7 @@ var cliTelemetryAllowedEvents = map[string]bool{
 	"cli.auth.login.completed": true,
 	"cli.send.completed":       true,
 	"mcp.session.completed":    true,
+	"desktop.app.opened":       true,
 }
 
 const (
