@@ -278,6 +278,33 @@ func TestTelemetryOTLPAlwaysOK(t *testing.T) {
 	recvBody(t, bodies)
 }
 
+// TestTelemetryOTLPServiceNamePerSurface asserts the top-level app field selects
+// the OTLP service.name: "desktop" -> cinch-desktop, an unknown/empty surface ->
+// cinch-cli. This keeps CLI and desktop product events in distinct Grafana buckets.
+func TestTelemetryOTLPServiceNamePerSurface(t *testing.T) {
+	cases := []struct {
+		app  string
+		want string
+	}{
+		{"desktop", "cinch-desktop"},
+		{"cli", "cinch-cli"},
+		{"", "cinch-cli"},      // older client without the field
+		{"bogus", "cinch-cli"}, // attacker-chosen surface collapses to the default
+	}
+	for _, tc := range cases {
+		srv, bodies := fakeIngest(t)
+		h := cliTelemetryHandler(srv.URL)
+		body := `{"app":"` + tc.app + `","anon_id":"u1","events":[{"name":"cli.command.invoked","attrs":[]}]}`
+		if rec := postOTLPBatch(h, body); rec.Code != http.StatusOK {
+			t.Fatalf("app=%q: expected 200, got %d", tc.app, rec.Code)
+		}
+		resource, _ := flattenCLIRecords(t, recvBody(t, bodies))
+		if resource["service.name"] != tc.want {
+			t.Fatalf("app=%q: service.name = %q, want %q", tc.app, resource["service.name"], tc.want)
+		}
+	}
+}
+
 // TestTelemetryOTLPSaltUnsetDrops asserts that when the ingest URL and token are
 // set but the anon salt is empty, the handler returns 200 and forwards nothing: an
 // unset salt must always disable emission, never fall back to a raw identifier.

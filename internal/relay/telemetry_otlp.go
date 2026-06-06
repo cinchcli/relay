@@ -22,12 +22,33 @@ type cliTelemetryEvent struct {
 	Attrs []cliTelemetryAttr `json:"attrs"`
 }
 
-// cliTelemetryBatch is the anonymous, opt-in batch the cinch CLI POSTs to
-// /telemetry/otlp. AnonID is a client-generated UUID; it is HMAC'd at the relay
-// and never forwarded raw.
+// cliTelemetryBatch is the anonymous, opt-in batch a cinch client (CLI or
+// desktop) POSTs to /telemetry/otlp. AnonID is a client-generated UUID; it is
+// HMAC'd at the relay and never forwarded raw. App names the producing surface
+// ("cli" / "desktop") and selects the OTLP service.name (see
+// cliTelemetryServiceName); an empty or unknown value defaults to "cinch-cli".
 type cliTelemetryBatch struct {
+	App    string              `json:"app"`
 	AnonID string              `json:"anon_id"`
 	Events []cliTelemetryEvent `json:"events"`
+}
+
+// cliTelemetryServices maps a client surface to the OTLP service.name its product
+// events are recorded under, so CLI and desktop events land in distinct buckets
+// the Grafana panels can filter by `service`. Anything not listed (including an
+// empty app) falls back to "cinch-cli".
+var cliTelemetryServices = map[string]string{
+	"cli":     "cinch-cli",
+	"desktop": "cinch-desktop",
+}
+
+// cliTelemetryServiceName resolves a batch's surface to its service.name, never
+// returning an attacker-chosen value: unknown surfaces collapse to "cinch-cli".
+func cliTelemetryServiceName(app string) string {
+	if s, ok := cliTelemetryServices[app]; ok {
+		return s
+	}
+	return "cinch-cli"
 }
 
 // cliTelemetryAllowedEvents is the set of CLI event names the relay forwards.
@@ -109,7 +130,7 @@ func (h *Handler) HandleTelemetryOTLP(w http.ResponseWriter, r *http.Request) {
 
 	body, err := json.Marshal(otlpLogsBody{
 		ResourceLogs: []otlpResourceLogs{{
-			Resource:  otlpResource{Attributes: []otlpKeyValue{kv("service.name", "cinch-cli")}},
+			Resource:  otlpResource{Attributes: []otlpKeyValue{kv("service.name", cliTelemetryServiceName(batch.App))}},
 			ScopeLogs: []otlpScopeLogs{{LogRecords: records}},
 		}},
 	})
