@@ -265,6 +265,10 @@ func TestGoldenRoutes(t *testing.T) {
 		{"telemetry_disabled", func() *http.Request {
 			return authedReq(t, "POST", ts.URL+"/telemetry", token, `{"event":"test"}`)
 		}},
+		{"telemetry_otlp_disabled", func() *http.Request {
+			return authedReq(t, "POST", ts.URL+"/telemetry/otlp", token,
+				`{"anon_id":"abc","events":[{"name":"cli.command.completed","attrs":[]}]}`)
+		}},
 
 		// ── internal / admin ──
 		{"internal_quota_disabled", func() *http.Request {
