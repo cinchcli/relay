@@ -10,6 +10,11 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// defaultHeartbeatInterval is how often Run() pings every connection. It must
+// stay comfortably under defaultWSReadDeadline (handler.go) so a live client
+// refreshes its read deadline between sweeps.
+const defaultHeartbeatInterval = 5 * time.Minute
+
 // Hub manages WebSocket connections keyed by (user_id, device_id).
 type Hub struct {
 	mu    sync.RWMutex
@@ -19,6 +24,10 @@ type Hub struct {
 	// Keyed by userID -> deviceID; fan-out mirrors the WS path.
 	eventSubsMu sync.RWMutex
 	eventSubs   map[string]map[string]chan *cinchv1.ServerEvent
+
+	// HeartbeatInterval overrides defaultHeartbeatInterval when > 0. Tests set
+	// it small to exercise the keepalive without waiting minutes.
+	HeartbeatInterval time.Duration
 }
 
 // AgentConn wraps a WebSocket connection for one desktop agent.
@@ -46,6 +55,17 @@ func (ac *AgentConn) stop() {
 		close(ac.done)
 		ac.Conn.Close()
 	})
+}
+
+// writeControlPing sends a protocol-level WebSocket Ping frame. Clients
+// (tokio-tungstenite, gorilla) auto-reply with a protocol Pong, which the read
+// loop's pong handler uses to refresh the read deadline — so an idle-but-alive
+// bearer is NOT reaped from the hub. This is the keepalive that survives clients
+// which drop the app-level "ping" message (it carries no reply frame, so it
+// alone never refreshes the deadline). WriteControl is documented safe to call
+// concurrently with the writer goroutine's WriteJSON.
+func (ac *AgentConn) writeControlPing() error {
+	return ac.Conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second))
 }
 
 // trySend enqueues msg without blocking. It drops the message if the buffer is
@@ -210,7 +230,11 @@ func (h *Hub) sendToEventSub(userID, deviceID string, event *cinchv1.ServerEvent
 
 // Run starts the hub's background tasks (heartbeat cleanup).
 func (h *Hub) Run() {
-	ticker := time.NewTicker(5 * time.Minute)
+	interval := h.HeartbeatInterval
+	if interval <= 0 {
+		interval = defaultHeartbeatInterval
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for range ticker.C {
 		// Copy conn list while holding read lock to avoid holding across channel sends.
@@ -229,12 +253,35 @@ func (h *Hub) Run() {
 		h.mu.RUnlock()
 
 		for _, e := range all {
+			// App-level ping: legacy keepalive. New clients reply with an
+			// app-level pong; older clients drop it (which is why the protocol
+			// ping below is the load-bearing keepalive for them).
 			if !e.ac.trySend(protocol.WSMessage{Action: protocol.ActionPing}) {
 				slog.Warn("heartbeat dropped, buffer full", "user", short(e.uid))
 				// Connection is likely dead or extremely slow. Evict the
 				// specific conn we hold, never whatever replaced it.
 				h.RemoveConn(e.ac)
+				continue
 			}
+			// Protocol-level ping: every WebSocket client auto-replies with a
+			// protocol pong, which the read loop's pong handler turns into a
+			// read-deadline refresh. Without this, a client that drops the
+			// app-level ping goes silent and trips the 11-minute read deadline
+			// even though it is alive — which silently evicts idle key-bearers
+			// and makes `cinch auth retry-key` broadcast to nobody.
+			//
+			// Sent from its own goroutine: WriteControl can block on the conn's
+			// write mutex up to its deadline, so doing it inline would let one
+			// slow socket delay the heartbeat for every other connection in this
+			// sweep. RemoveConn and WriteControl are both safe off the sweep
+			// goroutine.
+			ac := e.ac
+			go func() {
+				if err := ac.writeControlPing(); err != nil {
+					slog.Warn("heartbeat protocol ping failed", "device", short(ac.DeviceID), "err", err)
+					h.RemoveConn(ac)
+				}
+			}()
 		}
 	}
 }
@@ -449,6 +496,53 @@ func (h *Hub) SendToUser(userID string, event *cinchv1.ServerEvent) {
 	}
 
 	h.sendToEventSubs(userID, event)
+}
+
+// SendToUserExcept fans an event to every connected device of userID except
+// excludeDeviceID, returning the number of distinct OTHER devices that accepted
+// it (WS conns + Connect event-stream subscribers, de-duplicated by device id).
+//
+// The key-exchange retry path uses the count to tell the requesting (key-less)
+// device whether any *other* device was actually online to receive the
+// re-broadcast, so the CLI can fail fast instead of polling for 30s when nobody
+// could possibly answer. The caller's own device is excluded because it cannot
+// bear the key for itself, so counting it would be a false positive.
+func (h *Hub) SendToUserExcept(userID, excludeDeviceID string, event *cinchv1.ServerEvent) int {
+	notified := make(map[string]struct{})
+
+	h.mu.RLock()
+	conns := make([]*AgentConn, 0, len(h.conns[userID]))
+	for _, ac := range h.conns[userID] {
+		if ac.DeviceID == excludeDeviceID {
+			continue
+		}
+		conns = append(conns, ac)
+	}
+	h.mu.RUnlock()
+
+	if wsMsg := serverEventToWSMessage(event); wsMsg != nil {
+		for _, ac := range conns {
+			if ac.trySend(*wsMsg) {
+				notified[ac.DeviceID] = struct{}{}
+			}
+		}
+	}
+
+	h.eventSubsMu.RLock()
+	for did, ch := range h.eventSubs[userID] {
+		if did == excludeDeviceID {
+			continue
+		}
+		select {
+		case ch <- event:
+			notified[did] = struct{}{}
+		default:
+			slog.Warn("event sub buffer full for device", "device", short(did))
+		}
+	}
+	h.eventSubsMu.RUnlock()
+
+	return len(notified)
 }
 
 // SendToDevice pushes an event to the specific (userID, deviceID) connection if present.

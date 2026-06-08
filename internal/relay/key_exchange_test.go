@@ -169,6 +169,111 @@ func TestKeyBundleRetry_BroadcastsToUser(t *testing.T) {
 	}
 }
 
+// postRetryAndDecode POSTs /auth/key-bundle/retry and returns the response's
+// `notified` flag, asserting a 200 + ok:true along the way.
+func postRetryAndDecode(t *testing.T, ts *httptest.Server, token string) bool {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/auth/key-bundle/retry", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var got KeyBundleRetryResponse
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode retry response: %v", err)
+	}
+	if !got.OK {
+		t.Fatalf("expected ok=true")
+	}
+	return got.Notified
+}
+
+// TestKeyBundleRetry_NotifiedTrueWhenBearerOnline verifies the retry response
+// reports notified=true when another device on the account is connected to
+// receive the re-broadcast — the signal the CLI uses to decide whether to wait.
+func TestKeyBundleRetry_NotifiedTrueWhenBearerOnline(t *testing.T) {
+	ts, store, _ := keyExchangeTestServer(t)
+
+	// Bearer device on the account, connected over WS.
+	bearerToken, _, _ := keyExchangeLogin(t, ts, "host-bearer")
+	wsURL := strings.Replace(ts.URL, "http://", "ws://", 1) + "/ws?token=" + bearerToken
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("ws dial: %v", err)
+	}
+	defer conn.Close()
+
+	// Newcomer (key-less) device, re-parented onto the bearer's account so the
+	// broadcast targets the same user. (Each /auth/login creates a fresh user.)
+	newcomerToken, _, newcomerID := keyExchangeLogin(t, ts, "host-newcomer")
+	bearerUserID, err := store.DeviceOwner(deviceIDFromToken(t, store, bearerToken))
+	if err != nil {
+		t.Fatalf("bearer owner: %v", err)
+	}
+	if _, err := store.db.Exec("UPDATE devices SET user_id = $1 WHERE id = $2", bearerUserID, newcomerID); err != nil {
+		t.Fatalf("re-parent: %v", err)
+	}
+	if err := store.SetDevicePublicKey(newcomerID, "newcomer-pubkey-b64", "deadbeef"); err != nil {
+		t.Fatalf("set pubkey: %v", err)
+	}
+
+	if !postRetryAndDecode(t, ts, newcomerToken) {
+		t.Fatalf("expected notified=true when a bearer is connected")
+	}
+}
+
+// TestKeyBundleRetry_NotifiedFalseWhenNoOtherDevice verifies notified=false
+// when the requester is the only device — letting the CLI skip the 30s wait
+// instead of polling for a responder that cannot exist.
+func TestKeyBundleRetry_NotifiedFalseWhenNoOtherDevice(t *testing.T) {
+	ts, store, _ := keyExchangeTestServer(t)
+	token, _, deviceID := keyExchangeLogin(t, ts, "host-solo")
+	if err := store.SetDevicePublicKey(deviceID, "solo-pubkey-b64", "deadbeef"); err != nil {
+		t.Fatalf("set pubkey: %v", err)
+	}
+	if postRetryAndDecode(t, ts, token) {
+		t.Fatalf("expected notified=false when no other device is online")
+	}
+}
+
+// TestSendToUserExcept_ExcludesCallerAndCountsOthers unit-tests the hub
+// counting logic via event-stream subscribers (no DB / WS needed): the caller's
+// own device is excluded and only other devices are counted.
+func TestSendToUserExcept_ExcludesCallerAndCountsOthers(t *testing.T) {
+	hub := NewHub()
+	const user = "u1"
+	caller := hub.RegisterEventSub(user, "caller-dev")
+	other := hub.RegisterEventSub(user, "other-dev")
+
+	event := &cinchv1.ServerEvent{
+		Event: &cinchv1.ServerEvent_KeyExchange{
+			KeyExchange: &cinchv1.KeyExchangeEvent{DeviceId: "caller-dev"},
+		},
+	}
+	if n := hub.SendToUserExcept(user, "caller-dev", event); n != 1 {
+		t.Fatalf("expected 1 other device notified, got %d", n)
+	}
+
+	select {
+	case <-caller:
+		t.Fatalf("caller's own device must not receive its own broadcast")
+	default:
+	}
+	select {
+	case got := <-other:
+		if got.GetKeyExchange().GetDeviceId() != "caller-dev" {
+			t.Fatalf("unexpected event payload: %+v", got)
+		}
+	default:
+		t.Fatalf("other device should have received the broadcast")
+	}
+}
+
 // deviceIDFromToken is a test helper that resolves a device ID from a bearer token.
 func deviceIDFromToken(t *testing.T, store *Store, token string) string {
 	t.Helper()

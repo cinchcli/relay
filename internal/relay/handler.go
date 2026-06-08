@@ -579,6 +579,18 @@ func (h *Handler) RegisterDevicePublicKey(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// KeyBundleRetryResponse is returned by POST /auth/key-bundle/retry.
+//
+// Notified reports whether at least one OTHER online device of the user
+// received the re-broadcast key_exchange_requested event. The CLI uses it to
+// skip the 30s wait when no key-bearer could possibly respond (nobody else is
+// online), turning a silent timeout into immediate, actionable feedback. Older
+// clients ignore the field and keep their previous polling behavior.
+type KeyBundleRetryResponse struct {
+	OK       bool `json:"ok"`
+	Notified bool `json:"notified"`
+}
+
 // KeyBundleRetry re-broadcasts key_exchange_requested for the calling
 // device. Used by `cinch auth retry-key` when the initial key handoff
 // missed (no key-bearer was online). Returns 400 if the device has not
@@ -603,7 +615,10 @@ func (h *Handler) KeyBundleRetry(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "no public key registered", "device has not registered a public key yet", "Sign in via cinch auth login first")
 		return
 	}
-	h.hub.SendToUser(userID, &cinchv1.ServerEvent{
+	// Exclude the caller's own device: it is the key-less device asking for the
+	// key, so it cannot answer its own broadcast. notified > 0 means at least
+	// one other device was online to receive it.
+	notified := h.hub.SendToUserExcept(userID, deviceID, &cinchv1.ServerEvent{
 		Event: &cinchv1.ServerEvent_KeyExchange{
 			KeyExchange: &cinchv1.KeyExchangeEvent{
 				DeviceId: deviceID,
@@ -611,7 +626,7 @@ func (h *Handler) KeyBundleRetry(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 	})
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	writeJSON(w, http.StatusOK, KeyBundleRetryResponse{OK: true, Notified: notified > 0})
 }
 
 // PushClip receives a clip from the CLI and broadcasts to the agent.
@@ -1102,10 +1117,20 @@ func (h *Handler) replayPendingAndStartReadLoop(ac *AgentConn) {
 		// malicious client cannot make the server buffer a huge message.
 		conn.SetReadLimit(h.wsReadLimit())
 		readDeadline := h.wsReadDeadlineDur()
+		// A protocol-level pong (sent automatically by every WebSocket client in
+		// reply to the hub's heartbeat Ping) must refresh the read deadline,
+		// exactly like an inbound app-level frame does below. gorilla's default
+		// pong handler is a no-op, so without this an alive-but-idle client whose
+		// only traffic is protocol pongs would still trip the deadline and be
+		// reaped — the bug that made `cinch auth retry-key` broadcast to nobody.
+		conn.SetPongHandler(func(string) error {
+			return conn.SetReadDeadline(time.Now().Add(readDeadline))
+		})
 		for {
-			// Refresh before each read. The hub's app-level heartbeat keeps a
-			// live client sending pongs well inside this window; a silent socket
-			// trips the deadline and is reaped instead of pinned forever.
+			// Refresh before each read. The hub's heartbeat keeps a live client
+			// sending pongs (app-level and/or protocol-level) well inside this
+			// window; a silent socket trips the deadline and is reaped instead of
+			// pinned forever.
 			_ = conn.SetReadDeadline(time.Now().Add(readDeadline))
 			var msg protocol.WSMessage
 			if err := conn.ReadJSON(&msg); err != nil {
