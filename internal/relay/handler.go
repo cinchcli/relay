@@ -1081,7 +1081,10 @@ func (h *Handler) replayPendingAndStartReadLoop(ac *AgentConn) {
 			return
 		}
 		for _, d := range pending {
-			conn.WriteJSON(protocol.WSMessage{ //nolint:errcheck
+			// Enqueue via trySend so the per-conn writer() goroutine stays the
+			// sole writer of this socket — calling conn.WriteJSON here would race
+			// writer() (two concurrent gorilla writers corrupt the stream).
+			ac.trySend(protocol.WSMessage{
 				Action:   protocol.ActionKeyExchangeRequested,
 				DeviceID: d.Id,
 				Hostname: d.Hostname,
@@ -1099,7 +1102,9 @@ func (h *Handler) replayPendingAndStartReadLoop(ac *AgentConn) {
 			return
 		}
 		for _, p := range pendingCodes {
-			conn.WriteJSON(protocol.WSMessage{ //nolint:errcheck
+			// Enqueue via trySend, not conn.WriteJSON — see the key-exchange
+			// replay above: writer() must remain the only goroutine writing.
+			ac.trySend(protocol.WSMessage{
 				Action:      protocol.ActionDeviceCodePending,
 				UserCode:    p.UserCode,
 				Hostname:    p.Hostname,
