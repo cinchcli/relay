@@ -3,7 +3,7 @@ package relay
 import "errors"
 
 // Domain sentinel errors. These replace stringly-typed control flow
-// (err.Error() == "device_revoked", strings.Contains(err, "between 1 and 365"),
+// (err.Error() == "device_revoked", strings.Contains(err, "between 7 and 365"),
 // …) with errors.Is checks, so the transport adapters (REST + Connect-RPC) can
 // map a single error value to a status code in one place instead of re-parsing
 // message text. The Error() strings are kept identical to the previous inline
@@ -28,8 +28,10 @@ var (
 	ErrDeviceLimitExceeded = errors.New("device_limit_exceeded")
 
 	// ErrRetentionOutOfRange is returned by UpdateDeviceRetention when the
-	// requested retention is outside the allowed 1..365 day window.
-	ErrRetentionOutOfRange = errors.New("retention days must be between 1 and 365")
+	// requested retention is outside the allowed 7..365 day window. The floor
+	// matches the desktop/CLI clamp so a value below it (notably the old broken
+	// 1-day default) can never be written through any client.
+	ErrRetentionOutOfRange = errors.New("retention days must be between 7 and 365")
 
 	// ErrRateLimited is returned by the shared device-code-start path when the
 	// requester IP exceeds the per-IP rate limit.

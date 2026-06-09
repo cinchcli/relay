@@ -1986,7 +1986,7 @@ func (h *Handler) PollDeviceCode(w http.ResponseWriter, r *http.Request) {
 }
 
 // UpdateDeviceRetention handles PUT /devices/self/retention.
-// Accepts JSON body: {"remote_retention_days": N} where N is 1-365.
+// Accepts JSON body: {"remote_retention_days": N} where N is 7-365.
 // Updates the authenticated device's remote_retention_days column.
 func (h *Handler) UpdateDeviceRetention(w http.ResponseWriter, r *http.Request) {
 	deviceID := r.Header.Get("X-Device-ID")
@@ -2009,7 +2009,7 @@ func (h *Handler) UpdateDeviceRetention(w http.ResponseWriter, r *http.Request) 
 	if err := h.store.UpdateDeviceRetention(deviceID, req.RemoteRetentionDays); err != nil {
 		if errors.Is(err, ErrRetentionOutOfRange) {
 			writeError(w, http.StatusBadRequest, "invalid_range",
-				err.Error(), "Value must be between 1 and 365")
+				err.Error(), "Value must be between 7 and 365")
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "update_failed",
