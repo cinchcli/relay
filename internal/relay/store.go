@@ -172,7 +172,7 @@ func migrate(db *sql.DB) error {
 			last_push_at             TIMESTAMPTZ,
 			token                    TEXT,
 			revoked_at               TIMESTAMPTZ,
-			remote_retention_days    INTEGER DEFAULT 1,
+			remote_retention_days    INTEGER DEFAULT 30,
 			public_key               TEXT,
 			public_key_fingerprint   TEXT,
 			encrypted_key_bundle     TEXT,
@@ -400,6 +400,25 @@ func migrate(db *sql.DB) error {
 	} {
 		if _, err := db.Exec(stmt); err != nil {
 			return fmt.Errorf("adding desktop-approval columns to device_codes: %w", err)
+		}
+	}
+
+	// Repair the remote-retention default. Early schemas created
+	// devices.remote_retention_days with DEFAULT 1, so a freshly-paired device
+	// silently dragged the per-user retention sweep — which uses the MIN across
+	// a user's devices — down to a 1-day window before the user ever touched
+	// the 7-365 day slider, deleting relay clips after a single day. Lift the
+	// column default to 30 (matching the client default) and rewrite the
+	// unreachable 1-day rows: 1 is below the 7-day floor now enforced by
+	// UpdateDeviceRetention (and the desktop/CLI clamp), so it can only have
+	// come from the old schema default, never a deliberate choice — and no new
+	// 1-day row can appear after this runs.
+	for _, stmt := range []string{
+		`ALTER TABLE devices ALTER COLUMN remote_retention_days SET DEFAULT 30`,
+		`UPDATE devices SET remote_retention_days = 30 WHERE remote_retention_days = 1`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("repairing devices.remote_retention_days default: %w", err)
 		}
 	}
 
@@ -1781,8 +1800,12 @@ func (s *Store) SweepAllUsersRetentionReturningMedia() (mediaPaths []string, err
 // UpdateDeviceRetention sets the remote_retention_days for a specific device,
 // clamped to the user's plan retention_days when one is set. We look up the
 // owner user via the device row to keep the public signature unchanged.
+//
+// The accepted window floors at 7 days (matching the desktop/CLI clamp) so no
+// client can write a sub-7 value — in particular the broken 1-day default the
+// migration repairs can never be reintroduced through this path.
 func (s *Store) UpdateDeviceRetention(deviceID string, days int) error {
-	if days < 1 || days > 365 {
+	if days < 7 || days > 365 {
 		return fmt.Errorf("%w, got %d", ErrRetentionOutOfRange, days)
 	}
 

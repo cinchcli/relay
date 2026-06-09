@@ -404,12 +404,13 @@ func TestUpdateDeviceRetention(t *testing.T) {
 		wantError bool
 		errMsg    string
 	}{
-		{"valid 1 day", 1, false, ""},
+		{"invalid 1 day", 1, true, "between 7 and 365"},
+		{"invalid 6 days", 6, true, "between 7 and 365"},
 		{"valid 7 days", 7, false, ""},
 		{"valid 365 days", 365, false, ""},
-		{"invalid 0 days", 0, true, "between 1 and 365"},
-		{"invalid 366 days", 366, true, "between 1 and 365"},
-		{"invalid -1 days", -1, true, "between 1 and 365"},
+		{"invalid 0 days", 0, true, "between 7 and 365"},
+		{"invalid 366 days", 366, true, "between 7 and 365"},
+		{"invalid -1 days", -1, true, "between 7 and 365"},
 	}
 
 	for _, tt := range tests {
@@ -481,7 +482,7 @@ func TestUpdateDeviceRetention_ClampsToPlan(t *testing.T) {
 
 // TestUpdateDeviceRetention_NoPlanCapIsUnclamped verifies that a user
 // without a user_capabilities row (self-host default; RetentionDays == 0
-// means unlimited) keeps the literal 1..365 behavior — the request is
+// means unlimited) keeps the literal 7..365 behavior — the request is
 // stored as-is.
 func TestUpdateDeviceRetention_NoPlanCapIsUnclamped(t *testing.T) {
 	store := newTestStore(t)
@@ -512,6 +513,41 @@ func TestUpdateDeviceRetention_NoPlanCapIsUnclamped(t *testing.T) {
 	}
 	if stored != 30 {
 		t.Errorf("expected unclamped retention=30, got %d", stored)
+	}
+}
+
+// TestMigrateRepairsLegacyOneDayRetention verifies the migrate() repair that
+// lifts the broken 1-day remote-retention default to 30. Early schemas created
+// devices.remote_retention_days with DEFAULT 1, so a freshly-paired device
+// silently dragged the per-user retention sweep down to a 1-day window. Since
+// the client clamp floors at 7, a stored 1 can only be the old default and is
+// safe to rewrite.
+func TestMigrateRepairsLegacyOneDayRetention(t *testing.T) {
+	s := newTestStore(t)
+	userID := "u-retention-repair"
+	if err := s.CreateUser(userID); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	// Simulate a device row written under the old DEFAULT 1 schema.
+	if _, err := s.db.Exec(
+		`INSERT INTO devices (id, user_id, hostname, source_key, remote_retention_days)
+		 VALUES ('dev-legacy1', $1, 'host', 'remote:host', 1)`,
+		userID,
+	); err != nil {
+		t.Fatalf("insert device: %v", err)
+	}
+	// Re-running the migration must lift the unreachable 1-day value to 30.
+	if err := s.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	var stored int
+	if err := s.db.QueryRow(
+		"SELECT remote_retention_days FROM devices WHERE id = 'dev-legacy1'",
+	).Scan(&stored); err != nil {
+		t.Fatalf("read retention: %v", err)
+	}
+	if stored != 30 {
+		t.Errorf("expected repaired retention=30, got %d", stored)
 	}
 }
 

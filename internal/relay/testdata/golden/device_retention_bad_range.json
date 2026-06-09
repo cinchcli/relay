@@ -1,5 +1,5 @@
 {
   "status": 400,
   "content_type": "application/json",
-  "body": "{\n  \"error\": \"invalid_range\",\n  \"fix\": \"Value must be between 1 and 365\",\n  \"message\": \"retention days must be between 1 and 365, got 0\"\n}"
+  "body": "{\n  \"error\": \"invalid_range\",\n  \"fix\": \"Value must be between 7 and 365\",\n  \"message\": \"retention days must be between 7 and 365, got 0\"\n}"
 }
