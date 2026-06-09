@@ -49,7 +49,11 @@ func NewOAuthProviders(baseURL, ghID, ghSecret, gID, gSecret string) *OAuthProvi
 				ClientSecret: ghSecret,
 				Endpoint:     github.Endpoint,
 				RedirectURL:  baseURL + "/auth/oauth/github/callback",
-				Scopes:       []string{"user:email"},
+				// Two scopes, two endpoints: read:user lets /user return the
+				// profile "name" field (we fall back to "login" when it is
+				// unset), and user:email lets /user/emails return the verified
+				// primary email. Neither alone is sufficient for both.
+				Scopes: []string{"read:user", "user:email"},
 			},
 		}
 	}
@@ -61,7 +65,9 @@ func NewOAuthProviders(baseURL, ghID, ghSecret, gID, gSecret string) *OAuthProvi
 				ClientSecret: gSecret,
 				Endpoint:     google.Endpoint,
 				RedirectURL:  baseURL + "/auth/oauth/google/callback",
-				Scopes:       []string{"openid", "email"},
+				// "profile" is required for the userinfo endpoint to return the
+				// "name" field; "openid email" alone yields only sub + email.
+				Scopes: []string{"openid", "email", "profile"},
 			},
 		}
 	}
