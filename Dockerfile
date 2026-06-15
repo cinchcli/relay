@@ -27,7 +27,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
       -ldflags "-s -w -X main.version=${VERSION}" \
       -o /out/cinch-relay ./cmd/relay
 
-FROM alpine:3.21 AS base
+FROM alpine:3.24 AS base
 
 RUN apk add --no-cache ca-certificates curl && \
     curl -fsSL https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem \
