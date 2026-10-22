@@ -33,7 +33,7 @@ var updateGolden = flag.Bool("update", false, "update golden route characterizat
 //
 // Routes covered: all entries in Handler.RegisterRoutes. The previously
 // untested holes called out in the refactor plan are exercised explicitly:
-// POST /clips/{id}/pin (+ SendClipPinned fan-out), POST /telemetry,
+// POST /clips/{id}/pin (+ SendClipPinned fan-out),
 // PUT /devices/{id}/nickname, the DevicesService and EventStreamService
 // Connect RPCs.
 
@@ -261,7 +261,7 @@ func TestGoldenRoutes(t *testing.T) {
 			return authedReq(t, "POST", ts.URL+"/ws/ticket", token, "")
 		}},
 
-		// ── telemetry (untested hole) ──
+		// Removed product-telemetry endpoints must stay unavailable.
 		{"telemetry_disabled", func() *http.Request {
 			return authedReq(t, "POST", ts.URL+"/telemetry", token, `{"event":"test"}`)
 		}},

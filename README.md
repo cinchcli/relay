@@ -64,11 +64,14 @@ Save as `docker-compose.yml` and run:
 docker compose up -d
 ```
 
+For an interface-specific `LISTEN_ADDR`, configure the health probe to use that same address. For example, Docker needs `--health-cmd='wget -qO- http://100.72.59.53:4243/health'`; a Compose deployment needs an equivalent `healthcheck.test` override. Kubernetes probes are configured separately from the image's Docker healthcheck.
+
 ## Environment Variables
 
 | Variable | Default | Description |
 |---|---|---|
 | `PORT` | `8080` | TCP port the server listens on |
+| `LISTEN_ADDR` | `:PORT` | Bind address, including port. For a host-network Tailnet deployment, set the node's Tailscale IP, e.g. `100.72.59.53:4243`. Overrides `PORT`. |
 | `DATABASE_URL` | _(required)_ | PostgreSQL DSN (used with `pgx`), e.g. `postgres://user:pass@host:5432/relay?sslmode=disable` |
 | `BASE_URL` | _(unset)_ | Public HTTPS root of the relay, e.g. `https://relay.example.com`. Required for OAuth sign-in. |
 | `RELAY_REGION` | _(unset)_ | Optional region label returned in health responses |

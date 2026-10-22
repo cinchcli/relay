@@ -65,7 +65,7 @@ func runServer() {
 
 	fs := flag.NewFlagSet("server", flag.ExitOnError)
 	var portFlag string
-	fs.StringVar(&portFlag, "port", "", "TCP port to listen on (overrides PORT env; default 8080)")
+	fs.StringVar(&portFlag, "port", "", "TCP port (overrides PORT env; LISTEN_ADDR takes precedence; default 8080)")
 	fs.StringVar(&portFlag, "p", "", "short alias for --port")
 	_ = fs.Parse(os.Args[1:])
 
@@ -135,15 +135,6 @@ func runServer() {
 		cfg.GoogleClientSecret,
 	)
 
-	// Telemetry proxy — silently disabled when config is absent.
-	handler.TelemetryURL = cfg.TelemetryURL
-	handler.TelemetryAPIKey = cfg.TelemetryAPIKey
-	// Observability product-event emission — no-op unless URL + token + salt set.
-	handler.MetricsIngestURL = cfg.MetricsIngestURL
-	handler.MetricsIngestToken = cfg.MetricsIngestToken
-	handler.MetricsAnonSalt = cfg.MetricsAnonSalt
-	handler.MetricsDisabled = cfg.MetricsDisabled
-	handler.Version = version // used in the telemetry User-Agent
 	handler.SetInternalServiceSecret(cfg.InternalServiceSecret)
 	handler.SetInternalQuotaWriteSecret(cfg.InternalQuotaWriteSecret)
 	handler.SetInternalReadSecret(cfg.InternalReadSecret)
@@ -162,9 +153,9 @@ func runServer() {
 
 	logStartupStatus(mediaStore, handler.OAuth, cfg.Media.BackendName())
 
-	slog.Info("relay listening", "version", version, "port", cfg.Port)
+	slog.Info("relay listening", "version", version, "address", cfg.HTTPAddress())
 	srv := &http.Server{
-		Addr: ":" + cfg.Port,
+		Addr: cfg.HTTPAddress(),
 		// Wrap the mux so every response carries baseline security headers
 		// (nosniff, X-Frame-Options, Referrer-Policy, HSTS over TLS).
 		Handler: relay.SecurityHeaders(mux),

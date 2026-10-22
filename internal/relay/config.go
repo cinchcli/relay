@@ -13,6 +13,7 @@ import (
 // Handler, Store, and media backend.
 type Config struct {
 	Port        string // TCP port; default "8080"
+	ListenAddr  string // LISTEN_ADDR overrides the default ":PORT" listener
 	DatabaseURL string // Postgres DSN (required)
 	BaseURL     string // public HTTPS root, e.g. https://api.cinchcli.com
 	CORSOrigins []string
@@ -21,18 +22,6 @@ type Config struct {
 	GitHubClientSecret string
 	GoogleClientID     string
 	GoogleClientSecret string
-
-	TelemetryURL    string
-	TelemetryAPIKey string
-
-	// Observability: emit anonymous product events (relay.user_active) to the
-	// OTLP ingest front door for daily-active-user counts. URL + token + salt
-	// must ALL be set or emission is a no-op; the salt makes anon_id
-	// non-reversible and per-deployment. MetricsDisabled is a kill switch.
-	MetricsIngestURL   string // RELAY_METRICS_INGEST_URL, e.g. https://ingest.jinmu.me
-	MetricsIngestToken string // RELAY_METRICS_INGEST_TOKEN (Bearer)
-	MetricsAnonSalt    string // RELAY_ANON_SALT — required; unset disables emission
-	MetricsDisabled    bool   // RELAY_METRICS_DISABLED kill switch
 
 	InternalServiceSecret string
 	// InternalQuotaWriteSecret authorizes POST /internal/quota (write); falls
@@ -62,18 +51,13 @@ func envTruthy(v string) bool {
 func LoadConfig() Config {
 	cfg := Config{
 		Port:                     os.Getenv("PORT"),
+		ListenAddr:               os.Getenv("LISTEN_ADDR"),
 		DatabaseURL:              os.Getenv("DATABASE_URL"),
 		BaseURL:                  os.Getenv("BASE_URL"),
 		GitHubClientID:           os.Getenv("GITHUB_CLIENT_ID"),
 		GitHubClientSecret:       os.Getenv("GITHUB_CLIENT_SECRET"),
 		GoogleClientID:           os.Getenv("GOOGLE_CLIENT_ID"),
 		GoogleClientSecret:       os.Getenv("GOOGLE_CLIENT_SECRET"),
-		TelemetryURL:             strings.TrimRight(os.Getenv("TELEMETRY_URL"), "/"),
-		TelemetryAPIKey:          os.Getenv("TELEMETRY_API_KEY"),
-		MetricsIngestURL:         strings.TrimRight(os.Getenv("RELAY_METRICS_INGEST_URL"), "/"),
-		MetricsIngestToken:       os.Getenv("RELAY_METRICS_INGEST_TOKEN"),
-		MetricsAnonSalt:          os.Getenv("RELAY_ANON_SALT"),
-		MetricsDisabled:          envTruthy(os.Getenv("RELAY_METRICS_DISABLED")),
 		InternalServiceSecret:    os.Getenv("INTERNAL_SERVICE_SECRET"),
 		InternalQuotaWriteSecret: os.Getenv("INTERNAL_QUOTA_WRITE_SECRET"),
 		InternalReadSecret:       os.Getenv("INTERNAL_READ_SECRET"),
@@ -93,6 +77,14 @@ func LoadConfig() Config {
 		}
 	}
 	return cfg
+}
+
+// HTTPAddress resolves the bind address after command-line port overrides.
+func (c Config) HTTPAddress() string {
+	if c.ListenAddr != "" {
+		return c.ListenAddr
+	}
+	return ":" + c.Port
 }
 
 // OAuthConfigured reports whether any OAuth provider credentials are present.
