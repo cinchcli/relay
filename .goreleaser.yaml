@@ -35,6 +35,7 @@ archives:
 dockers:
   - image_templates:
       - "ghcr.io/cinchcli/relay:{{ .Tag }}-amd64"
+    goarch: amd64
     use: buildx
     dockerfile: Dockerfile
     build_flag_templates:
@@ -42,6 +43,7 @@ dockers:
       - "--target=runtime-prebuilt"
   - image_templates:
       - "ghcr.io/cinchcli/relay:{{ .Tag }}-arm64"
+    goarch: arm64
     use: buildx
     dockerfile: Dockerfile
     build_flag_templates:

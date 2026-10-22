@@ -60,11 +60,35 @@ jobs:
             --tag "${IMAGE}:sha-${SOURCE_SHA}" \
             --push .
 
-      - name: Run GoReleaser
+      - name: Build release artifacts without publishing
         uses: goreleaser/goreleaser-action@5daf1e915a5f0af01ddbcd89a43b8061ff4f1a89 # v7.2.2
         with:
           distribution: goreleaser
           version: "~> v2"
-          args: ${{ github.event_name == 'pull_request' && 'release --snapshot --skip=publish --clean' || 'release --clean' }}
+          args: ${{ github.event_name == 'pull_request' && 'release --snapshot --skip=publish --clean' || 'release --skip=publish --clean' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Smoke-test packaged images on both architectures
+        run: |
+          tag=$(jq -er .tag dist/metadata.json)
+          for arch in amd64 arm64; do
+            image="ghcr.io/${{ github.repository }}:${tag}-${arch}"
+            container=$(docker create --platform "linux/${arch}" "$image" cinch-relay --help)
+            docker cp "$container:/usr/local/bin/cinch-relay" "$RUNNER_TEMP/relay-$arch"
+            docker rm "$container"
+            machine=$(od -An -tu2 -j18 -N2 "$RUNNER_TEMP/relay-$arch" | tr -d '[:space:]')
+            case "$arch" in amd64) expected=62 ;; arm64) expected=183 ;; esac
+            test "$machine" = "$expected"
+            docker run --rm --platform "linux/${arch}" "$image" cinch-relay --help
+          done
+
+      - name: Publish verified release
+        if: github.event_name == 'push'
+        uses: goreleaser/goreleaser-action@5daf1e915a5f0af01ddbcd89a43b8061ff4f1a89 # v7.2.2
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
