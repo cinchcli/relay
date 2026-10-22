@@ -8,7 +8,7 @@
 # The `base` stage holds everything common to both runtime images. The two
 # thin runtime stages differ only by where the binary comes from.
 
-ARG GO_VERSION=1.26
+ARG GO_VERSION=1.26.10
 
 FROM golang:${GO_VERSION}-alpine AS builder
 
