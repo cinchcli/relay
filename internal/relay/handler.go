@@ -168,12 +168,10 @@ func StartWSTicketReaper(ctx context.Context) {
 // StartRateLimitReaper periodically evicts fully-expired keys from the
 // in-process rate limiters. The limiters otherwise only prune a key's slice
 // when that exact key is seen again, so attacker-chosen keys on the
-// unauthenticated routes (telemetry by CF-Connecting-IP, device-code by
-// X-Forwarded-For) would accumulate permanent map entries. Mirrors
-// StartWSTicketReaper.
+// unauthenticated routes would accumulate permanent map entries.
 func (h *Handler) StartRateLimitReaper(ctx context.Context) {
 	limiters := []*slidingWindowLimiter{
-		h.telemetryLimiter, h.cliTelemetryLimiter, h.loginLimiter, h.pendingLimit, h.deviceCodeIPLimit,
+		h.loginLimiter, h.pendingLimit, h.deviceCodeIPLimit,
 	}
 	go func() {
 		ticker := time.NewTicker(1 * time.Minute)
@@ -214,33 +212,8 @@ type Handler struct {
 	WSReadLimitBytes int64
 	WSReadDeadline   time.Duration
 
-	TelemetryURL    string // e.g. https://telemetry.jinmu.me
-	TelemetryAPIKey string // X-API-Key sent to telemetry backend
-
-	// Observability product-event emission (see metrics.go). URL + token + salt
-	// must all be set or every emit is a no-op; MetricsDisabled is a kill switch.
-	// activeUsers dedups DAU to one event per anon_id per UTC day; clipEvents dedups
-	// clip_send/clip_read to one per clip (send) or per (clip, reader device) (read)
-	// per UTC day, backing the loop-completion metric.
-	MetricsIngestURL   string
-	MetricsIngestToken string
-	MetricsAnonSalt    string
-	MetricsDisabled    bool
-	activeUsers        *dailySeenSet
-	clipEvents         *dailySeenSet
-
-	// Version is the relay build version (main.version), used in the telemetry
-	// User-Agent so the ingest edge can identify the client.
-	Version string
-
-	// All rate limiting uses the one slidingWindowLimiter type (ratelimit.go).
-	// telemetryLimiter: 5 events/IP/hour. loginLimiter: 1 anonymous account
-	// creation per IP per loginRateWindow. cliTelemetryLimiter: 600 CLI product-
-	// event batches/IP/hour (generous; a heavy dev runs many cinch invocations per
-	// hour, abuse bounded by size caps + the event allowlist).
-	telemetryLimiter    *slidingWindowLimiter
-	cliTelemetryLimiter *slidingWindowLimiter
-	loginLimiter        *slidingWindowLimiter
+	// loginLimiter bounds anonymous account creation per IP.
+	loginLimiter *slidingWindowLimiter
 
 	internalServiceSecret string // protects POST /internal/quota; empty = endpoint disabled
 	// internalQuotaWriteSecret authorizes POST /internal/quota; internalReadSecret
@@ -261,15 +234,11 @@ type Handler struct {
 
 func NewHandler(store *Store, hub *Hub) *Handler {
 	return &Handler{
-		store:               store,
-		hub:                 hub,
-		telemetryLimiter:    newSlidingWindowLimiter(5, time.Hour),
-		cliTelemetryLimiter: newSlidingWindowLimiter(600, time.Hour),
-		loginLimiter:        newSlidingWindowLimiter(1, loginRateWindow),
-		pendingLimit:        newSlidingWindowLimiter(5, time.Minute),
-		deviceCodeIPLimit:   newSlidingWindowLimiter(30, time.Minute),
-		activeUsers:         newDailySeenSet(),
-		clipEvents:          newDailySeenSet(),
+		store:             store,
+		hub:               hub,
+		loginLimiter:      newSlidingWindowLimiter(1, loginRateWindow),
+		pendingLimit:      newSlidingWindowLimiter(5, time.Minute),
+		deviceCodeIPLimit: newSlidingWindowLimiter(30, time.Minute),
 	}
 }
 
@@ -358,8 +327,6 @@ func (h *Handler) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 		if ctx.IsDemo {
 			r.Header.Set("X-Is-Demo", "true")
 		}
-		// Product event for DAU (fire-and-forget, daily-deduped, demo-excluded).
-		h.emitUserActive(ctx.UserID, ctx.IsDemo)
 		next(w, r)
 	}
 }
@@ -733,13 +700,10 @@ func (h *Handler) PushClip(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !isDup {
-		delivered, sendErr := h.hub.SendClip(userID, clip)
+		sendErr := h.hub.SendClip(userID, clip)
 		if sendErr != nil {
 			slog.Error("ws broadcast failed", "user", userID, "err", sendErr)
 		}
-		// Loop completion: clip_send (denominator) + clip_read for every device the
-		// hub delivered to over WS at push time (the push side of the loop).
-		h.emitClipSendAndDeliveries(userID, r.Header.Get("X-Device-ID"), clip.ClipId, isDemoUser, delivered)
 	}
 
 	writeJSON(w, http.StatusOK, cinchv1.PushClipResponse{
@@ -790,7 +754,6 @@ func (h *Handler) ListClips(w http.ResponseWriter, r *http.Request) {
 			writeInternalError(w, "list failed", "list", err)
 			return
 		}
-		h.emitClipReads(userID, r.Header.Get("X-Device-ID"), r.Header.Get("X-Is-Demo") == "true", clips)
 		writeJSON(w, http.StatusOK, clips)
 		return
 	}
@@ -807,7 +770,6 @@ func (h *Handler) ListClips(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, "list failed", "list", err)
 		return
 	}
-	h.emitClipReads(userID, r.Header.Get("X-Device-ID"), r.Header.Get("X-Is-Demo") == "true", clips)
 	writeJSON(w, http.StatusOK, clips)
 }
 
@@ -916,9 +878,6 @@ func (h *Handler) GetLatestClip(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not found", err.Error(), "No clips from this source yet")
 		return
 	}
-	// Loop-completion numerator: a device read a clip. The dashboard counts it as a
-	// completed loop only when the reader's device_ref differs from the sender's.
-	h.emitClipRead(userID, r.Header.Get("X-Device-ID"), clip.ClipId, r.Header.Get("X-Is-Demo") == "true")
 	writeJSON(w, http.StatusOK, clip)
 }
 
@@ -1243,12 +1202,10 @@ func (h *Handler) PushBinaryClip(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !isDup {
-		delivered, sendErr := h.hub.SendClip(userID, clip)
+		sendErr := h.hub.SendClip(userID, clip)
 		if sendErr != nil {
 			slog.Error("ws broadcast failed", "err", sendErr)
 		}
-		// Loop completion: image clips count as sends/reads too.
-		h.emitClipSendAndDeliveries(userID, r.Header.Get("X-Device-ID"), clip.ClipId, r.Header.Get("X-Is-Demo") == "true", delivered)
 	}
 
 	writeJSON(w, http.StatusOK, cinchv1.PushClipResponse{
@@ -2180,13 +2137,6 @@ func (h *Handler) httpRoutes() []httpRoute {
 		{"GET /auth/oauth/google/start", h.OAuthStart("google"), nil},
 		{"GET /auth/oauth/google/callback", h.OAuthCallback("google"), nil},
 		{"POST /auth/oauth/confirm", h.OAuthConfirm, nil},
-
-		// Anonymous opt-in telemetry (always 200; dropped if backend unset).
-		{"POST /telemetry", h.HandleTelemetry, nil},
-		// Anonymous opt-in CLI product events forwarded as OTLP logs
-		// (service.name=cinch-cli) to the same metrics ingest; always 200,
-		// dropped if the ingest is unset. Auth-less, like /telemetry.
-		{"POST /telemetry/otlp", h.HandleTelemetryOTLP, nil},
 	}
 }
 

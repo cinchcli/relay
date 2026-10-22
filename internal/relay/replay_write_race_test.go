@@ -78,7 +78,7 @@ func TestReplayPending_NoConcurrentWriteRace(t *testing.T) {
 				case <-stop:
 					return
 				default:
-					_, _ = hub.SendClip(userID, &cinchv1.Clip{
+					_ = hub.SendClip(userID, &cinchv1.Clip{
 						ClipId: fmt.Sprintf("c%d-%d", iter, i),
 						UserId: userID,
 					})
